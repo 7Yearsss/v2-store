@@ -1,5 +1,7 @@
 # 妙手「跨境ERP助手」插件拆解（v5.0.9，2026-09 实测）
 
+> 下发注入包（1.5MB、全部站点逻辑）的深拆见 [teardown-miaoshou-injected.md](./teardown-miaoshou-injected.md)。
+
 来源：妙手后台「插件下载」弹窗直发 zip（`kuajing-erp-plugin-v3-5x.zip`，~200KB），不是 Chrome Web Store 分发。
 描述原文："支持采集 100+ 货源平台商品，批量发布至数十家跨境电商平台店铺，支持一键代发采购，自动关联并同步采购单至货代系统"。
 
