@@ -8,7 +8,14 @@ const common = {
   outdir: "dist",
 };
 
-await build({ ...common, entryPoints: ["src/content.ts"] });
-await build({ ...common, entryPoints: ["src/background.ts"] });
+await build({
+  ...common,
+  entryPoints: {
+    content: "src/content.ts",
+    background: "src/background.ts",
+    "collect1688-main": "src/main-world/1688.ts",
+    "site-bridge": "src/site-bridge.ts",
+  },
+});
 cpSync("static", "dist", { recursive: true });
 console.log("extension built -> dist/");

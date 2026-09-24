@@ -21,7 +21,7 @@
 
 **多采集源 × 多目标平台是核心约束**，两个轴都做成可插拔：
 
-- `OfferSource`：采集来源矩阵 —— 每个源平台一个实现（1688 / 淘宝 / PDD / Temu / Amazon / Ozon），每个实现内部又是"插件 MAIN-world 页面解析（默认）+ 官方 API（可选增强）"两条采集路径，统一输出 `CollectedOffer`
+- `OfferSource`：采集来源矩阵 —— 每个源平台一个实现（1688 / 淘宝 / PDD / Temu / Amazon / Ozon / 货源站群），每个实现内部采集手段三级递进：**站点内部 API 直调（最准）> 页内 JSON（默认）> DOM 兜底**，统一输出 `CollectedOffer`；形态含详情页采集、整店采集、关键词采集（dxm 拆解）
 - `ChannelAdapter`：刊登通道矩阵 —— 每个目标平台一个实现（Shopify / Shopee / TikTok / WooCommerce / Ozon），统一接口 `prepareListing / prepareMedia / publish / mapOrder`；平台差异（类目映射、图片先传、属性必填）收敛在 adapter 内
 - `SourcingInquiry`（询货）：反向链路，下游商品 → 货源侧以图搜款/关键词搜/售前询盘 → 供应商候选评分，详见 research-sourcing-inquiry.md
 - `CollectedOffer` → `Product`：采集载荷→入库草稿（已实现）
