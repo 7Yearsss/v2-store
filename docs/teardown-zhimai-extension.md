@@ -47,4 +47,4 @@ content_scripts:
 
 - 它没有任何官方 API 调用迹象——纯页面层采集（印证我们的判断：1688 企业 API 门槛高，大家都走 session 采集）
 - 未见合规授权货源白名单
-- AI 处理应在他们服务端（插件只做采集+UI，数据形态 fields=productName/imageUrls/specifications）
+- AI 处理应在他们服务端（插件只做采集+UI；商品字段形态为 productName/imageUrls/specifications）
