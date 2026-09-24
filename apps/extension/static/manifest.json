@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Caiji Collector",
+  "name": "V2Store Collector",
   "version": "0.1.0",
-  "description": "采集 1688 商品到 Caiji 工作台",
+  "description": "采集 1688 商品到 V2Store 工作台",
   "permissions": ["storage"],
   "host_permissions": [
     "http://localhost:3000/*",
@@ -11,8 +11,19 @@
   ],
   "content_scripts": [
     {
+      "matches": ["*://*.1688.com/*", "*://1688.com/*"],
+      "js": ["collect1688-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
       "matches": ["*://*.1688.com/offer/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "js": ["site-bridge.js"],
       "run_at": "document_idle"
     }
   ],
@@ -20,6 +31,6 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Caiji Collector"
+    "default_title": "V2Store Collector"
   }
 }

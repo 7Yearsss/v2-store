@@ -1,5 +1,6 @@
 import type { Product } from "@caiji/shared";
 import { useEffect, useState } from "react";
+import { pingExtension } from "./extensionBridge";
 
 const S: Record<string, React.CSSProperties> = {
   page: { fontFamily: "system-ui", maxWidth: 960, margin: "0 auto", padding: 24 },
@@ -22,9 +23,11 @@ const S: Record<string, React.CSSProperties> = {
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sel, setSel] = useState<Product | null>(null);
+  const [ext, setExt] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch("/api/products").then((r) => r.json()).then(setProducts).catch(() => {});
+    pingExtension().then(setExt);
   }, []);
 
   if (sel) {
@@ -53,7 +56,14 @@ export default function App() {
   return (
     <div style={S.page}>
       <h1>商品库</h1>
-      <p style={S.muted}>浏览器插件采集的商品会出现在这里。共 {products.length} 条。</p>
+      <p style={S.muted}>
+        浏览器插件采集的商品会出现在这里。共 {products.length} 条。
+        {ext !== null && (
+          <span style={{ ...S.badge, marginLeft: 8, background: ext ? "#dcfce7" : "#fee2e2", color: ext ? "#15803d" : "#b91c1c" }}>
+            {ext ? "插件已连接" : "插件未连接"}
+          </span>
+        )}
+      </p>
       {products.map((p) => (
         <div key={p.id} style={S.row} onClick={() => setSel(p)}>
           {p.images[0] && <img src={p.images[0]} style={S.thumb} />}

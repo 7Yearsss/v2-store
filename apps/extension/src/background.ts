@@ -1,13 +1,58 @@
+import { findInitData, normalizeOffer } from "./lib/offer1688";
+
 const API_BASE = "http://localhost:3000";
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== "COLLECT") return;
-  fetch(`${API_BASE}/api/collect`, {
+interface ProxyFetchReq {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+async function proxyFetch(req: ProxyFetchReq) {
+  try {
+    const resp = await fetch(req.url, {
+      method: req.method || "GET",
+      headers: req.headers,
+      body: req.body,
+      credentials: "include",
+    });
+    const body = await resp.text();
+    return { ok: resp.ok, status: resp.status, body };
+  } catch (e) {
+    return { ok: false, status: 0, body: String(e instanceof Error ? e.message : e) };
+  }
+}
+
+/** Collect an offer by id: fetch detail HTML in-session, parse, push to server. */
+async function collectByOfferId(offerId: string) {
+  const url = `https://detail.1688.com/offer/${offerId}.html`;
+  const resp = await fetch(url, { credentials: "include" });
+  if (!resp.ok) throw new Error(`拉取详情失败 HTTP ${resp.status}`);
+  const data = findInitData(await resp.text());
+  if (!data) throw new Error("未解析到 __INIT_DATA");
+  const offer = normalizeOffer(data, offerId, url);
+  const push = await fetch(`${API_BASE}/api/collect`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(msg.payload),
-  })
-    .then(async (r) => sendResponse({ ok: r.ok, data: await r.json() }))
-    .catch((e) => sendResponse({ ok: false, error: String(e) }));
-  return true; // async sendResponse
+    body: JSON.stringify(offer),
+  });
+  return { offer, pushed: push.ok };
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "PROXY_FETCH") {
+    proxyFetch(msg.data).then(sendResponse);
+    return true;
+  }
+  if (msg?.type === "COLLECT_BY_OFFER_ID") {
+    collectByOfferId(String(msg.offerId ?? ""))
+      .then((r) => sendResponse({ ok: true, data: r }))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
+    return true;
+  }
+  if (msg?.type === "SITE_PING") {
+    sendResponse({ ok: true, data: { name: "v2-store", version: "0.1.0" } });
+    return true;
+  }
 });
