@@ -15,6 +15,7 @@ await build({
     background: "src/background.ts",
     "collect1688-main": "src/main-world/1688.ts",
     "site-bridge": "src/site-bridge.ts",
+    search: "src/search.ts",
   },
 });
 cpSync("static", "dist", { recursive: true });

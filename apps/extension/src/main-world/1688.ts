@@ -16,11 +16,13 @@ declare const window: any;
 declare const document: any;
 
 const CACHE_KEY = "__V2_1688_SHOP_CACHE__";
+const DETAIL_CACHE_KEY = "__V2_1688_DETAIL_CACHE__";
 const SNIFF_API = "mtop.alibaba.alisite.cbu.server.moduleasyncservice";
 
 if (!window.__v2_1688_collect_main_ready) {
   window.__v2_1688_collect_main_ready = true;
   window[CACHE_KEY] = { offerList: [], fetchedAt: 0 };
+  window[DETAIL_CACHE_KEY] = {};
 
   function cacheOfferList(list: any[] | null) {
     if (!Array.isArray(list) || !list.length) return false;
@@ -28,17 +30,39 @@ if (!window.__v2_1688_collect_main_ready) {
     return true;
   }
 
+  /** Detail-page API responses (mtop detail services) carry the same
+   *  offerBaseInfo/skuModel payload as __INIT_DATA — cache normalized offers
+   *  keyed by offerId so collection survives pages whose inline data was
+   *  moved behind an API. */
+  function cacheDetailOffer(parsed: any) {
+    try {
+      const offer = normalizeOffer(parsed, undefined, location.href);
+      if (offer?.offerId && offer.title) {
+        window[DETAIL_CACHE_KEY][offer.offerId] = {
+          offer,
+          fetchedAt: Date.now(),
+        };
+      }
+    } catch {
+      /* not an offer payload */
+    }
+  }
+
   function sniffResponse(url: string, text: string) {
+    const looksDetail =
+      text.includes("skuModel") &&
+      (text.includes("offerBaseInfo") || text.includes("tempModel"));
     const isTarget =
       url.toLowerCase().includes(SNIFF_API) ||
       url.toLowerCase().includes("moduleasyncservice") ||
-      (url.toLowerCase().includes("mtop.alibaba.alisite") &&
-        url.toLowerCase().includes("offer"));
-    if (!isTarget && !(text.includes("offerList") && text.includes("offerImages"))) {
+      (url.toLowerCase().includes("mtop") && url.toLowerCase().includes("offer"));
+    if (!isTarget && !looksDetail &&
+        !(text.includes("offerList") && text.includes("offerImages"))) {
       return;
     }
     const parsed = tryParseJson(text);
     if (parsed) {
+      if (looksDetail) cacheDetailOffer(parsed);
       cacheOfferList(findOfferList(parsed));
       return;
     }
@@ -127,6 +151,51 @@ if (!window.__v2_1688_collect_main_ready) {
     );
   }
 
+  /** Last-resort DOM extraction for offer pages whose __INIT_DATA is absent
+   *  (A/B variants, mobile pages). Best-effort: title/images/price only. */
+  function domFallbackOffer(offerId: string | undefined) {
+    const text = (sel: string) =>
+      (document.querySelector(sel)?.textContent ?? "").trim();
+    const meta = (prop: string) =>
+      document.querySelector(`meta[property="${prop}"],meta[name="${prop}"]`)
+        ?.content?.trim() ?? "";
+    const title = text("h1") || meta("og:title") || document.title;
+    const price =
+      text(".price") || text("[class*=price]") || meta("og:product:price") || "";
+    const imgs = new Set<string>();
+    const push = (u?: string) => {
+      if (!u) return;
+      const v = u.trim();
+      if (v.startsWith("http") && !v.includes("logo")) imgs.add(v);
+    };
+    push(meta("og:image"));
+    document
+      .querySelectorAll(
+        ".img-preview img, .detail-gallery img, #desc img, .desc img, [class*=gallery] img, [class*=thumb] img",
+      )
+      .forEach((el: any) => push(el.src || el.getAttribute("data-src")));
+    const attributes: Record<string, string> = {};
+    document
+      .querySelectorAll(".attributes .feature, [class*=attribute] li, [class*=prop]")
+      .forEach((el: any) => {
+        const t = (el.textContent ?? "").trim();
+        const idx = t.indexOf("：") > -1 ? t.indexOf("：") : t.indexOf(":");
+        if (idx > 0) attributes[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
+      });
+    if (!title) return null;
+    return {
+      sourcePlatform: "1688",
+      sourceUrl: location.href,
+      offerId,
+      title,
+      priceText: price || undefined,
+      skus: [],
+      images: [...imgs].slice(0, 20),
+      attributes,
+      collectedAt: new Date().toISOString(),
+    };
+  }
+
   function isListPage(): boolean {
     return (
       /\/page\/offerlist/i.test(location.pathname) ||
@@ -146,8 +215,10 @@ if (!window.__v2_1688_collect_main_ready) {
     if (!resp.ok) throw new Error(`拉取详情失败 HTTP ${resp.status}`);
     const html = await resp.text();
     const data = findInitData(html);
-    if (!data) throw new Error("未解析到 __INIT_DATA");
-    return normalizeOffer(data, id, url);
+    if (data) return normalizeOffer(data, id, url);
+    const cached = window[DETAIL_CACHE_KEY]?.[id]?.offer;
+    if (cached) return cached;
+    throw new Error("未解析到 __INIT_DATA");
   }
 
   document.addEventListener("v2:1688:req", (ev: any) => {
@@ -156,8 +227,16 @@ if (!window.__v2_1688_collect_main_ready) {
     (async () => {
       if (action === "getProductData") {
         const { data, source } = pageData();
-        if (!data) throw new Error("当前页无 __INIT_DATA/context");
-        return { offer: normalizeOffer(data, offerId, location.href), source };
+        if (data) {
+          return { offer: normalizeOffer(data, offerId, location.href), source };
+        }
+        const idFromUrl = location.pathname.match(/offer\/(\d+)/)?.[1];
+        const key = offerId ?? idFromUrl;
+        const cached = key ? window[DETAIL_CACHE_KEY]?.[key]?.offer : undefined;
+        if (cached) return { offer: cached, source: "sniffed-api" };
+        const dom = domFallbackOffer(key);
+        if (dom) return { offer: dom, source: "dom-fallback" };
+        throw new Error("当前页无 __INIT_DATA/context，DOM 兜底也采不到");
       }
       if (action === "collectProductByOfferId") {
         return { offer: await collectByOfferId(offerId) };

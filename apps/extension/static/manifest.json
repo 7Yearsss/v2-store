@@ -3,7 +3,7 @@
   "name": "V2Store Collector",
   "version": "0.1.0",
   "description": "采集 1688 商品到 V2Store 工作台",
-  "permissions": ["storage"],
+  "permissions": ["storage", "contextMenus"],
   "host_permissions": [
     "http://localhost:3000/*",
     "http://127.0.0.1:3000/*",
@@ -19,6 +19,11 @@
     {
       "matches": ["*://*.1688.com/offer/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://s.1688.com/*"],
+      "js": ["search.js"],
       "run_at": "document_idle"
     },
     {

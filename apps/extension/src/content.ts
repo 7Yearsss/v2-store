@@ -4,6 +4,10 @@ import { proxyFetchJson } from "./lib/proxyFetch";
 
 const API = "http://localhost:3000";
 
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "V2_TOAST") toast(String(msg.msg ?? ""), msg.ok !== false);
+});
+
 function toast(msg: string, ok = true) {
   const el = document.createElement("div");
   el.textContent = msg;

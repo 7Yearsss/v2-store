@@ -40,6 +40,29 @@ async function collectByOfferId(offerId: string) {
   return { offer, pushed: push.ok };
 }
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: "v2-collect-offer",
+    title: "采集此 1688 商品",
+    contexts: ["page"],
+    documentUrlPatterns: ["*://*.1688.com/offer/*"],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== "v2-collect-offer" || !tab?.id) return;
+  const offerId = (tab.url ?? "").match(/offer\/(\d+)/)?.[1];
+  if (!offerId) return;
+  const notify = (msg: string, ok = true) =>
+    chrome.tabs
+      .sendMessage(tab.id!, { type: "V2_TOAST", msg, ok })
+      .catch(() => {});
+  collectByOfferId(offerId).then(
+    (r) => notify(`采集成功：${(r.offer.title ?? offerId).slice(0, 50)}`),
+    (e) => notify(`采集失败：${String(e?.message ?? e).slice(0, 60)}`, false),
+  );
+});
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "PROXY_FETCH") {
     proxyFetch(msg.data).then(sendResponse);
