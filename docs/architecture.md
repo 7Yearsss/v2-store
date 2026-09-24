@@ -19,9 +19,12 @@
 
 ## 关键抽象（类型先行，packages/shared）
 
+**多采集源 × 多目标平台是核心约束**，两个轴都做成可插拔：
+
+- `OfferSource`：采集来源矩阵 —— 每个源平台一个实现（1688 / 淘宝 / PDD / Temu / Amazon / Ozon），每个实现内部又是"插件 MAIN-world 页面解析（默认）+ 官方 API（可选增强）"两条采集路径，统一输出 `CollectedOffer`
+- `ChannelAdapter`：刊登通道矩阵 —— 每个目标平台一个实现（Shopify / Shopee / TikTok / WooCommerce / Ozon），统一接口 `prepareListing / prepareMedia / publish / mapOrder`；平台差异（类目映射、图片先传、属性必填）收敛在 adapter 内
+- `SourcingInquiry`（询货）：反向链路，下游商品 → 货源侧以图搜款/关键词搜/售前询盘 → 供应商候选评分，详见 research-sourcing-inquiry.md
 - `CollectedOffer` → `Product`：采集载荷→入库草稿（已实现）
-- `OfferSource`：采集来源抽象。默认实现 = 插件解析 offer 页内嵌 JSON（iDetailData/globalData/skuModel）；可选实现 = `alibaba.product.get`（需企业 appKey，可补 channelPrice 分销价）
-- `ChannelAdapter`：刊登通道抽象，方法 `prepareListing(product)`、`prepareMedia()`、`publish()`、`mapOrder()`。MVP 实现 `shopify`（productSet），之后 `shopee`
 - 状态机：`draft → processed（AI 完成）→ listed → error`
 
 ## 数据模型（下一步落 DB，当前 JSONL）
