@@ -35,6 +35,8 @@ export type ProductStatus = "draft" | "processed" | "listed";
 export interface Product extends CollectedOffer {
   id: string;
   status: ProductStatus;
+  /** 认领到的目标渠道（刊登模型里的"认领"动作）。 */
+  targetChannel?: "shopify" | "shopee" | "tiktok" | "woocommerce";
   aiTitle?: string;
   aiDescription?: string;
   processedAt?: string;
