@@ -12,6 +12,7 @@ import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
 import { sourceItemRoutes } from "./modules/sourceItems.js";
 import { storeRoutes } from "./modules/stores.js";
+import { templateRoutes } from "./modules/templates.js";
 
 export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   const app = new Hono<AppEnv>();
@@ -30,6 +31,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/listings", listingRoutes());
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
+  app.route("/api/templates", templateRoutes());
   app.route("/api/media", mediaRoutes());
   app.route("/api/shopify", shopifyAppRoutes());
 

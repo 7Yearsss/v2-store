@@ -104,7 +104,8 @@ const connectSchema = z.discriminatedUnion("authType", [
   }),
 ]);
 
-const pricingSchema = z.object({
+/** 与刊登模板共用：模板 payload 必须能通过店铺 PATCH 的同一套校验。 */
+export const pricingSchema = z.object({
   exchangeRate: z.number().positive().max(1000),
   markup: z.number().positive().max(100),
   priceEnding: z.number().min(0).max(0.99).nullable(),
@@ -112,7 +113,7 @@ const pricingSchema = z.object({
   minPrice: z.number().min(0).max(1_000_000).nullable().default(null),
 }) satisfies z.ZodType<PricingRule>;
 
-const rulesSchema = z.object({
+export const rulesSchema = z.object({
   titlePrefix: z.string().trim().max(100).optional(),
   titleSuffix: z.string().trim().max(100).optional(),
   replacements: z
