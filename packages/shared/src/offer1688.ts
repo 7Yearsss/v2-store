@@ -267,13 +267,41 @@ function specText(key: string, props: any[]): string {
     .join(" / ");
 }
 
+/** spec key(如 "红色>M") 的首规格值 → skuProps 里对应值的 imageUrl。 */
+function skuImage(key: string, props: any[]): string | undefined {
+  const candidates = String(key)
+    .split(/&gt;|[>;]/)
+    .map((seg) => {
+      const v = seg.split(":");
+      return (v[1] ?? v[0]).trim();
+    })
+    .filter(Boolean);
+  for (const prop of props) {
+    const values = Array.isArray(prop?.value)
+      ? prop.value
+      : Array.isArray(prop?.values)
+        ? prop.values
+        : [];
+    for (const cand of candidates) {
+      const hit = values.find(
+        (v: any) => String(v?.name ?? v?.value ?? v?.specName ?? "").trim() === cand,
+      );
+      const img = hit?.imageUrl ?? hit?.image ?? hit?.imgUrl ?? hit?.picUrl;
+      if (img) return String(img);
+    }
+  }
+  return undefined;
+}
+
 function toSku(key: string, r: any, props: any[]): OfferSku {
   const price = Number(r?.discountPrice || r?.price || r?.salePrice || NaN);
+  const image = skuImage(key, props) ?? skuImage(String(r?.specAttrs ?? ""), props);
   return {
     skuId: String(r?.specId ?? r?.skuId ?? key),
     spec: specText(key, props) || String(key),
     priceCny: Number.isFinite(price) ? price : undefined,
     stock: Number(r?.canBookCount ?? r?.amountOnSale ?? r?.stock ?? NaN) || undefined,
+    image,
   };
 }
 

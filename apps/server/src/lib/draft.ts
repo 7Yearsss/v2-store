@@ -100,6 +100,7 @@ export function buildVariants(
       price: cost ? applyPricing(cost, opts.pricing) : 0,
       costCny: cost,
       stock: s.stock,
+      image: s.image,
     };
   });
 

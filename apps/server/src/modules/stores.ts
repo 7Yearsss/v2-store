@@ -123,6 +123,9 @@ const rulesSchema = z.object({
   priceMaxCny: z.number().min(0).max(10_000_000).nullable().optional(),
   maxImages: z.number().int().min(1).max(20).nullable().optional(),
   bannedWords: z.array(z.string().trim().min(1).max(100)).max(500).optional(),
+  publishStatus: z.enum(["active", "draft"]).optional(),
+  defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
+  defaultProductType: z.string().trim().max(255).optional(),
 }) satisfies z.ZodType<StoreRules>;
 
 const patchSchema = z.object({

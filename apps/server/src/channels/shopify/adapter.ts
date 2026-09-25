@@ -38,6 +38,7 @@ export function toProductSetInput(
   /** status is set only when creating — later syncs must not override what
    *  the merchant chose in Shopify (e.g. switched back to draft) */
   isCreate = !listing.remoteId,
+  opts: { publishStatus?: "active" | "draft" } = {},
 ) {
   const hasOptions = listing.options.length > 0;
   const productOptions = hasOptions
@@ -72,7 +73,16 @@ export function toProductSetInput(
     vendor: listing.vendor || undefined,
     productType: listing.productType || undefined,
     tags: listing.tags,
-    status: isCreate ? "ACTIVE" : undefined,
+    status: isCreate ? (opts.publishStatus === "draft" ? "DRAFT" : "ACTIVE") : undefined,
+    seo: {
+      title: listing.title.slice(0, 70),
+      description:
+        listing.descriptionHtml
+          .replace(/<[^>]*>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 320) || listing.title.slice(0, 160),
+    },
     category: listing.channelCategoryId || undefined,
     productOptions,
     variants,
@@ -93,6 +103,63 @@ export function validateForShopify(listing: ListingRow): string | null {
   return null;
 }
 
+const PRODUCT_BIND_DATA = /* GraphQL */ `
+  query BindData($id: ID!) {
+    product(id: $id) {
+      media(first: 250) { nodes { id } }
+      variants(first: 250) { nodes { id } }
+    }
+  }
+`;
+
+const VARIANTS_BIND = /* GraphQL */ `
+  mutation BindVariantMedia($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+      productVariants { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+/** 变体图绑定：规格图已随 files 进 product media，按文件顺序取 mediaId 写回变体。
+ *  绑定失败不阻塞发布——商品本体已建好，退化为只有主图。 */
+async function bindVariantImages(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+  listing: ListingRow,
+  allImages: string[],
+): Promise<string | null> {
+  const hasOptions = listing.options.length > 0;
+  const sent = hasOptions ? listing.variants : listing.variants.slice(0, 1);
+  const wanted = sent
+    .map((v, i) => ({ i, fileIndex: v.image ? allImages.indexOf(v.image) : -1 }))
+    .filter((w) => w.fileIndex >= 0);
+  if (!wanted.length) return null;
+  try {
+    const data = await shopifyGraphql<{
+      product: {
+        media: { nodes: Array<{ id: string }> };
+        variants: { nodes: Array<{ id: string }> };
+      } | null;
+    }>(deps, store, PRODUCT_BIND_DATA, { id: productId });
+    const mediaNodes = data.product?.media.nodes ?? [];
+    const variantNodes = data.product?.variants.nodes ?? [];
+    const inputs = wanted
+      .map((w) => ({ id: variantNodes[w.i]?.id, mediaId: mediaNodes[w.fileIndex]?.id }))
+      .filter((x): x is { id: string; mediaId: string } => !!x.id && !!x.mediaId);
+    if (!inputs.length) return `${wanted.length} 个变体图未能绑定（媒体/变体未就绪）`;
+    const res = await shopifyGraphql<{
+      productVariantsBulkUpdate: { userErrors: Array<{ message: string }> };
+    }>(deps, store, VARIANTS_BIND, { productId, variants: inputs });
+    const errs = res.productVariantsBulkUpdate.userErrors;
+    if (errs.length) return `变体图绑定失败：${errs.map((e) => e.message).join("；")}`;
+    return null;
+  } catch (e) {
+    return `变体图绑定失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 export const shopifyAdapter: ChannelAdapter = {
   async verify(deps: Deps, store: StoreRow): Promise<ShopInfo> {
     const data = await shopifyGraphql<{
@@ -108,14 +175,22 @@ export const shopifyAdapter: ChannelAdapter = {
   async publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult> {
     const invalid = validateForShopify(listing);
     if (invalid) throw new ChannelError(invalid);
-    const media = await prepareShopifyMedia(deps, store, listing.workspaceId, listing.images);
+    // 图片全集 = 主图 + 变体规格图（去重）；变体图也进 product media 再做变体绑定
+    const allImages = [...listing.images];
+    for (const v of listing.variants) {
+      if (v.image && !allImages.includes(v.image)) allImages.push(v.image);
+    }
+    const media = await prepareShopifyMedia(deps, store, listing.workspaceId, allImages);
+    const publishStatus = store.rules?.publishStatus ?? "active";
     const data = await shopifyGraphql<{
       productSet: {
         product: { id: string; handle: string; onlineStoreUrl: string | null } | null;
         userErrors: Array<{ field?: string[]; message: string }>;
       };
     }>(deps, store, PRODUCT_SET, {
-      input: toProductSetInput(listing, store.pricing.exchangeRate, media.sources),
+      input: toProductSetInput(listing, store.pricing.exchangeRate, media.sources, !listing.remoteId, {
+        publishStatus,
+      }),
       identifier: listing.remoteId ? { id: listing.remoteId } : undefined,
     });
     const { product, userErrors } = data.productSet;
@@ -127,17 +202,19 @@ export const shopifyAdapter: ChannelAdapter = {
       );
     }
     if (!product) throw new ChannelError("Shopify 未返回商品", false);
-    const numericId = product.id.split("/").pop();
     const warnings = await checkShopifyMedia(deps, store, product.id);
-    if (!listing.remoteId) {
+    const bindWarning = await bindVariantImages(deps, store, product.id, listing, allImages);
+    if (bindWarning) warnings.push(bindWarning);
+    if (!listing.remoteId && publishStatus !== "draft") {
       const channelWarning = await publishToOnlineStore(deps, store, product.id);
       if (channelWarning) warnings.push(channelWarning);
     }
     if (media.fallbacks) warnings.unshift(`${media.fallbacks} 张图片未能转存，使用了货源原图链接`);
+    const numericId = product.id.split("/").pop();
     return {
       remoteId: product.id,
       remoteUrl: `https://${store.shopDomain}/admin/products/${numericId}`,
-      remoteStatus: listing.remoteId ? undefined : "ACTIVE",
+      remoteStatus: listing.remoteId ? undefined : publishStatus === "draft" ? "DRAFT" : "ACTIVE",
       warnings,
     };
   },

@@ -12,6 +12,8 @@ export interface OfferSku {
   spec: string;
   priceCny?: number;
   stock?: number;
+  /** SKU 规格图（1688 skuProps 的首规格值图片，如颜色图）。 */
+  image?: string;
 }
 
 /** Normalized source-side offer — output of every OfferSource parser. */
@@ -131,6 +133,12 @@ export interface StoreRules {
   maxImages?: number | null;
   /** 发布门禁：标题/描述/标签/选项命中任一词则拦截发布。 */
   bannedWords?: string[];
+  /** 发布到店铺后的初始状态；默认上架。 */
+  publishStatus?: "active" | "draft";
+  /** 认领时默认标签。 */
+  defaultTags?: string[];
+  /** 认领时默认商品类型（AI 建议仍可覆盖）。 */
+  defaultProductType?: string;
 }
 
 export interface Store {
@@ -167,6 +175,8 @@ export interface ListingVariant {
   compareAtPrice?: number;
   costCny?: number;
   stock?: number;
+  /** 变体图（发布时绑定为 Shopify variant 的图片）。 */
+  image?: string;
 }
 
 export type ListingStatus = "draft" | "publishing" | "published" | "failed";

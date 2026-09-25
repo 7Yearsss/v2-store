@@ -174,6 +174,105 @@ describe("claim → publish", () => {
     expect(res.body.lastError).toBe("input.title: is too long");
   });
 
+  it("草稿发布 + SEO + 默认项 + 变体图绑定", async () => {
+    ctx = await setup(fakeShopify());
+    const t = await ctx.register();
+    const store = (
+      await ctx.api(
+        "POST",
+        "/api/stores/shopify",
+        { authType: "access_token", shopDomain: "demo", accessToken: "shpat_abcdefghij" },
+        t,
+      )
+    ).body;
+    await ctx.api(
+      "PATCH",
+      `/api/stores/${store.id}`,
+      {
+        rules: {
+          publishStatus: "draft",
+          defaultTags: ["dropship"],
+          defaultProductType: "Cups",
+        },
+      },
+      t,
+    );
+    const item = await ctx.api(
+      "POST",
+      "/api/collect",
+      {
+        sourceInfo: {
+          itemUrl: "https://detail.1688.com/offer/ov1.html",
+          itemId: "ov1",
+          source: "1688",
+        },
+        productExtInfo: {
+          offer: {
+            sourcePlatform: "1688",
+            sourceUrl: "https://detail.1688.com/offer/ov1.html",
+            offerId: "ov1",
+            title: "保温杯",
+            priceText: "¥10",
+            skus: [
+              {
+                spec: "颜色:红色 / 容量:500ml",
+                priceCny: 10,
+                stock: 5,
+                image: "https://cbu01.alicdn.com/red.jpg",
+              },
+            ],
+            images: ["https://cbu01.alicdn.com/a.jpg"],
+            attributes: {},
+            collectedAt: new Date().toISOString(),
+          },
+        },
+      },
+      t,
+    );
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    const list = await ctx.api("GET", "/api/listings", undefined, t);
+    const listing = list.body.items[0];
+    // 刊登默认项在认领时生效
+    expect(listing.tags).toEqual(["dropship"]);
+    expect(listing.productType).toBe("Cups");
+    expect(listing.variants[0].image).toBe("https://cbu01.alicdn.com/red.jpg");
+
+    await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
+    const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(done.body.status).toBe("published");
+    expect(done.body.remoteStatus).toBe("DRAFT");
+
+    const setCall = ctx.calls.find((c) => String(c.body?.query ?? "").includes("productSet"));
+    const input = setCall!.body.variables.input;
+    expect(input.status).toBe("DRAFT");
+    expect(input.seo.title).toBe("保温杯");
+    expect(input.seo.description).toContain("保温杯");
+    // files = 主图 + 变体图
+    expect(input.files).toHaveLength(2);
+    expect(input.files[1].originalSource).toBe("https://cbu01.alicdn.com/red.jpg");
+
+    // 变体图绑定：productSet → BindData 拿 media/variant id → productVariantsBulkUpdate
+    const bind = ctx.calls.find((c) =>
+      String(c.body?.query ?? "").includes("productVariantsBulkUpdate"),
+    );
+    expect(bind).toBeTruthy();
+    expect(bind!.body.variables.variants).toEqual([
+      { id: "gid://shopify/ProductVariant/v0", mediaId: "gid://shopify/Media/m1" },
+    ]);
+    // 草稿态不发 publishablePublish
+    expect(
+      ctx.calls.some((c) => String(c.body?.query ?? "").includes("publishablePublish")),
+    ).toBe(false);
+  });
+
   it("rejects zero-priced variants before calling Shopify", async () => {
     ctx = await setup(fakeShopify());
     const t = await ctx.register();

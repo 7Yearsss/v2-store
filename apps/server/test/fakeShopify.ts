@@ -15,6 +15,8 @@ export function fakeShopify(
     taxonomy?: Record<string, Array<{ id: string; name: string; fullName: string }>>;
   } = {},
 ): FakeFetch {
+  let filesCount = 0;
+  let variantsCount = 0;
   return (url, init) => {
     const img = opts.sourceImages?.[url];
     if (img) return new Response(img as Uint8Array<ArrayBuffer>, { status: 200 });
@@ -118,7 +120,32 @@ export function fakeShopify(
           data: { shop: { name: "Demo", currencyCode: "USD", myshopifyDomain: "demo.myshopify.com" } },
         });
       }
+      if (query.includes("BindData")) {
+        return json({
+          data: {
+            product: {
+              media: {
+                nodes: Array.from({ length: filesCount }, (_, i) => ({
+                  id: `gid://shopify/Media/m${i}`,
+                })),
+              },
+              variants: {
+                nodes: Array.from({ length: variantsCount }, (_, i) => ({
+                  id: `gid://shopify/ProductVariant/v${i}`,
+                })),
+              },
+            },
+          },
+        });
+      }
+      if (query.includes("productVariantsBulkUpdate")) {
+        return json({
+          data: { productVariantsBulkUpdate: { productVariants: [], userErrors: [] } },
+        });
+      }
       if (query.includes("productSet")) {
+        filesCount = variables.input?.files?.length ?? 0;
+        variantsCount = variables.input?.variants?.length ?? 0;
         return json({
           data: {
             productSet: opts.productSetErrors?.length
