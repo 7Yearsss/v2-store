@@ -7,6 +7,7 @@ import type { AppEnv } from "../context.js";
 import { listingTemplates } from "../db/schema.js";
 import { notFound } from "../lib/errors.js";
 import { requireAuth } from "./auth.js";
+import { pricingSchema, rulesSchema } from "./stores.js";
 
 function toDto(r: typeof listingTemplates.$inferSelect): ListingTemplate {
   return {
@@ -17,18 +18,13 @@ function toDto(r: typeof listingTemplates.$inferSelect): ListingTemplate {
   };
 }
 
+/** 与店铺 PATCH 同一套校验：存下来的模板必须能直接套用。 */
 const payloadSchema = z.object({
-  pricing: z.object({
-    exchangeRate: z.number().positive(),
-    markup: z.number().positive(),
-    priceEnding: z.number().min(0).max(0.99).nullable().optional(),
-    extraCostCny: z.number().min(0).optional(),
-    minPrice: z.number().min(0).nullable().optional(),
-  }),
-  vendor: z.string().max(255).default(""),
+  pricing: pricingSchema,
+  vendor: z.string().trim().max(255).default(""),
   aiEnhance: z.boolean().default(true),
   language: z.string().trim().min(2).max(32).default("en"),
-  rules: z.record(z.string(), z.unknown()).default({}),
+  rules: rulesSchema.default({}),
 });
 
 const createSchema = z.object({

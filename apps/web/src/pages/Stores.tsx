@@ -225,6 +225,8 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
     onError: (e) => message.error(e.message),
   });
   const [tplId, setTplId] = useState<string>();
+  // 切换店铺/关闭重开时清空选中，避免显示的模板与表单内容不符
+  useEffect(() => setTplId(undefined), [store]);
   const tplQ = useQuery({ queryKey: ["templates"], queryFn: api.templates });
   const saveTpl = useMutation({
     mutationFn: api.saveTemplate,
