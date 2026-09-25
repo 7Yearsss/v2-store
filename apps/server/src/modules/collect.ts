@@ -6,9 +6,9 @@ import type { CollectedOffer, CollectHarvest } from "@caiji/shared";
 import { findInitData, normalizeOffer } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
-import { sourceItems } from "../db/schema.js";
+import { listings, sourceItems } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
-import { FETCH_MISSING_MEDIA } from "../jobs/handlers.js";
+import { FETCH_MISSING_MEDIA, PUBLISH_LISTING } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { toSourceItemDto } from "./sourceItems.js";
@@ -110,6 +110,51 @@ export async function ingestOffer(
   return { item: row!, duplicated: false };
 }
 
+/** 重复采集 = 货源刷新：把最新 SKU 库存/成本同步到该条目的所有刊登，
+ *  已发布的自动排队重发让远端跟上。价格不覆盖（商家可能改过售价）。 */
+async function propagateToListings(
+  db: Db,
+  workspaceId: string,
+  sourceItemId: string,
+  skus: CollectedOffer["skus"],
+) {
+  if (!skus.length) return { updated: 0, republished: 0 };
+  const rows = await db
+    .select()
+    .from(listings)
+    .where(and(eq(listings.workspaceId, workspaceId), eq(listings.sourceItemId, sourceItemId)));
+  let updated = 0;
+  let republished = 0;
+  for (const l of rows) {
+    let changed = false;
+    const variants = l.variants.map((v, i) => {
+      const sku =
+        (v.sourceSkuId ? skus.find((s) => s.skuId === v.sourceSkuId) : undefined) ??
+        skus[i];
+      if (!sku) return v;
+      const next = { ...v, stock: sku.stock, costCny: sku.priceCny };
+      if (next.stock !== v.stock || next.costCny !== v.costCny) changed = true;
+      return next;
+    });
+    if (!changed) continue;
+    updated++;
+    const republish = l.status === "published" && !!l.remoteId;
+    await db
+      .update(listings)
+      .set({
+        variants,
+        updatedAt: new Date(),
+        ...(republish ? { status: "publishing" as const, lastError: null } : {}),
+      })
+      .where(eq(listings.id, l.id));
+    if (republish) {
+      republished++;
+      await enqueue(db, PUBLISH_LISTING, { listingId: l.id }, { workspaceId });
+    }
+  }
+  return { updated, republished };
+}
+
 const harvestSchema = z.object({
   sourceInfo: z.object({
     itemUrl: z.string().url(),
@@ -142,6 +187,9 @@ export function collectRoutes() {
       throw new HttpError(422, "页面未解析出商品数据", "rowDataInvalid");
     }
     const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer);
+    const propagation = duplicated
+      ? await propagateToListings(db, workspaceId, item.id, offer.skus)
+      : { updated: 0, republished: 0 };
     // the extension uploads images right after this; the server fills gaps later
     if (item.images.length || item.descImages.length) {
       await enqueue(
@@ -152,7 +200,7 @@ export function collectRoutes() {
       );
     }
     return c.json(
-      { ok: true, item: toSourceItemDto(item, []), duplicated },
+      { ok: true, item: toSourceItemDto(item, []), duplicated, ...propagation },
       duplicated ? 200 : 201,
     );
   });
