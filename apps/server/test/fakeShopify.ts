@@ -20,10 +20,21 @@ export function fakeShopify(
       name: string;
       values?: { nodes: Array<{ id: string; name: string }> };
     }>;
+    /** records metafieldsSet inputs so tests can assert attribute writes */
+    capturedMetafields?: Array<{
+      ownerId: string;
+      namespace: string;
+      key: string;
+      type: string;
+      value: string;
+    }>;
+    /** taxonomy_reference gid → pre-existing metaobject gid (skip minting) */
+    metaobjectsByTaxref?: Record<string, string>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
   let variantsCount = 0;
+  let metaobjectCount = 0;
   return (url, init) => {
     const img = opts.sourceImages?.[url];
     if (img) return new Response(img as Uint8Array<ArrayBuffer>, { status: 200 });
@@ -231,6 +242,52 @@ export function fakeShopify(
         return json({
           data: { productVariantsBulkUpdate: { productVariants: [], userErrors: [] } },
         });
+      }
+      if (query.includes("StdTemplates")) {
+        return json({
+          data: {
+            standardMetafieldDefinitionTemplates: {
+              nodes: [
+                {
+                  id: "gid://shopify/StandardMetafieldDefinitionTemplate/material",
+                  name: "Material",
+                  namespace: "shopify",
+                  key: "material",
+                  type: { name: "list.metaobject_reference" },
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (query.includes("EnableStdDef")) {
+        return json({
+          data: {
+            standardMetafieldDefinitionEnable: {
+              createdDefinition: { id: "gid://shopify/MetafieldDefinition/md1" },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes("MetaobjectByTaxref")) {
+        const taxGid = String(variables.query.match(/taxonomy_reference:\"([^"]+)/)?.[1] ?? "");
+        const mo = opts.metaobjectsByTaxref?.[taxGid];
+        return json({ data: { metaobjects: { nodes: mo ? [{ id: mo }] : [] } } });
+      }
+      if (query.includes("MetaobjectMint")) {
+        return json({
+          data: {
+            metaobjectCreate: {
+              metaobject: { id: `gid://shopify/Metaobject/mo${++metaobjectCount}` },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes("AttrMetafields")) {
+        opts.capturedMetafields?.push(...variables.metafields);
+        return json({ data: { metafieldsSet: { metafields: [], userErrors: [] } } });
       }
       if (query.includes("productSet")) {
         filesCount = variables.input?.files?.length ?? 0;

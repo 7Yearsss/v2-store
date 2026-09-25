@@ -247,6 +247,7 @@ export function sourceItemRoutes() {
             channelAttributes: applyAttrMappings(
               attrMaps.get(store.platform) ?? new Map(),
               item.attributes,
+              term,
             ),
           },
         ];

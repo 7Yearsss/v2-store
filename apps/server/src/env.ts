@@ -28,7 +28,7 @@ const schema = z.object({
   SHOPIFY_API_SECRET: z.string().optional(),
   SHOPIFY_SCOPES: z
     .string()
-    .default("write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files"),
+    .default("write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files,read_metaobjects,write_metaobjects"),
   SHOPIFY_API_VERSION: z.string().default("2026-07"),
   /** Run the job worker inside the API process. */
   /** How often channel-side product status is pulled back. */

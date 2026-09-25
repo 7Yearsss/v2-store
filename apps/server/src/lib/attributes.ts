@@ -32,10 +32,12 @@ export async function loadAttrMappings(
   );
 }
 
-/** Apply confirmed mappings onto 1688 source attributes (name-exact). */
+/** Apply confirmed mappings onto 1688 source attributes (name-exact).
+ *  `translate` 用于把值翻成刊登语言（术语映射）——写回平台时需要候选值原文。 */
 export function applyAttrMappings(
   map: Map<string, AttrMapTarget>,
   attrs: Record<string, string>,
+  translate: (s: string) => string = (s) => s,
 ): ListingChannelAttribute[] {
   const out: ListingChannelAttribute[] = [];
   const seen = new Set<string>();
@@ -43,7 +45,11 @@ export function applyAttrMappings(
     const m = map.get(name);
     if (!m || seen.has(m.attrId)) continue;
     seen.add(m.attrId);
-    out.push({ attrId: m.attrId, name: m.attrName, value: String(value).slice(0, 500) });
+    out.push({
+      attrId: m.attrId,
+      name: m.attrName,
+      value: translate(String(value)).slice(0, 500),
+    });
   }
   return out;
 }

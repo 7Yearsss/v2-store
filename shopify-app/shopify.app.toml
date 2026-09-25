@@ -19,7 +19,7 @@ api_version = "2026-07"
 
 [access_scopes]
 # Keep in sync with SHOPIFY_SCOPES in apps/server/src/env.ts
-scopes = "write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files"
+scopes = "write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files,read_metaobjects,write_metaobjects"
 
 [auth]
 redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
