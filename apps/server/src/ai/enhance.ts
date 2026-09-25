@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { ListingOption, OptionsSuggestionValue } from "@caiji/shared";
 import type { Deps } from "../context.js";
-import { listingSuggestions, listings, sourceItems, stores } from "../db/schema.js";
+import { aiUsage, listingSuggestions, listings, sourceItems, stores } from "../db/schema.js";
 import { PermanentJobError } from "../jobs/queue.js";
 import { chatJson } from "../lib/ai.js";
 
@@ -105,16 +105,39 @@ export async function runAiEnhance(deps: Deps, listingId: string) {
   const { listing, store, item } = row;
   if (store.aiEnhance === "off" || !deps.config.ai) return;
 
-  const out = (await chatJson(deps, {
-    system: SYSTEM_PROMPT,
-    user: buildUserPrompt({
-      title: listing.title,
-      attributes: item.attributes,
-      priceText: item.priceText,
-      options: listing.options,
-      targetLang: store.language,
-    }),
-  })) as EnhanceOutput;
+  let out: EnhanceOutput;
+  try {
+    const res = await chatJson(deps, {
+      system: SYSTEM_PROMPT,
+      user: buildUserPrompt({
+        title: listing.title,
+        attributes: item.attributes,
+        priceText: item.priceText,
+        options: listing.options,
+        targetLang: store.language,
+      }),
+    });
+    out = res.data as EnhanceOutput;
+    await deps.db.insert(aiUsage).values({
+      workspaceId: listing.workspaceId,
+      listingId,
+      model: deps.config.ai.model,
+      ...res.usage,
+      status: "ok",
+    });
+  } catch (e) {
+    await deps.db
+      .insert(aiUsage)
+      .values({
+        workspaceId: listing.workspaceId,
+        listingId,
+        model: deps.config.ai.model,
+        status: "error",
+        error: e instanceof Error ? e.message.slice(0, 500) : String(e),
+      })
+      .catch(() => {});
+    throw e;
+  }
 
   const proposals: Array<{ field: string; value: unknown }> = [];
   if (typeof out.title === "string" && out.title.trim() && out.title.trim() !== listing.title) {

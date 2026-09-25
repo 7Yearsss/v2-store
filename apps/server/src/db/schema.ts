@@ -4,6 +4,7 @@ import type {
   OfferSku,
   PricingRule,
   RemoteStatus,
+  StoreRules,
 } from "@caiji/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -182,6 +183,8 @@ export const stores = pgTable(
       .default("on"),
     /** target language for AI-rewritten listing content. */
     language: text("language").notNull().default("en"),
+    /** 采集预处理 + 发布前检查规则。 */
+    rules: jsonb("rules").$type<StoreRules>().notNull().default({}),
     lastError: text("last_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -263,6 +266,31 @@ export const listingSuggestions = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("listing_suggestions_listing_status_idx").on(t.listingId, t.status)],
+);
+
+/** AI 用量计量：每次 LLM 调用一行，为按 workspace 计费做准备。 */
+export const aiUsage = pgTable(
+  "ai_usage",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    listingId: uuid("listing_id").references(() => listings.id, {
+      onDelete: "set null",
+    }),
+    model: text("model").notNull(),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    status: text("status", { enum: ["ok", "error"] }).notNull().default("ok"),
+    error: text("error"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("ai_usage_ws_created_idx").on(t.workspaceId, t.createdAt),
+    index("ai_usage_listing_idx").on(t.listingId),
+  ],
 );
 
 // --- jobs -------------------------------------------------------------------

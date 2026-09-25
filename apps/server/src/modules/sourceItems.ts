@@ -7,6 +7,12 @@ import type { AppEnv } from "../context.js";
 import { listings, sourceItems, stores } from "../db/schema.js";
 import { attributesToHtml, buildVariants } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import {
+  applyAttrRules,
+  applyImageLimit,
+  applyTitleRules,
+  filterSkusByPrice,
+} from "../lib/rules.js";
 import { enqueueAiEnhance } from "../jobs/handlers.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
@@ -141,31 +147,39 @@ export function sourceItemRoutes() {
     if (!items.length) throw new HttpError(400, "没有可认领的商品");
 
     const values = targetStores.flatMap((store) =>
-      items.map((item) => {
-        const { options, variants } = buildVariants(item.skus, {
+      items.flatMap((item) => {
+        const rules = store.rules ?? {};
+        // 采集预处理：价格区间过滤 SKU；全部被滤掉则不建这条刊登。
+        const skus = filterSkusByPrice(item.skus, rules, item.priceText);
+        if (item.skus.length && !skus.length) return [];
+        const { options, variants } = buildVariants(skus, {
           skuPrefix: item.sourceItemId ?? item.id.slice(0, 8),
           priceText: item.priceText,
           pricing: store.pricing,
         });
-        return {
-          workspaceId,
-          storeId: store.id,
-          sourceItemId: item.id,
-          title: item.title,
-          descriptionHtml: attributesToHtml(item.attributes),
-          images: item.images.slice(0, 20),
-          options,
-          variants,
-          // never expose the supplier as the brand
-          vendor: store.vendor,
-        };
+        return [
+          {
+            workspaceId,
+            storeId: store.id,
+            sourceItemId: item.id,
+            title: applyTitleRules(item.title, rules),
+            descriptionHtml: attributesToHtml(applyAttrRules(item.attributes, rules)),
+            images: applyImageLimit(item.images, rules),
+            options,
+            variants,
+            // never expose the supplier as the brand
+            vendor: store.vendor,
+          },
+        ];
       }),
     );
-    const created = await db
-      .insert(listings)
-      .values(values)
-      .onConflictDoNothing({ target: [listings.storeId, listings.sourceItemId] })
-      .returning({ id: listings.id, storeId: listings.storeId });
+    const created = values.length
+      ? await db
+          .insert(listings)
+          .values(values)
+          .onConflictDoNothing({ target: [listings.storeId, listings.sourceItemId] })
+          .returning({ id: listings.id, storeId: listings.storeId })
+      : [];
     // 认领即入 AI 产线（店铺设置可关、服务端需配 AI）；建议出现在刊登编辑页，接受前不改草稿。
     if (c.var.deps.config.ai) {
       const aiStoreIds = new Set(
@@ -178,7 +192,8 @@ export function sourceItemRoutes() {
     }
     return c.json({
       created: created.length,
-      skipped: values.length - created.length,
+      // 应建数（item×store 全组合）- 实建数：含已认领冲突与规则过滤掉的。
+      skipped: targetStores.length * items.length - created.length,
     });
   });
 

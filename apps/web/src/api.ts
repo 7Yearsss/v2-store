@@ -7,6 +7,7 @@ import type {
   PricingRule,
   SourceItem,
   Store,
+  StoreRules,
 } from "@caiji/shared";
 
 export class ApiError extends Error {
@@ -71,7 +72,14 @@ export const api = {
     request<{ url: string }>("GET", `/shopify/install${qs({ shop })}`),
   updateStore: (
     id: string,
-    body: { name?: string; pricing?: PricingRule; vendor?: string; aiEnhance?: boolean; language?: string },
+    body: {
+      name?: string;
+      pricing?: PricingRule;
+      vendor?: string;
+      aiEnhance?: boolean;
+      language?: string;
+      rules?: StoreRules;
+    },
   ) => request<Store>("PATCH", `/stores/${id}`, body),
   verifyStore: (id: string) => request<Store>("POST", `/stores/${id}/verify`, {}),
   deleteStore: (id: string) => request("DELETE", `/stores/${id}`),
@@ -82,7 +90,12 @@ export const api = {
   listingCounts: () => request<Partial<Record<ListingStatus, number>>>("GET", "/listings/counts"),
   listing: (id: string) => request<Listing>("GET", `/listings/${id}`),
   updateListing: (id: string, body: Partial<Listing>) => request<Listing>("PATCH", `/listings/${id}`, body),
-  publish: (ids: string[]) => request<{ queued: number; skipped: number }>("POST", "/listings/publish", { ids }),
+  publish: (ids: string[]) =>
+    request<{ queued: number; skipped: number; blocked: Array<{ id: string; title: string; words: string[] }> }>(
+      "POST",
+      "/listings/publish",
+      { ids },
+    ),
   deleteListings: (ids: string[]) => request<{ deleted: number }>("POST", "/listings/delete", { ids }),
   listingSuggestions: (id: string) =>
     request<{ items: ListingSuggestion[]; pending: boolean }>(

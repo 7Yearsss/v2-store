@@ -71,7 +71,10 @@ export function ListingsPage() {
   const publish = useMutation({
     mutationFn: (ids: string[]) => api.publish(ids),
     onSuccess: (r) => {
-      message.success(`已提交发布 ${r.queued} 条`);
+      if (r.queued) message.success(`已提交发布 ${r.queued} 条`);
+      for (const b of r.blocked ?? []) {
+        message.warning(`「${b.title.slice(0, 30)}」被发布前检查拦截：含禁售词 ${b.words.join("、")}`, 8);
+      }
       setSelected([]);
       invalidate();
     },

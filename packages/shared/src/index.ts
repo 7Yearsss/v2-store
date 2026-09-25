@@ -107,6 +107,27 @@ export interface PricingRule {
   minPrice?: number | null;
 }
 
+export interface ReplaceRule {
+  from: string;
+  to: string;
+}
+
+/** 采集预处理 + 发布前检查规则（店铺级，认领/发布时应用）。 */
+export interface StoreRules {
+  /** 认领时加到标题前/后（空格自动补）。 */
+  titlePrefix?: string;
+  titleSuffix?: string;
+  /** 应用到标题与属性（认领时）。 */
+  replacements?: ReplaceRule[];
+  /** 源成本区间过滤：区间外 SKU 不建刊登变体；全部滤掉则不建刊登。 */
+  priceMinCny?: number | null;
+  priceMaxCny?: number | null;
+  /** 认领图片上限（再叠加系统上限 20）。 */
+  maxImages?: number | null;
+  /** 发布门禁：标题/描述/标签/选项命中任一词则拦截发布。 */
+  bannedWords?: string[];
+}
+
 export interface Store {
   id: string;
   platform: ChannelPlatform;
@@ -122,6 +143,7 @@ export interface Store {
   aiEnhance: boolean;
   /** target language of AI-rewritten content (BCP-47-ish, e.g. "en", "zh-CN"). */
   language: string;
+  rules: StoreRules;
   lastError: string | null;
   createdAt: string;
 }

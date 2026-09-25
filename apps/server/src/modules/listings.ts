@@ -5,8 +5,9 @@ import { z } from "zod";
 import type { Listing, ListingSuggestion, OptionsSuggestionValue } from "@caiji/shared";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
-import { jobs, listings, listingSuggestions } from "../db/schema.js";
+import { jobs, listings, listingSuggestions, stores } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { findBannedWords } from "../lib/rules.js";
 import { AI_ENHANCE_LISTING, enqueueAiEnhance, PUBLISH_LISTING } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
@@ -202,29 +203,42 @@ export function listingRoutes() {
     return c.json(toListingDto(row, show(row.images)));
   });
 
-  /** Queue publish (first publish or re-sync of an already published product). */
+  /** Queue publish (first publish or re-sync of an already published product).
+   *  发布门禁：命中店铺禁售词的刊登不排队，逐条返回命中原因。 */
   r.post("/publish", zValidator("json", idsSchema), async (c) => {
     const { db } = c.var.deps;
     const { workspaceId } = c.var.auth;
     const { ids } = c.req.valid("json");
-    const queued = await db.transaction(async (tx) => {
+    const { queued, blocked } = await db.transaction(async (tx) => {
       const rows = await tx
-        .update(listings)
-        .set({ status: "publishing", lastError: null })
+        .select({ listing: listings, rules: stores.rules })
+        .from(listings)
+        .innerJoin(stores, eq(stores.id, listings.storeId))
         .where(
           and(
             eq(listings.workspaceId, workspaceId),
             inArray(listings.id, ids),
             ne(listings.status, "publishing"),
           ),
-        )
-        .returning({ id: listings.id });
-      for (const row of rows) {
-        await enqueue(tx, PUBLISH_LISTING, { listingId: row.id }, { workspaceId });
+        );
+      const blocked = rows.flatMap(({ listing: l, rules }) => {
+        const hits = findBannedWords(l, rules?.bannedWords);
+        return hits.length ? [{ id: l.id, title: l.title, words: hits }] : [];
+      });
+      const blockedIds = new Set(blocked.map((b) => b.id));
+      const okIds = rows.filter((r) => !blockedIds.has(r.listing.id)).map((r) => r.listing.id);
+      if (okIds.length) {
+        await tx
+          .update(listings)
+          .set({ status: "publishing", lastError: null })
+          .where(inArray(listings.id, okIds));
+        for (const id of okIds) {
+          await enqueue(tx, PUBLISH_LISTING, { listingId: id }, { workspaceId });
+        }
       }
-      return rows.length;
+      return { queued: okIds.length, blocked };
     });
-    return c.json({ queued, skipped: ids.length - queued });
+    return c.json({ queued, skipped: ids.length - queued - blocked.length, blocked });
   });
 
   /** AI 建议列表 + 是否还有 AI 任务在跑（用于轮询提示）。 */
