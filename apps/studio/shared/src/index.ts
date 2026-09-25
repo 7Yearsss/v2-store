@@ -93,6 +93,8 @@ export interface ChannelIssue {
   message: string;
   /** 在该草稿/字段上能不能直接修 */
   fixable: boolean;
+  /** "block"（缺省）= 阻塞发布；"warn" = 平台建议项，不阻塞，仅在对照卡里提示 */
+  severity?: "block" | "warn";
 }
 
 export interface ChannelCheck {
@@ -133,6 +135,8 @@ export interface PublishAttempt {
   externalId: string | null;
   remoteUrl: string | null;
   retryOf: string | null;
+  /** 本条 attempt 实际发布的字段版本（首跑=job 快照；重试=修正后的新快照） */
+  fieldsSnapshot?: DraftFields;
   createdAt: string;
   updatedAt: string;
 }

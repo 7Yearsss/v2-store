@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AppEnv } from "../context.js";
 import { listingDrafts } from "../db/schema.js";
@@ -74,12 +74,12 @@ export const draftRoutes = new Hono<AppEnv>()
     });
     // AI 生成即写主稿并把字段记进 aiFields；前端拿到新 draft 后呈现 diff，
     // 真正"发出"仍需用户点主按钮（发布时才冻结快照）
-    const aiFields = Array.from(new Set([...d.aiFields, field]));
+    // fields/aiFields 都在 SQL 层合并，不与并发 PATCH 互相覆盖
     const [u] = await deps.db
       .update(listingDrafts)
       .set({
-        fields: { ...d.fields, ...patch },
-        aiFields,
+        fields: sql`${listingDrafts.fields} || ${JSON.stringify(patch)}::jsonb`,
+        aiFields: sql`${listingDrafts.aiFields} || ${JSON.stringify([field])}::jsonb`,
         updatedAt: new Date(),
       })
       .where(eq(listingDrafts.id, d.id))

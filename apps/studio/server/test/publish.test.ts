@@ -250,3 +250,97 @@ describe("publish job + runner", () => {
     expect(logs.body.items[0]!.payload.externalId).toMatch(/^SP-/);
   });
 });
+
+describe("review 修复回归", () => {
+  it("attempt 快照：首跑=job 冻结版；重试=补完字段的当前主稿", async () => {
+    const productId = await seedValidProduct(ctx.api, "[FAIL] 快照商品");
+    const shop = await mkShop("shopee", "MY", "SP店");
+    const created = await createJob(ctx.api, productId, [shop]);
+    const detail = await waitJobDone(ctx.api, created.body.job.id);
+    const failedAtt = detail.attempts[0]!;
+    // 首跑 attempt 携带 job 冻结快照
+    expect(failedAtt.fieldsSnapshot?.title).toBe("[FAIL] 快照商品");
+
+    await patchDraft(ctx.api, productId, { title: "修正后标题" });
+    await retryAttempt(ctx.api, failedAtt.id);
+    const done = await waitJobDone(ctx.api, created.body.job.id);
+    const retriedAtt = done.attempts.find((a) => a.retryOf === failedAtt.id)!;
+    // 重试 attempt 记录它实际发出去的版本（修正后主稿）
+    expect(retriedAtt.fieldsSnapshot?.title).toBe("修正后标题");
+    expect(retriedAtt.status).toBe("succeeded");
+  });
+
+  it("只允许重试该店最新一条 attempt", async () => {
+    const productId = await seedValidProduct(ctx.api, "[FAIL] 两次失败");
+    const shop = await mkShop("shopee", "MY", "SP店");
+    const created = await createJob(ctx.api, productId, [shop]);
+    const d1 = await waitJobDone(ctx.api, created.body.job.id);
+    const first = d1.attempts[0]!;
+
+    // 第一次重试仍失败（标题还含 [FAIL]）→ 产生更新的 attempt
+    const r1 = await retryAttempt(ctx.api, first.id);
+    expect(r1.status).toBe(200);
+    const done = await waitJobDone(ctx.api, created.body.job.id);
+    const second = done.attempts.find((a) => a.retryOf === first.id)!;
+    expect(second.status).toBe("failed");
+
+    // 再回头重试旧的那条 → 400（只能重试最新）
+    const stale = await retryAttempt(ctx.api, first.id);
+    expect(stale.status).toBe(400);
+    // 最新那条可重试
+    const r2 = await retryAttempt(ctx.api, second.id);
+    expect(r2.status).toBe(200);
+  });
+
+  it("tiktok warn 项（标题>80、图<5）不阻塞：check.ok=true 且发布进入 review", async () => {
+    const p = await createProduct(ctx.api, {
+      title: "超长标题".repeat(30),
+      images: ["https://img/1.png"],
+      variants: [{ sku: "S1", price: 9.9, upc: "012345678905" }],
+      sourceCategory: "女装/T恤",
+    });
+    await patchDraft(ctx.api, p.body.id, { attributes: { Brand: "X" } });
+    const shop = await mkShop("tiktok", "US", "TT店");
+
+    const res = await preview(ctx.api, p.body.id, [shop]);
+    const check = res.body.checks[0]!;
+    expect(check.ok).toBe(true);
+    expect(check.issues.length).toBeGreaterThan(0);
+    expect(check.issues.every((i) => i.severity === "warn")).toBe(true);
+
+    const created = await createJob(ctx.api, p.body.id, [shop]);
+    const detail = await waitJobDone(ctx.api, created.body.job.id);
+    expect(detail.attempts[0]!.status).toBe("review");
+    expect(detail.job.status).toBe("succeeded");
+  });
+
+  it("软删除店铺：列表/对照/新建 job 排除，历史 attempt 保留", async () => {
+    const productId = await seedValidProduct(ctx.api);
+    const shop = await mkShop("shopee", "MY", "要删的店");
+    const created = await createJob(ctx.api, productId, [shop]);
+    const detail = await waitJobDone(ctx.api, created.body.job.id);
+    expect(detail.attempts[0]!.status).toBe("succeeded");
+
+    // DELETE → 软删除
+    const del = await ctx.api<{ status: number }>(`/api/shops/${shop}`, { method: "DELETE" });
+    expect(del.status).toBe(204);
+
+    // 店铺列表不再返回
+    const list = await ctx.api<{ status: number; body: { items: { id: string }[] } }>("/api/shops");
+    expect(list.body.items.some((s) => s.id === shop)).toBe(false);
+
+    // 对照预览缺省集合也不含已删店
+    const { channelCheck } = await import("../src/services/publish.js");
+    const checks = await channelCheck(ctx.deps, { productId });
+    expect(checks.some((c) => c.shopId === shop)).toBe(false);
+
+    // 新建 job 指定已删店 → 400
+    const bad = await createJob(ctx.api, productId, [shop]);
+    expect(bad.status).toBe(400);
+
+    // 历史 job 的 attempt 仍可查
+    const again = await getJob(ctx.api, created.body.job.id);
+    expect(again.body.attempts[0]!.status).toBe("succeeded");
+    expect(again.body.attempts[0]!.externalId).toMatch(/^SP-/);
+  });
+});

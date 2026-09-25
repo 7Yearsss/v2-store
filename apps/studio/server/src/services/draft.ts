@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DraftFields, ListingDraft, Product } from "@studio/shared";
 import type { Db } from "../db/client.js";
 import { listingDrafts, products, type DraftRow, type ProductRow } from "../db/schema.js";
@@ -23,7 +23,7 @@ export function toDraft(r: DraftRow): ListingDraft {
     productId: r.productId,
     status: r.status,
     fields: r.fields,
-    aiFields: r.aiFields,
+    aiFields: [...new Set(r.aiFields)],
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -72,17 +72,20 @@ export async function getDraft(db: Db, productId: string): Promise<DraftRow> {
   return d;
 }
 
-/** 可编辑字段是子集；未列出的键直接忽略。 */
+/** 可编辑字段是子集；未列出的键直接忽略。
+ *  fields 在 SQL 层做 jsonb 顶层合并（`||`），不同字段的并发 PATCH 互不覆盖。 */
 export async function patchDraft(
   db: Db,
   productId: string,
   patch: Partial<DraftFields>,
 ): Promise<DraftRow> {
   const d = await ensureDraft(db, productId);
-  const fields = { ...d.fields, ...patch };
   const [u] = await db
     .update(listingDrafts)
-    .set({ fields, updatedAt: new Date() })
+    .set({
+      fields: sql`${listingDrafts.fields} || ${JSON.stringify(patch)}::jsonb`,
+      updatedAt: new Date(),
+    })
     .where(eq(listingDrafts.id, d.id))
     .returning();
   return u;

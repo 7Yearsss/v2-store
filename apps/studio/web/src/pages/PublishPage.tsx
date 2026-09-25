@@ -154,13 +154,13 @@ export function PublishPage() {
     }
   }, [draftQ.data, selectedId]);
 
-  const sendPatch = useCallback(async () => {
+  const sendPatch = useCallback(async (): Promise<boolean> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
     const { productId, patch } = pendingRef.current;
-    if (!productId || !Object.keys(patch).length) return;
+    if (!productId || !Object.keys(patch).length) return true;
     pendingRef.current = { productId, patch: {} };
     setSaveState("saving");
     try {
@@ -168,6 +168,7 @@ export function PublishPage() {
       queryClient.setQueryData(["draft", productId], resp);
       if (selectedRef.current === productId) setBaseDraft(resp);
       setSaveState(Object.keys(pendingRef.current.patch).length ? "dirty" : "saved");
+      return true;
     } catch {
       // 保留未送出的 patch，下次编辑/点击状态行时重发
       pendingRef.current = {
@@ -175,6 +176,7 @@ export function PublishPage() {
         patch: { ...patch, ...pendingRef.current.patch },
       };
       setSaveState("error");
+      return false;
     }
   }, [queryClient]);
 
@@ -237,6 +239,8 @@ export function PublishPage() {
         setBaseDraft(resp);
         const newValue = resp.fields[key];
         setFields((f) => (f ? { ...f, [key]: newValue } : f));
+        // 服务端已写入 AI 结果：pending 里这个字段的旧值会把它覆盖回去，移除
+        delete pendingRef.current.patch[key];
         setAiCards((c) => ({
           ...c,
           [field]: { kind: "ok", label: action.label, oldValue, newValue },
@@ -313,7 +317,8 @@ export function PublishPage() {
   });
 
   const doPublish = async () => {
-    await sendPatch();
+    // 未保存的编辑先落库；保存失败就不发——否则发布会用到旧版主稿
+    if (!(await sendPatch())) return;
     publishMut.mutate();
   };
 
@@ -829,7 +834,8 @@ function CheckCard({
 }) {
   const [open, setOpen] = useState(false);
   const authExpired = check.issues.some((i) => i.code === "auth_expired");
-  const badCount = check.issues.length;
+  const warns = check.issues.filter((i) => i.severity === "warn");
+  const badCount = check.issues.length - warns.length;
 
   return (
     <div className="chk">
@@ -854,7 +860,19 @@ function CheckCard({
       <div className="chk-status">
         <span className="st-dot" data-st={check.ok ? "success" : authExpired ? "failed" : "review"} />
         {check.ok ? (
-          <span>能发</span>
+          <span>
+            能发
+            {warns.length > 0 && (
+              <button
+                type="button"
+                className="chk-toggle"
+                style={{ marginLeft: 8 }}
+                onClick={() => setOpen((o) => !o)}
+              >
+                {warns.length} 个建议 {open ? "▴" : "▾"}
+              </button>
+            )}
+          </span>
         ) : authExpired ? (
           <span style={{ flex: 1 }}>
             授权过期
@@ -876,11 +894,14 @@ function CheckCard({
           </span>
         )}
       </div>
-      {open && !check.ok && (
+      {open && check.issues.length > 0 && (
         <div className="chk-issues">
           {check.issues.map((i, idx) => (
             <div key={idx} className="chk-issue">
-              <span className="chk-issue-f">{i.field}</span>
+              <span className="chk-issue-f">
+                {i.severity === "warn" ? "建议 " : ""}
+                {i.field}
+              </span>
               <span>{i.message}</span>
             </div>
           ))}

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Shop } from "@studio/shared";
 import type { AppEnv } from "../context.js";
@@ -30,7 +30,10 @@ const createSchema = z.object({
 export const shopsRoutes = new Hono<AppEnv>()
   .get("/", async (c) => {
     const { db } = c.get("deps");
-    const rows = await db.query.shops.findMany({ orderBy: desc(shops.createdAt) });
+    const rows = await db.query.shops.findMany({
+      where: isNull(shops.archivedAt),
+      orderBy: desc(shops.createdAt),
+    });
     return c.json({ items: rows.map(toShop), total: rows.length });
   })
   // mock 授权：建店即"已授权"；真实 OAuth 换 code 的链路本期不演
@@ -81,9 +84,20 @@ export const shopsRoutes = new Hono<AppEnv>()
     });
     return c.json(toShop(row));
   })
+  // 软删除：断开店铺只归档，历史任务的 attempt 记录与店铺行都保留
   .delete("/:id", async (c) => {
-    const { db } = c.get("deps");
-    const [row] = await db.delete(shops).where(eq(shops.id, c.req.param("id"))).returning();
+    const { db, actor } = c.get("deps");
+    const [row] = await db
+      .update(shops)
+      .set({ archivedAt: new Date() })
+      .where(eq(shops.id, c.req.param("id")))
+      .returning();
     if (!row) throw notFound("店铺");
+    await audit(db, actor, {
+      action: "shop.archive",
+      entityType: "shop",
+      entityId: row.id,
+      payload: { platform: row.platform, name: row.name },
+    });
     return c.body(null, 204);
   });

@@ -11,7 +11,13 @@ import { metaRoutes } from "./routes/meta.js";
 export function createApp(deps: Deps) {
   const app = new Hono<AppEnv>();
 
-  app.use("*", cors());
+  // 本地单机切片：只允许本机 dev origin（非浏览器请求无 Origin，不受影响）
+  app.use(
+    "*",
+    cors({
+      origin: (o) => (!o || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o) ? o : null),
+    }),
+  );
   app.use("*", async (c, next) => {
     c.set("deps", deps);
     await next();

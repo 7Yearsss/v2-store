@@ -10,18 +10,18 @@ import { ensureDraft, getProduct, toProduct } from "../services/draft.js";
 import { importCsv, productFromUrl } from "../services/imports.js";
 
 const variantSchema = z.object({
-  sku: z.string(),
-  options: z.record(z.string(), z.string()).default({}),
+  sku: z.string().max(128),
+  options: z.record(z.string().max(128), z.string().max(256)).default({}),
   price: z.number().nonnegative(),
   stock: z.number().int().nonnegative().default(0),
-  upc: z.string().nullable().default(null),
+  upc: z.string().max(64).nullable().default(null),
 });
 
 const createSchema = z.object({
-  title: z.string().min(1),
-  images: z.array(z.string()).default([]),
-  variants: z.array(variantSchema).default([]),
-  sourceCategory: z.string().nullable().default(null),
+  title: z.string().min(1).max(500),
+  images: z.array(z.string().max(2048)).max(20).default([]),
+  variants: z.array(variantSchema).max(200).default([]),
+  sourceCategory: z.string().max(300).nullable().default(null),
 });
 
 export const productsRoutes = new Hono<AppEnv>()
@@ -50,17 +50,21 @@ export const productsRoutes = new Hono<AppEnv>()
     });
     return c.json(toProduct(row), 201);
   })
-  .post("/import", zValidator("json", z.object({ csv: z.string().min(1) })), async (c) => {
+  .post(
+    "/import",
+    zValidator("json", z.object({ csv: z.string().min(1).max(512 * 1024) })),
+    async (c) => {
     const { db, actor } = c.get("deps");
-    const result = await importCsv(c.get("deps"), c.req.valid("json").csv);
-    await audit(db, actor, {
-      action: "product.import",
-      entityType: "product",
-      entityId: result.created[0]?.id ?? "00000000-0000-0000-0000-000000000000",
-      payload: { created: result.created.length, errors: result.errors.length },
-    });
-    return c.json(result, 201);
-  })
+      const result = await importCsv(c.get("deps"), c.req.valid("json").csv);
+      await audit(db, actor, {
+        action: "product.import",
+        entityType: "product",
+        entityId: result.created[0]?.id ?? "00000000-0000-0000-0000-000000000000",
+        payload: { created: result.created.length, errors: result.errors.length },
+      });
+      return c.json(result, 201);
+    },
+  )
   .post(
     "/from-url",
     zValidator("json", z.object({ url: z.string().url() })),

@@ -21,6 +21,8 @@ export const shops = pgTable("shops", {
     .notNull()
     .default("authorized"),
   externalId: text("external_id"),
+  /** 软删除：断开店铺只归档，保留发布历史（attempts 仍引用本行） */
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: createdAt(),
 });
 
@@ -98,6 +100,8 @@ export const publishAttempts = pgTable(
     externalId: text("external_id"),
     remoteUrl: text("remote_url"),
     retryOf: uuid("retry_of"),
+    /** 本条 attempt 实际用哪版文案（首跑=job 冻结快照；重试=修正后的新快照） */
+    fieldsSnapshot: jsonb("fields_snapshot").$type<DraftFields>().notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

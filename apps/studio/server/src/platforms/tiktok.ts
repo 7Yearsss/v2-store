@@ -71,16 +71,25 @@ export const tiktokAdapter: PlatformAdapter = {
         field: "title",
         message: `TikTok 标题建议 ≤80 字符（当前 ${title.length}）`,
         fixable: true,
+        severity: "warn",
       });
     }
 
     const images = (fields.images ?? product.images).length;
-    if (images < IMAGE_MIN) {
+    if (images === 0) {
+      issues.push({
+        code: "missing_field",
+        field: "images",
+        message: "缺少商品图（至少 1 张）",
+        fixable: true,
+      });
+    } else if (images < IMAGE_MIN) {
       issues.push({
         code: "missing_field",
         field: "images",
         message: `TikTok 建议 ≥5 张图（当前 ${images}）`,
         fixable: true,
+        severity: "warn",
       });
     } else if (images > IMAGE_MAX) {
       issues.push({

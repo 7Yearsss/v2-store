@@ -66,12 +66,19 @@ function parseStock(raw: string | undefined): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+const MAX_CSV_BYTES = 512 * 1024;
+const MAX_ROWS = 500;
+const MAX_LINE_LEN = 64 * 1024;
+const MAX_COLS = 64;
+
 export async function importCsv(
   deps: Deps,
   text: string,
 ): Promise<{ created: Product[]; errors: { row: number; message: string }[] }> {
   const created: Product[] = [];
   const errors: { row: number; message: string }[] = [];
+
+  if (text.length > MAX_CSV_BYTES) throw badRequest("CSV 过大（上限 512KB）");
 
   const lines = text
     .split(/\r?\n/)
@@ -94,8 +101,25 @@ export async function importCsv(
   const col = (cols: string[], h: CsvHeader, pos: number): string | undefined =>
     headerIdx.size ? cols[headerIdx.get(h) ?? -1] : cols[pos];
 
+  const overflow = dataLines.length - MAX_ROWS;
+  if (overflow > 0) {
+    errors.push({
+      row: dataLines[MAX_ROWS]?.row ?? 0,
+      message: `超出单次 ${MAX_ROWS} 行上限，多余 ${overflow} 行已忽略`,
+    });
+    dataLines = dataLines.slice(0, MAX_ROWS);
+  }
+
   for (const { line, row } of dataLines) {
+    if (line.length > MAX_LINE_LEN) {
+      errors.push({ row, message: "行过长" });
+      continue;
+    }
     const cols = splitLine(line);
+    if (cols.length > MAX_COLS) {
+      errors.push({ row, message: `列数过多（上限 ${MAX_COLS}）` });
+      continue;
+    }
     const title = col(cols, "title", 0)?.trim() ?? "";
     const price = parsePrice(col(cols, "price", 1));
     const stock = parseStock(col(cols, "stock", 2));

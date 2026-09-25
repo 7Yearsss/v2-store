@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { ChannelCheck, ChannelIssue, PublishJobDetail } from "@studio/shared";
 import type { Deps } from "../context.js";
 import type { Db } from "../db/client.js";
@@ -56,6 +56,7 @@ export function toAttempt(r: AttemptRow): PublishJobDetail["attempts"][number] {
     externalId: r.externalId,
     remoteUrl: r.remoteUrl,
     retryOf: r.retryOf,
+    fieldsSnapshot: r.fieldsSnapshot,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -68,6 +69,10 @@ function triggerDrain(db: Db) {
   drainTriggers.get(db)?.();
 }
 
+/** 阻塞性问题（severity 缺省=block）；warn 只是平台建议，不挡发布。 */
+const blocking = (issues: ChannelIssue[]) =>
+  issues.filter((i) => (i.severity ?? "block") === "block");
+
 export async function channelCheck(
   deps: Deps,
   input: { productId: string; shopIds?: string[] },
@@ -78,13 +83,18 @@ export async function channelCheck(
   let shopRows: ShopRow[];
   if (input.shopIds?.length) {
     const ids = [...new Set(input.shopIds)];
-    const found = await deps.db.query.shops.findMany({ where: inArray(shops.id, ids) });
+    const found = await deps.db.query.shops.findMany({
+      where: and(inArray(shops.id, ids), isNull(shops.archivedAt)),
+    });
     const byId = new Map(found.map((s) => [s.id, s]));
     // 预览宽容：不存在的 shopId 直接跳过；顺序跟随请求
     shopRows = ids.map((id) => byId.get(id)).filter((s): s is ShopRow => !!s);
   } else {
     // 缺省=全部店铺（授权+过期都列，过期店出 auth_expired）
-    shopRows = await deps.db.query.shops.findMany({ orderBy: asc(shops.createdAt) });
+    shopRows = await deps.db.query.shops.findMany({
+      where: isNull(shops.archivedAt),
+      orderBy: asc(shops.createdAt),
+    });
   }
 
   return shopRows.map((shop) => {
@@ -98,7 +108,7 @@ export async function channelCheck(
       platform: shop.platform,
       site: shop.site,
       shopName: shop.name,
-      ok: issues.length === 0,
+      ok: blocking(issues).length === 0,
       issues,
     };
   });
@@ -114,7 +124,9 @@ export async function createPublishJob(
   const product = await getProduct(deps.db, input.productId);
   const draft = await ensureDraft(deps.db, input.productId);
 
-  const found = await deps.db.query.shops.findMany({ where: inArray(shops.id, ids) });
+  const found = await deps.db.query.shops.findMany({
+    where: and(inArray(shops.id, ids), isNull(shops.archivedAt)),
+  });
   if (found.length !== ids.length) throw badRequest("存在无效店铺");
 
   // 冻结当版主稿文案进快照——之后改稿不影响本次发布（审计/回放依据）
@@ -128,9 +140,15 @@ export async function createPublishJob(
       shopIds: ids,
     })
     .returning();
-  await deps.db
-    .insert(publishAttempts)
-    .values(ids.map((shopId) => ({ jobId: job.id, shopId, status: "queued" as const })));
+  // 首跑 attempt 的快照 = job 冻结快照：排队期间改主稿不改本次发布内容
+  await deps.db.insert(publishAttempts).values(
+    ids.map((shopId) => ({
+      jobId: job.id,
+      shopId,
+      status: "queued" as const,
+      fieldsSnapshot: draft.fields,
+    })),
+  );
 
   triggerDrain(deps.db);
   return getJob(deps, job.id);
@@ -169,10 +187,28 @@ export async function retryAttempt(deps: Deps, attemptId: string): Promise<Publi
   if (!old) throw notFound("发布记录");
   if (old.status !== "failed") throw badRequest("仅失败的发布记录可重试");
 
-  // 不回头改旧记录：新建一条 attempt(retryOf=旧id)，旧 failed 留档可溯
-  await deps.db
-    .insert(publishAttempts)
-    .values({ jobId: old.jobId, shopId: old.shopId, status: "queued", retryOf: old.id });
+  // 只允许重试该店最新一条：旧 failed 留档可溯，但不能把已完成的 job 拖回 running
+  const latest = await deps.db.query.publishAttempts.findFirst({
+    where: and(eq(publishAttempts.jobId, old.jobId), eq(publishAttempts.shopId, old.shopId)),
+    orderBy: desc(publishAttempts.createdAt),
+  });
+  if (latest && latest.id !== old.id) {
+    throw badRequest("该店铺已有更新的发布记录，请重试最新一条");
+  }
+
+  const job = await deps.db.query.publishJobs.findFirst({
+    where: eq(publishJobs.id, old.jobId),
+  });
+  if (!job) throw notFound("任务");
+  // 重试快照取当前主稿——用户在失败行上补完字段再发，本条 attempt 记它实际用的版本
+  const draft = await ensureDraft(deps.db, job.productId);
+  await deps.db.insert(publishAttempts).values({
+    jobId: old.jobId,
+    shopId: old.shopId,
+    status: "queued",
+    retryOf: old.id,
+    fieldsSnapshot: draft.fields,
+  });
   await deps.db
     .update(publishJobs)
     .set({ status: "running", updatedAt: new Date() })
@@ -278,23 +314,24 @@ async function runAttempt(deps: Deps, attempt: AttemptRow) {
     return;
   }
 
-  // 执行时取当前主稿（retry 前补字段才有效）；job.fieldsSnapshot 是
-  // 创建时冻结的审计快照，不随修改，保证"发布记录可回溯哪版文案"。
-  const draft = await ensureDraft(deps.db, job.productId);
+  // 发布内容 = 本条 attempt 自己的快照：首跑是 job 冻结版，重试是补完字段的重试版。
+  // 排队/运行期间改主稿不影响在跑的 attempt。
+  const fields = attempt.fieldsSnapshot;
   const adapter = adapterFor(shop.platform);
-  // 校验与预览共用同一套规则（所见=所判）
-  const issues = adapter.validateDraft({ product, fields: draft.fields, shop });
-  if (issues.length) {
+  // 校验与预览共用同一套规则（所见=所判）；warn 建议项不阻塞
+  const issues = adapter.validateDraft({ product, fields, shop });
+  const blockingIssues = blocking(issues);
+  if (blockingIssues.length) {
     await finishAttempt(deps, attempt.id, {
       status: "failed",
-      error: issues[0]!.message,
+      error: blockingIssues[0]!.message,
       issues,
     });
     return;
   }
 
   try {
-    const res = await adapter.publish(deps, { product, fields: draft.fields, shop });
+    const res = await adapter.publish(deps, { product, fields, shop });
     await finishAttempt(deps, attempt.id, {
       status: res.status,
       externalId: res.externalId,
@@ -340,9 +377,28 @@ export function startPublishRunner(deps: Deps): () => void {
       const touched = new Set<string>();
       for (const attempt of queued) {
         touched.add(attempt.jobId);
-        await runAttempt(deps, attempt);
+        try {
+          await runAttempt(deps, attempt);
+        } catch (e) {
+          // runner 内部异常只记 attempt 失败，绝不上抛弄垮定时器/进程
+          console.error("[studio] publish attempt runner error", e);
+          await finishAttempt(deps, attempt.id, {
+            status: "failed",
+            error: e instanceof Error ? e.message : "执行异常",
+            issues: [
+              {
+                code: "platform_rejected",
+                field: "platform",
+                message: e instanceof Error ? e.message : "执行异常",
+                fixable: false,
+              },
+            ],
+          });
+        }
       }
       for (const jobId of touched) await aggregateJob(deps, jobId);
+    } catch (e) {
+      console.error("[studio] publish drain error", e);
     } finally {
       draining = false;
     }
@@ -350,7 +406,11 @@ export function startPublishRunner(deps: Deps): () => void {
 
   // 首次 drain 前做一次崩溃恢复
   void (async () => {
-    await recoverStale(deps);
+    try {
+      await recoverStale(deps);
+    } catch (e) {
+      console.error("[studio] publish recovery error", e);
+    }
     await drain();
   })();
 
