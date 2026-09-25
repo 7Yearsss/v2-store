@@ -1,4 +1,5 @@
 import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
+import { cacheCategoryNodes, TAXONOMY_VERSION } from "../../lib/category.js";
 import type { Deps } from "../../context.js";
 import {
   ChannelError,
@@ -152,6 +153,26 @@ export const shopifyAdapter: ChannelAdapter = {
     return data.taxonomy.categories.nodes;
   },
 
+  /** 全量同步 Shopify taxonomy 叶子类目进缓存（约 1 万节点，分页拉取）。 */
+  async syncCategoryTree(deps, store): Promise<{ count: number }> {
+    let after: string | null = null;
+    let count = 0;
+    do {
+      const data: TaxonomyTreePage = await shopifyGraphql<TaxonomyTreePage>(
+        deps,
+        store,
+        TAXONOMY_TREE,
+        { after },
+      );
+      const { nodes, pageInfo } = data.taxonomy.categories;
+      const leaves = nodes.filter((n) => n.isLeaf);
+      await cacheCategoryNodes(deps.db, "shopify", TAXONOMY_VERSION, leaves);
+      count += leaves.length;
+      after = pageInfo.hasNextPage ? pageInfo.endCursor : null;
+    } while (after);
+    return { count };
+  },
+
   async fetchStatuses(deps, store, remoteIds) {
     const out = new Map<string, RemoteStatus>();
     for (let i = 0; i < remoteIds.length; i += 100) {
@@ -184,6 +205,26 @@ const TAXONOMY_SEARCH = /* GraphQL */ `
     taxonomy {
       categories(first: 8, search: $query) {
         nodes { id name fullName }
+      }
+    }
+  }
+`;
+
+interface TaxonomyTreePage {
+  taxonomy: {
+    categories: {
+      nodes: Array<{ id: string; name: string; fullName: string; isLeaf: boolean }>;
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  };
+}
+
+const TAXONOMY_TREE = /* GraphQL */ `
+  query TaxonomyTree($after: String) {
+    taxonomy {
+      categories(first: 250, after: $after) {
+        nodes { id name fullName isLeaf }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }

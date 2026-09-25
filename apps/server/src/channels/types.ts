@@ -47,4 +47,19 @@ export interface ChannelAdapter {
     store: StoreRow,
     query: string,
   ): Promise<CategoryCandidate[]>;
+  /**
+   * Platform-native category predictor (e.g. Mercado Livre domain_discovery):
+   * product title in the site's language → ranked candidates. When present the
+   * suggestion pipeline prefers it over keyword search + AI ranking.
+   */
+  predictCategories?(
+    deps: Deps,
+    store: StoreRow,
+    input: { title: string; sourceCategoryName?: string | null; language?: string | null },
+  ): Promise<CategoryCandidate[]>;
+  /**
+   * Pull the platform's whole category tree into channel_categories cache.
+   * Returns the number of nodes cached. Absent = no full-tree support.
+   */
+  syncCategoryTree?(deps: Deps, store: StoreRow): Promise<{ count: number }>;
 }

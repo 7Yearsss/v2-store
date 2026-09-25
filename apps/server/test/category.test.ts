@@ -219,10 +219,85 @@ describe("类目映射", () => {
       (c) => c.url.includes("graphql.json") && String(c.body?.query ?? "").includes("productSet"),
     );
     expect(setCall).toBeTruthy();
-    expect(setCall.body.variables.input.category).toBe("gid://shopify/TaxonomyCategory/c2");
+    expect(setCall!.body.variables.input.category).toBe("gid://shopify/TaxonomyCategory/c2");
 
     const cur = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
     expect(cur.body.status).toBe("published");
+  });
+
+  it("建店自动排队类目树同步；同步后本地类目搜索命中缓存", async () => {
+    ctx = await setup(fakeAll());
+    const t = await ctx.register();
+    const store = (
+      await ctx.api(
+        "POST",
+        "/api/stores/shopify",
+        { authType: "access_token", shopDomain: "demo", accessToken: "shpat_abcdefghij" },
+        t,
+      )
+    ).body;
+
+    const queued = (await ctx.deps.db.query.jobs.findMany()).filter(
+      (j) => j.type === "store.syncCategories",
+    );
+    expect(queued.length).toBe(1);
+
+    await drain(ctx);
+    const res = await ctx.api("GET", `/api/stores/${store.id}/categories?q=coats`, undefined, t);
+    expect(res.body.items.length).toBeGreaterThan(0);
+    expect(res.body.items[0].id).toBe("gid://shopify/TaxonomyCategory/c1");
+    expect(res.body.items[0].fullName).toBe("Apparel > Outerwear > Coats");
+
+    // 缓存未命中时回落到平台搜索接口
+    const miss = await ctx.api("GET", `/api/stores/${store.id}/categories?q=parkas`, undefined, t);
+    expect(miss.body.items.length).toBeGreaterThan(0);
+
+    const t2 = await ctx.register("b2@test.dev");
+    expect((await ctx.api("GET", `/api/stores/${store.id}/categories`, undefined, t2)).status).toBe(
+      404,
+    );
+  });
+
+  it("手动选类目：写入刊登 + 记住映射，同来源类目之后自动套用", async () => {
+    ctx = await setup(fakeAll());
+    enableAi(ctx);
+    const t = await ctx.register();
+    const { listing, store } = await storeAndClaim(ctx, t, "o7");
+
+    const res = await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/category`,
+      {
+        channelCategoryId: "gid://shopify/TaxonomyCategory/c3",
+        channelCategoryName: "Apparel > Tops > Hoodies",
+      },
+      t,
+    );
+    expect(res.body.channelCategoryId).toBe("gid://shopify/TaxonomyCategory/c3");
+    expect(res.body.channelCategoryName).toBe("Apparel > Tops > Hoodies");
+
+    const maps = await ctx.api("GET", "/api/category-mappings", undefined, t);
+    expect(maps.body.items[0].channelCategoryId).toBe("gid://shopify/TaxonomyCategory/c3");
+    expect(maps.body.items[0].confirmedBy).toBe("user");
+
+    const item = await ctx.api("POST", "/api/collect", offerWithCategory("o8"), t);
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    const list = await ctx.api("GET", "/api/listings", undefined, t);
+    const second = list.body.items.find((l: any) => l.id !== listing.id);
+    expect(second.channelCategoryId).toBe("gid://shopify/TaxonomyCategory/c3");
+    // 已映射 → 不应再排建议任务
+    const pending = (await ctx.deps.db.query.jobs.findMany()).filter(
+      (j) =>
+        j.type === "listing.categorySuggest" &&
+        j.status === "queued" &&
+        String(j.payload?.listingId) === second.id,
+    );
+    expect(pending.length).toBe(0);
   });
 
   it("删除映射后同来源类目重新走 AI 建议；跨工作区不可见", async () => {

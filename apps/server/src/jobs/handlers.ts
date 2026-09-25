@@ -16,6 +16,7 @@ export const FETCH_MISSING_MEDIA = "media.fetchMissing";
 export const SYNC_STORE = "store.syncListings";
 export const AI_ENHANCE_LISTING = "listing.aiEnhance";
 export const CATEGORY_SUGGEST = "listing.categorySuggest";
+export const SYNC_CATEGORIES = "store.syncCategories";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -83,6 +84,24 @@ export async function enqueueStoreSync(db: Db, storeId: string, workspaceId: str
     )
     .limit(1);
   if (!pending) await enqueue(db, SYNC_STORE, { storeId }, { workspaceId, maxAttempts: 1 });
+}
+
+/** Queue a platform category-tree sync for a store unless one is already waiting. */
+export async function enqueueCategorySync(db: Db, storeId: string, workspaceId: string) {
+  const [pending] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, SYNC_CATEGORIES),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`${jobs.payload}->>'storeId' = ${storeId}`,
+      ),
+    )
+    .limit(1);
+  if (!pending) {
+    await enqueue(db, SYNC_CATEGORIES, { storeId }, { workspaceId, maxAttempts: 2 });
+  }
 }
 
 /** Pull channel-side status of every published listing of a store. */
@@ -196,6 +215,20 @@ const publishListing: JobHandler = {
   },
 };
 
+/** Pull the platform's category tree into channel_categories (低频、版本化缓存). */
+const syncCategories: JobHandler = {
+  async run(deps: Deps, job) {
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(eq(stores.id, String(job.payload.storeId)));
+    if (!store || store.status === "disconnected") return;
+    const adapter = adapterFor(store.platform);
+    if (!adapter.syncCategoryTree) return;
+    await adapter.syncCategoryTree(deps, store);
+  },
+};
+
 const aiEnhance: JobHandler = {
   async run(deps: Deps, job) {
     await runAiEnhance(deps, String(job.payload.listingId));
@@ -214,4 +247,5 @@ export const jobHandlers: Record<string, JobHandler> = {
   [SYNC_STORE]: syncStore,
   [AI_ENHANCE_LISTING]: aiEnhance,
   [CATEGORY_SUGGEST]: categorySuggest,
+  [SYNC_CATEGORIES]: syncCategories,
 };

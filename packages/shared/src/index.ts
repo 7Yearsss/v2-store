@@ -231,6 +231,8 @@ export interface CategoryCandidate {
   name: string;
   /** 完整路径名（"Apparel > Tops > T-Shirts"），用于展示与排序。 */
   fullName: string;
+  /** 0-100，AI 排序或平台预测器给出的置信度。 */
+  confidence?: number;
 }
 
 /** Composite value for the `category` field: the source leaf category plus

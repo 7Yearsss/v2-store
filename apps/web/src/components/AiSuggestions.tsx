@@ -266,6 +266,11 @@ function CategoryView({
           <Space key={cd.id} style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
             <Typography.Text>
               {i + 1}. {cd.fullName || cd.name}
+              {cd.confidence != null && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {"　"}置信度 {cd.confidence}
+                </Typography.Text>
+              )}
             </Typography.Text>
             <Button size="small" type="primary" ghost disabled={busy} onClick={() => onPick(cd.id)}>
               用此类目

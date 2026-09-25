@@ -1,4 +1,4 @@
-import type { Listing, ListingVariant } from "@caiji/shared";
+import type { CategoryCandidate, Listing, ListingVariant } from "@caiji/shared";
 import { DeleteOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -53,6 +53,7 @@ export function ListingEditPage() {
   });
   const stores = useQuery({ queryKey: ["stores"], queryFn: api.stores });
   const [draft, setDraft] = useState<Editable>();
+  const [catOptions, setCatOptions] = useState<CategoryCandidate[]>([]);
 
   const listing = query.data;
   // (re)initialize the editor when the server copy changes and we have no local edits
@@ -88,6 +89,18 @@ export function ListingEditPage() {
     onError: (e) => message.error(e.message),
   });
 
+  /** 手动改类目：写刊登 + 记住映射（服务端默认 remember=true）。 */
+  const setCat = useMutation({
+    mutationFn: (body: { channelCategoryId: string; channelCategoryName: string }) =>
+      api.setListingCategory(id, body),
+    onSuccess: (l) => {
+      message.success("类目已更新并记住映射");
+      qc.setQueryData(["listings", "one", id], l);
+      qc.invalidateQueries({ queryKey: ["listings"] });
+    },
+    onError: (e) => message.error(e.message),
+  });
+
   if (!listing || !draft) {
     return query.isError ? <Alert type="error" message={query.error.message} /> : <Spin />;
   }
@@ -109,9 +122,34 @@ export function ListingEditPage() {
         <Typography.Text type="secondary">
           {store ? `${store.name}（${store.currency ?? ""}）` : ""}
         </Typography.Text>
-        <Tag color={listing.channelCategoryId ? "green" : "default"}>
-          类目：{listing.channelCategoryName ?? "未映射"}
-        </Tag>
+        <Select
+          size="small"
+          showSearch
+          allowClear
+          placeholder="类目：未映射"
+          status={listing.channelCategoryId ? undefined : "warning"}
+          style={{ minWidth: 280 }}
+          value={listing.channelCategoryName}
+          filterOption={false}
+          onSearch={(q) =>
+            api.storeCategories(listing.storeId, q).then((r) => setCatOptions(r.items))
+          }
+          onFocus={() =>
+            api.storeCategories(listing.storeId, "").then((r) => setCatOptions(r.items))
+          }
+          options={catOptions.map((cd) => ({
+            value: cd.id,
+            label: cd.fullName || cd.name,
+          }))}
+          onChange={(v, opt) => {
+            if (!v || Array.isArray(opt)) return;
+            setCat.mutate({
+              channelCategoryId: String(v),
+              channelCategoryName: String((opt as { label?: string }).label ?? v),
+            });
+          }}
+          notFoundContent={<Typography.Text type="secondary">输入关键词搜索平台类目</Typography.Text>}
+        />
         {listing.remoteUrl && (
           <a href={listing.remoteUrl} target="_blank" rel="noreferrer">
             在 Shopify 后台查看

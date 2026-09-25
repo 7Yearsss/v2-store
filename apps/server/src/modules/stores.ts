@@ -14,7 +14,8 @@ import type { AppEnv, Deps } from "../context.js";
 import { stores } from "../db/schema.js";
 import { DEFAULT_PRICING } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
-import { enqueueStoreSync } from "../jobs/handlers.js";
+import { enqueueCategorySync, enqueueStoreSync } from "../jobs/handlers.js";
+import { searchCachedCategories } from "../lib/category.js";
 import { requireAuth } from "./auth.js";
 
 export function toStoreDto(r: StoreRow): Store {
@@ -84,6 +85,8 @@ export async function connectShopifyStore(
       },
     })
     .returning();
+  // 建店后排一次类目树同步（adapter 不支持时 worker 侧直接跳过）
+  await enqueueCategorySync(deps.db, row!.id, workspaceId);
   return row!;
 }
 
@@ -227,6 +230,39 @@ export function storeRoutes() {
     if (!store) throw notFound("店铺");
     await enqueueStoreSync(c.var.deps.db, store.id, c.var.auth.workspaceId);
     return c.json({ queued: true });
+  });
+
+  /** 拉取平台全量类目树到本地缓存（手动选类目 / 属性映射的基础）。 */
+  r.post("/:id/sync-categories", async (c) => {
+    const [store] = await c.var.deps.db
+      .select({ id: stores.id })
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!store) throw notFound("店铺");
+    await enqueueCategorySync(c.var.deps.db, store.id, c.var.auth.workspaceId);
+    return c.json({ queued: true });
+  });
+
+  /** 类目搜索：先查本地类目缓存，缓存没数据再走平台实时搜索。 */
+  r.get("/:id/categories", async (c) => {
+    const deps = c.var.deps;
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!store) throw notFound("店铺");
+    const q = c.req.query("q") ?? "";
+    const local = await searchCachedCategories(deps.db, store.platform, q);
+    if (local.length || !q.trim()) return c.json({ items: local });
+    const adapter = adapterFor(store.platform);
+    const items = adapter.searchCategories
+      ? await adapter.searchCategories(deps, store, q)
+      : [];
+    return c.json({ items });
   });
 
   r.delete("/:id", async (c) => {

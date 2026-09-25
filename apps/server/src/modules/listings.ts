@@ -10,7 +10,7 @@ import type {
 } from "@caiji/shared";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
-import { jobs, listings, listingSuggestions, stores } from "../db/schema.js";
+import { jobs, listings, listingSuggestions, sourceItems, stores } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
@@ -291,6 +291,61 @@ export function listingRoutes() {
     ]);
     return c.json({ items: items.map(toSuggestionDto), pending: pendingJobs.length > 0 });
   });
+
+  /** 手动改类目：设置刊登类目并把映射记住（有来源类目时）。 */
+  r.post(
+    "/:id/category",
+    zValidator(
+      "json",
+      z.object({
+        channelCategoryId: z.string().min(1).max(500),
+        channelCategoryName: z.string().min(1).max(500),
+        /** false = 只改这条刊登，不写入类目映射 */
+        remember: z.boolean().default(true),
+      }),
+    ),
+    async (c) => {
+      const { db } = c.var.deps;
+      const { workspaceId } = c.var.auth;
+      const listingId = c.req.param("id");
+      const body = c.req.valid("json");
+      const [row] = await db
+        .select({ listing: listings, storePlatform: stores.platform, item: sourceItems })
+        .from(listings)
+        .innerJoin(stores, eq(stores.id, listings.storeId))
+        .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
+        .where(
+          and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)),
+        );
+      if (!row) throw notFound("刊登");
+      const [updated] = await db
+        .update(listings)
+        .set({
+          channelCategoryId: body.channelCategoryId,
+          channelCategoryName: body.channelCategoryName,
+        })
+        .where(eq(listings.id, listingId))
+        .returning();
+      if (body.remember && row.item.sourceCategoryId) {
+        await upsertCategoryMapping(db, {
+          workspaceId,
+          sourcePlatform: row.item.sourcePlatform,
+          sourceCategoryId: row.item.sourceCategoryId,
+          sourceCategoryName: row.item.sourceCategoryName,
+          channel: row.storePlatform,
+          candidate: {
+            id: body.channelCategoryId,
+            name: body.channelCategoryName.split(">").pop()?.trim() || body.channelCategoryName,
+            fullName: body.channelCategoryName,
+          },
+          confidence: 100,
+          confirmedBy: "user",
+          version: TAXONOMY_VERSION,
+        });
+      }
+      return c.json(toListingDto(updated!));
+    },
+  );
 
   /** Accept → write the field into the listing; reject → mark. Batch in one tx. */
   r.post("/:id/suggestions/decide", zValidator("json", decideSchema), async (c) => {

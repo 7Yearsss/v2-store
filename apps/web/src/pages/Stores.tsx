@@ -361,6 +361,11 @@ export function StoresPage() {
       qc.invalidateQueries({ queryKey: ["stores"] });
     },
   });
+  const syncCategories = useMutation({
+    mutationFn: api.syncStoreCategories,
+    onSuccess: () => message.success("已排队同步类目树"),
+    onError: (e) => message.error(e.message),
+  });
   const remove = useMutation({
     mutationFn: api.deleteStore,
     onSuccess: () => {
@@ -431,11 +436,12 @@ export function StoresPage() {
           { title: "授权时间", dataIndex: "createdAt", width: 120, render: (t: string) => dayjs(t).format("YYYY-MM-DD") },
           {
             title: "操作",
-            width: 220,
+            width: 290,
             render: (_, s) => (
               <Space>
                 <a onClick={() => setSettingsStore(s)}>刊登设置</a>
                 <a onClick={() => verify.mutate(s.id)}>检测连接</a>
+                <a onClick={() => syncCategories.mutate(s.id)}>同步类目</a>
                 <Popconfirm
                   title="删除店铺授权？"
                   description="该店铺下的所有刊登草稿也会被删除（店铺上已发布的商品不受影响）"

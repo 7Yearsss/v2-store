@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import type { CategoryCandidate, SourcePlatform } from "@caiji/shared";
 import type { Db } from "../db/client.js";
 import { categoryMappings, channelCategories } from "../db/schema.js";
@@ -108,4 +108,35 @@ export async function cacheCategoryNodes(
         channelCategories.categoryId,
       ],
     });
+}
+
+/** 本地类目缓存搜索（手动选类目）：名字或路径命中即返回。 */
+export async function searchCachedCategories(
+  db: Db,
+  platform: string,
+  query: string,
+  version = TAXONOMY_VERSION,
+  limit = 20,
+): Promise<CategoryCandidate[]> {
+  if (!query.trim()) return [];
+  const q = `%${query.trim()}%`;
+  const rows = await db
+    .select()
+    .from(channelCategories)
+    .where(
+      and(
+        eq(channelCategories.platform, platform),
+        eq(channelCategories.version, version),
+        or(
+          sql`${channelCategories.name} ilike ${q}`,
+          sql`${channelCategories.path}::text ilike ${q}`,
+        ),
+      ),
+    )
+    .limit(limit);
+  return rows.map((r) => ({
+    id: r.categoryId,
+    name: r.name,
+    fullName: (r.path as string[]).join(" > "),
+  }));
 }

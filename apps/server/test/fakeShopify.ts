@@ -28,6 +28,22 @@ export function fakeShopify(
       const headers = init.headers as Record<string, string>;
       if (!headers["X-Shopify-Access-Token"]?.startsWith("shpat_")) return json({}, 401);
       const { query, variables } = JSON.parse(String(init.body));
+      if (query.includes("TaxonomyTree")) {
+        const nodes = (
+          opts.taxonomy?.["*"] ?? [
+            { id: "gid://shopify/TaxonomyCategory/c1", name: "Coats", fullName: "Apparel > Outerwear > Coats" },
+            { id: "gid://shopify/TaxonomyCategory/c2", name: "Jackets", fullName: "Apparel > Outerwear > Jackets" },
+            { id: "gid://shopify/TaxonomyCategory/c3", name: "Hoodies", fullName: "Apparel > Tops > Hoodies" },
+          ]
+        ).map((n) => ({ ...n, isLeaf: true }));
+        return json({
+          data: {
+            taxonomy: {
+              categories: { nodes, pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+        });
+      }
       if (query.includes("TaxonomySearch")) {
         const nodes =
           opts.taxonomy?.[variables.query] ??
