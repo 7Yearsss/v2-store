@@ -88,7 +88,10 @@ describe("publishing images to Shopify", () => {
     const { jobs } = await import("../src/db/schema.js");
     const { eq } = await import("drizzle-orm");
     await ctx!.deps.db.update(jobs).set({ status: "succeeded" }).where(eq(jobs.type, "media.fetchMissing"));
-    await runOnce(ctx!.deps, jobHandlers);
+    // drain: 建店时还排了类目树同步任务，先跑它再到发布
+    while (await runOnce(ctx!.deps, jobHandlers)) {
+      /* drain */
+    }
     return (await ctx!.api("GET", `/api/listings/${listing.id}`, undefined, t)).body;
   }
 

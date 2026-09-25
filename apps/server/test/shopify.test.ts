@@ -122,7 +122,10 @@ describe("claim → publish", () => {
     const locked = await ctx.api("PATCH", `/api/listings/${listing.id}`, { title: "x" }, t);
     expect(locked.status).toBe(409);
 
-    expect(await runOnce(ctx.deps, jobHandlers)).toBe(true);
+    // drain: 建店时的类目树同步任务可能排在发布前面
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
     const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
     expect(done.body.status).toBe("published");
     expect(done.body.remoteId).toBe("gid://shopify/Product/42");
@@ -163,7 +166,9 @@ describe("claim → publish", () => {
     const t = await ctx.register();
     const { listing } = await claimOne(ctx, t);
     await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
-    await runOnce(ctx.deps, jobHandlers);
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
     const res = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
     expect(res.body.status).toBe("failed");
     expect(res.body.lastError).toBe("input.title: is too long");
@@ -176,7 +181,9 @@ describe("claim → publish", () => {
     const variants = listing.variants.map((v: any) => ({ ...v, price: 0 }));
     await ctx.api("PATCH", `/api/listings/${listing.id}`, { variants }, t);
     await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
-    await runOnce(ctx.deps, jobHandlers);
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
     const res = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
     expect(res.body.status).toBe("failed");
     expect(res.body.lastError).toContain("价格为 0");

@@ -1,4 +1,5 @@
 import type {
+  CategorySuggestionValue,
   Listing,
   ListingSuggestion,
   ListingVariant,
@@ -19,6 +20,7 @@ const FIELD_LABEL: Record<SuggestionField, string> = {
   productType: "商品类型",
   tags: "标签",
   options: "变体选项",
+  category: "类目",
 };
 
 const cellStyle: React.CSSProperties = {
@@ -71,7 +73,9 @@ function CurrentView({ field, listing }: { field: SuggestionField; listing: List
   const value =
     field === "options"
       ? ({ options: listing.options, variantOptionValues: [] } as OptionsSuggestionValue)
-      : listing[field];
+      : field === "category"
+        ? listing.channelCategoryName
+        : listing[field];
   return <ValueView field={field} value={value} />;
 }
 
@@ -118,7 +122,9 @@ export function AiSuggestionsCard({
   });
 
   const decide = useMutation({
-    mutationFn: (decisions: Array<{ id: string; action: "accept" | "reject" }>) =>
+    mutationFn: (
+      decisions: Array<{ id: string; action: "accept" | "reject"; choice?: string }>,
+    ) =>
       api.decideSuggestions(listing.id, decisions),
     onSuccess: (_r, decisions) => {
       for (const d of decisions) {
@@ -175,13 +181,15 @@ export function AiSuggestionsCard({
           <div key={s.id}>
             <Space style={{ marginBottom: 8 }}>
               <Tag color="blue">{FIELD_LABEL[s.field]}</Tag>
-              <Button
-                size="small"
-                type="primary"
-                onClick={() => decide.mutate([{ id: s.id, action: "accept" }])}
-              >
-                接受
-              </Button>
+              {s.field !== "category" && (
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => decide.mutate([{ id: s.id, action: "accept" }])}
+                >
+                  接受
+                </Button>
+              )}
               <Button
                 size="small"
                 onClick={() => decide.mutate([{ id: s.id, action: "reject" }])}
@@ -189,6 +197,16 @@ export function AiSuggestionsCard({
                 回退
               </Button>
             </Space>
+            {s.field === "category" ? (
+              <CategoryView
+                value={s.value as CategorySuggestionValue}
+                current={listing.channelCategoryName}
+                busy={decide.isPending}
+                onPick={(choice) =>
+                  decide.mutate([{ id: s.id, action: "accept", choice }])
+                }
+              />
+            ) : (
             <Row gutter={12}>
               <Col span={12}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -212,6 +230,7 @@ export function AiSuggestionsCard({
                 </div>
               </Col>
             </Row>
+            )}
           </div>
         ))}
         {decidedCount > 0 && (
@@ -221,5 +240,47 @@ export function AiSuggestionsCard({
         )}
       </Space>
     </Card>
+  );
+}
+
+/** 类目建议：来源类目 + 平台候选，每个候选单独的“用此类目”按钮（确认后记住映射）。 */
+function CategoryView({
+  value,
+  current,
+  busy,
+  onPick,
+}: {
+  value: CategorySuggestionValue;
+  current: string | null;
+  busy: boolean;
+  onPick: (choice: string) => void;
+}) {
+  return (
+    <div style={cellStyle}>
+      <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+        来源类目：{value.sourceCategoryName ?? value.sourceCategoryId ?? "未知"}
+        {current ? `　当前：${current}` : "　当前：未映射"}
+      </Typography.Text>
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        {value.candidates.map((cd, i) => (
+          <Space key={cd.id} style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+            <Typography.Text>
+              {i + 1}. {cd.fullName || cd.name}
+              {cd.confidence != null && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {"　"}置信度 {cd.confidence}
+                </Typography.Text>
+              )}
+            </Typography.Text>
+            <Button size="small" type="primary" ghost disabled={busy} onClick={() => onPick(cd.id)}>
+              用此类目
+            </Button>
+          </Space>
+        ))}
+      </Space>
+      <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
+        确认后同来源类目自动套用此映射（可在“类目映射”页删除）
+      </Typography.Text>
+    </div>
   );
 }

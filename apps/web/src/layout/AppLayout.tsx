@@ -1,4 +1,5 @@
 import {
+  ApartmentOutlined,
   InboxOutlined,
   LogoutOutlined,
   ShopOutlined,
@@ -15,6 +16,7 @@ const MENU = [
   { key: "/collect-box", icon: <InboxOutlined />, label: "采集箱" },
   { key: "/listings", icon: <UnorderedListOutlined />, label: "刊登管理" },
   { key: "/stores", icon: <ShopOutlined />, label: "店铺授权" },
+  { key: "/category-mappings", icon: <ApartmentOutlined />, label: "类目映射" },
 ];
 
 export function useExtension() {

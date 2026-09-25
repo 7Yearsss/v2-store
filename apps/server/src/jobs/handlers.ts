@@ -1,9 +1,12 @@
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import type { SourcePlatform } from "@caiji/shared";
+import { runCategorySuggest } from "../ai/category.js";
 import { runAiEnhance } from "../ai/enhance.js";
 import { adapterFor } from "../channels/index.js";
 import type { Deps } from "../context.js";
 import type { Db } from "../db/client.js";
 import { jobs, listings, sourceItems, stores } from "../db/schema.js";
+import { resolveCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
 import { fetchAndStore, resolveSources } from "../modules/media.js";
 import { enqueue, type JobHandler, PermanentJobError } from "./queue.js";
@@ -12,6 +15,34 @@ export const PUBLISH_LISTING = "listing.publish";
 export const FETCH_MISSING_MEDIA = "media.fetchMissing";
 export const SYNC_STORE = "store.syncListings";
 export const AI_ENHANCE_LISTING = "listing.aiEnhance";
+export const CATEGORY_SUGGEST = "listing.categorySuggest";
+export const SYNC_CATEGORIES = "store.syncCategories";
+
+/** Queue a category-suggestion pass unless one is already waiting/running. */
+export async function enqueueCategorySuggest(
+  db: Db,
+  listingIds: string[],
+  workspaceId: string,
+) {
+  if (!listingIds.length) return 0;
+  const pending = await db
+    .select({ lid: sql<string>`${jobs.payload}->>'listingId'` })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, CATEGORY_SUGGEST),
+        inArray(jobs.status, ["queued", "running"]),
+        inArray(sql`${jobs.payload}->>'listingId'`, listingIds),
+      ),
+    );
+  const have = new Set(pending.map((p) => p.lid));
+  let queued = 0;
+  for (const id of listingIds.filter((id) => !have.has(id))) {
+    await enqueue(db, CATEGORY_SUGGEST, { listingId: id }, { workspaceId, maxAttempts: 2 });
+    queued++;
+  }
+  return queued;
+}
 
 /** Queue an AI pass for a listing unless one is already waiting/running. */
 export async function enqueueAiEnhance(
@@ -53,6 +84,24 @@ export async function enqueueStoreSync(db: Db, storeId: string, workspaceId: str
     )
     .limit(1);
   if (!pending) await enqueue(db, SYNC_STORE, { storeId }, { workspaceId, maxAttempts: 1 });
+}
+
+/** Queue a platform category-tree sync for a store unless one is already waiting. */
+export async function enqueueCategorySync(db: Db, storeId: string, workspaceId: string) {
+  const [pending] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, SYNC_CATEGORIES),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`${jobs.payload}->>'storeId' = ${storeId}`,
+      ),
+    )
+    .limit(1);
+  if (!pending) {
+    await enqueue(db, SYNC_CATEGORIES, { storeId }, { workspaceId, maxAttempts: 2 });
+  }
 }
 
 /** Pull channel-side status of every published listing of a store. */
@@ -104,9 +153,10 @@ const publishListing: JobHandler = {
   async run(deps: Deps, job) {
     const listingId = String(job.payload.listingId);
     const [row] = await deps.db
-      .select({ listing: listings, store: stores })
+      .select({ listing: listings, store: stores, item: sourceItems })
       .from(listings)
       .innerJoin(stores, eq(stores.id, listings.storeId))
+      .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
       .where(eq(listings.id, listingId));
     if (!row) throw new PermanentJobError("刊登记录已删除");
     if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
@@ -116,8 +166,32 @@ const publishListing: JobHandler = {
       throw new PermanentJobError(`发布前检查未通过，含禁售词：${banned.join("、")}`);
     }
     // deleted on the channel → publish as a new product
-    const listing =
+    let listing =
       row.listing.remoteStatus === "DELETED" ? { ...row.listing, remoteId: null } : row.listing;
+    // 类目兜底：刊登没设类目但已有确认映射（如接受建议前直接发布），套用并回写
+    if (!listing.channelCategoryId && row.item.sourceCategoryId) {
+      const m = await resolveCategoryMapping(
+        deps.db,
+        listing.workspaceId,
+        row.item.sourcePlatform as SourcePlatform,
+        row.item.sourceCategoryId,
+        row.store.platform,
+      );
+      if (m) {
+        listing = {
+          ...listing,
+          channelCategoryId: m.channelCategoryId,
+          channelCategoryName: m.channelCategoryName,
+        };
+        await deps.db
+          .update(listings)
+          .set({
+            channelCategoryId: m.channelCategoryId,
+            channelCategoryName: m.channelCategoryName,
+          })
+          .where(eq(listings.id, listingId));
+      }
+    }
     const result = await adapterFor(row.store.platform).publish(deps, row.store, listing);
     await deps.db
       .update(listings)
@@ -141,9 +215,29 @@ const publishListing: JobHandler = {
   },
 };
 
+/** Pull the platform's category tree into channel_categories (低频、版本化缓存). */
+const syncCategories: JobHandler = {
+  async run(deps: Deps, job) {
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(eq(stores.id, String(job.payload.storeId)));
+    if (!store || store.status === "disconnected") return;
+    const adapter = adapterFor(store.platform);
+    if (!adapter.syncCategoryTree) return;
+    await adapter.syncCategoryTree(deps, store);
+  },
+};
+
 const aiEnhance: JobHandler = {
   async run(deps: Deps, job) {
     await runAiEnhance(deps, String(job.payload.listingId));
+  },
+};
+
+const categorySuggest: JobHandler = {
+  async run(deps: Deps, job) {
+    await runCategorySuggest(deps, String(job.payload.listingId));
   },
 };
 
@@ -152,4 +246,6 @@ export const jobHandlers: Record<string, JobHandler> = {
   [FETCH_MISSING_MEDIA]: fetchMissingMedia,
   [SYNC_STORE]: syncStore,
   [AI_ENHANCE_LISTING]: aiEnhance,
+  [CATEGORY_SUGGEST]: categorySuggest,
+  [SYNC_CATEGORIES]: syncCategories,
 };

@@ -1,9 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { ListingOption, OptionsSuggestionValue } from "@caiji/shared";
 import type { Deps } from "../context.js";
-import { aiUsage, listingSuggestions, listings, sourceItems, stores } from "../db/schema.js";
+import { listingSuggestions, listings, sourceItems, stores } from "../db/schema.js";
 import { PermanentJobError } from "../jobs/queue.js";
-import { chatJson } from "../lib/ai.js";
+import { meteredChatJson } from "../lib/ai.js";
 
 /**
  * AI 产线：认领后跑一次，产出字段级建议（listing_suggestions）。
@@ -105,9 +105,10 @@ export async function runAiEnhance(deps: Deps, listingId: string) {
   const { listing, store, item } = row;
   if (store.aiEnhance === "off" || !deps.config.ai) return;
 
-  let out: EnhanceOutput;
-  try {
-    const res = await chatJson(deps, {
+  const res = await meteredChatJson(
+    deps,
+    { workspaceId: listing.workspaceId, listingId },
+    {
       system: SYSTEM_PROMPT,
       user: buildUserPrompt({
         title: listing.title,
@@ -116,28 +117,9 @@ export async function runAiEnhance(deps: Deps, listingId: string) {
         options: listing.options,
         targetLang: store.language,
       }),
-    });
-    out = res.data as EnhanceOutput;
-    await deps.db.insert(aiUsage).values({
-      workspaceId: listing.workspaceId,
-      listingId,
-      model: deps.config.ai.model,
-      ...res.usage,
-      status: "ok",
-    });
-  } catch (e) {
-    await deps.db
-      .insert(aiUsage)
-      .values({
-        workspaceId: listing.workspaceId,
-        listingId,
-        model: deps.config.ai.model,
-        status: "error",
-        error: e instanceof Error ? e.message.slice(0, 500) : String(e),
-      })
-      .catch(() => {});
-    throw e;
-  }
+    },
+  );
+  const out = res.data as EnhanceOutput;
 
   const proposals: Array<{ field: string; value: unknown }> = [];
   if (typeof out.title === "string" && out.title.trim() && out.title.trim() !== listing.title) {

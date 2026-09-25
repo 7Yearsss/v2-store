@@ -1,4 +1,5 @@
 import type { Deps } from "../context.js";
+import { aiUsage } from "../db/schema.js";
 
 /**
  * Minimal OpenAI-compatible chat client (works against new-api relays and
@@ -67,4 +68,39 @@ export async function chatJson(
       totalTokens: data.usage?.total_tokens ?? 0,
     },
   };
+}
+
+/**
+ * chatJson + ai_usage 计量：成功记 tokens，失败记 error 行再抛出。
+ * meta.listingId 可空（类目建议等不绑定刊登的调用）。
+ */
+export async function meteredChatJson(
+  deps: Deps,
+  meta: { workspaceId: string; listingId?: string | null },
+  opts: { system: string; user: string; timeoutMs?: number },
+): Promise<{ data: unknown; usage: ChatUsage }> {
+  const model = deps.config.ai?.model ?? "";
+  try {
+    const res = await chatJson(deps, opts);
+    await deps.db.insert(aiUsage).values({
+      workspaceId: meta.workspaceId,
+      listingId: meta.listingId ?? null,
+      model,
+      ...res.usage,
+      status: "ok",
+    });
+    return res;
+  } catch (e) {
+    await deps.db
+      .insert(aiUsage)
+      .values({
+        workspaceId: meta.workspaceId,
+        listingId: meta.listingId ?? null,
+        model,
+        status: "error",
+        error: e instanceof Error ? e.message.slice(0, 500) : String(e),
+      })
+      .catch(() => {});
+    throw e;
+  }
 }

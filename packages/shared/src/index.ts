@@ -24,6 +24,8 @@ export interface CollectedOffer {
   skus: OfferSku[];
   images: string[];
   attributes: Record<string, string>;
+  /** 来源平台叶子类目 ID（1688 leafCategoryId）。 */
+  categoryId?: string;
   categoryPath?: string[];
   sellerName?: string;
   collectedAt: string; // ISO
@@ -84,6 +86,9 @@ export interface SourceItem {
   images: string[];
   attributes: Record<string, string>;
   sellerName: string | null;
+  /** 来源平台叶子类目（1688 leafCategoryId / leafCategoryName）。 */
+  sourceCategoryId: string | null;
+  sourceCategoryName: string | null;
   collectedAt: string;
   updatedAt: string;
   /** store ids this item has been claimed to. */
@@ -183,6 +188,9 @@ export interface Listing {
   tags: string[];
   productType: string;
   vendor: string;
+  /** 已确认的目标平台类目（Shopify taxonomy gid）；未映射为 null。 */
+  channelCategoryId: string | null;
+  channelCategoryName: string | null;
   remoteId: string | null;
   remoteUrl: string | null;
   remoteStatus: RemoteStatus | null;
@@ -201,7 +209,13 @@ export interface Page<T> {
 // --- AI 建议（字段级，审核后才进刊登） ---------------------------------------
 
 /** Listing fields the AI pipeline may propose changes for. */
-export type SuggestionField = "title" | "descriptionHtml" | "productType" | "tags" | "options";
+export type SuggestionField =
+  | "title"
+  | "descriptionHtml"
+  | "productType"
+  | "tags"
+  | "options"
+  | "category";
 
 /** Composite value for the `options` field: translated options plus every
  *  variant's optionValues (index-aligned with listing.variants). */
@@ -209,6 +223,38 @@ export interface OptionsSuggestionValue {
   options: ListingOption[];
   /** variantOptionValues[i] replaces variants[i].optionValues. */
   variantOptionValues: string[][];
+}
+
+export interface CategoryCandidate {
+  /** channel-native id（Shopify: gid://shopify/TaxonomyCategory/…）。 */
+  id: string;
+  name: string;
+  /** 完整路径名（"Apparel > Tops > T-Shirts"），用于展示与排序。 */
+  fullName: string;
+  /** 0-100，AI 排序或平台预测器给出的置信度。 */
+  confidence?: number;
+}
+
+/** Composite value for the `category` field: the source leaf category plus
+ *  the AI-ranked candidates; accept picks one via `choice`. */
+export interface CategorySuggestionValue {
+  sourceCategoryId: string | null;
+  sourceCategoryName: string | null;
+  candidates: CategoryCandidate[];
+}
+
+/** 已确认的来源类目 → 平台类目映射（同来源类目下次自动套用）。 */
+export interface CategoryMapping {
+  id: string;
+  sourcePlatform: SourcePlatform;
+  sourceCategoryId: string;
+  sourceCategoryName: string | null;
+  channel: ChannelPlatform;
+  channelCategoryId: string;
+  channelCategoryName: string;
+  version: string;
+  confirmedBy: "user" | "ai";
+  createdAt: string;
 }
 
 export type SuggestionStatus = "pending" | "accepted" | "rejected";

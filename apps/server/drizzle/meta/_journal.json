@@ -36,6 +36,13 @@
       "when": 1790321475357,
       "tag": "0004_flawless_queen_noir",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790323057603,
+      "tag": "0005_graceful_oracle",
+      "breakpoints": true
     }
   ]
 }

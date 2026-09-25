@@ -1,4 +1,4 @@
-import type { RemoteStatus } from "@caiji/shared";
+import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
 
@@ -41,4 +41,25 @@ export interface ChannelAdapter {
   publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult>;
   /** Channel-side status per remote id; missing products map to DELETED. */
   fetchStatuses(deps: Deps, store: StoreRow, remoteIds: string[]): Promise<Map<string, RemoteStatus>>;
+  /** Search the platform's category tree (taxonomy) by keyword; absent = no category support yet. */
+  searchCategories?(
+    deps: Deps,
+    store: StoreRow,
+    query: string,
+  ): Promise<CategoryCandidate[]>;
+  /**
+   * Platform-native category predictor (e.g. Mercado Livre domain_discovery):
+   * product title in the site's language → ranked candidates. When present the
+   * suggestion pipeline prefers it over keyword search + AI ranking.
+   */
+  predictCategories?(
+    deps: Deps,
+    store: StoreRow,
+    input: { title: string; sourceCategoryName?: string | null; language?: string | null },
+  ): Promise<CategoryCandidate[]>;
+  /**
+   * Pull the platform's whole category tree into channel_categories cache.
+   * Returns the number of nodes cached. Absent = no full-tree support.
+   */
+  syncCategoryTree?(deps: Deps, store: StoreRow): Promise<{ count: number }>;
 }

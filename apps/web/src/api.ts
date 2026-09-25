@@ -1,4 +1,6 @@
 import type {
+  CategoryCandidate,
+  CategoryMapping,
   Listing,
   ListingStatus,
   ListingSuggestion,
@@ -84,6 +86,10 @@ export const api = {
   verifyStore: (id: string) => request<Store>("POST", `/stores/${id}/verify`, {}),
   deleteStore: (id: string) => request("DELETE", `/stores/${id}`),
   syncStore: (id: string) => request<{ queued: boolean }>("POST", `/stores/${id}/sync`, {}),
+  syncStoreCategories: (id: string) =>
+    request<{ queued: boolean }>("POST", `/stores/${id}/sync-categories`, {}),
+  storeCategories: (storeId: string, q: string) =>
+    request<{ items: CategoryCandidate[] }>("GET", `/stores/${storeId}/categories${qs({ q })}`),
 
   listings: (p: { status?: ListingStatus; storeId?: string; q?: string; page?: number; pageSize?: number }) =>
     request<Page<Listing>>("GET", `/listings${qs(p)}`),
@@ -102,11 +108,21 @@ export const api = {
       "GET",
       `/listings/${id}/suggestions`,
     ),
-  decideSuggestions: (id: string, decisions: Array<{ id: string; action: "accept" | "reject" }>) =>
+  decideSuggestions: (
+    id: string,
+    decisions: Array<{ id: string; action: "accept" | "reject"; choice?: string }>,
+  ) =>
     request<{ accepted: number; rejected: number }>(
       "POST",
       `/listings/${id}/suggestions/decide`,
       { decisions },
     ),
   aiEnhance: (id: string) => request<{ queued: boolean }>("POST", `/listings/${id}/ai-enhance`, {}),
+  setListingCategory: (
+    id: string,
+    body: { channelCategoryId: string; channelCategoryName: string; remember?: boolean },
+  ) => request<Listing>("POST", `/listings/${id}/category`, body),
+
+  categoryMappings: () => request<{ items: CategoryMapping[] }>("GET", "/category-mappings"),
+  deleteCategoryMapping: (id: string) => request<{ ok: boolean }>("DELETE", `/category-mappings/${id}`),
 };

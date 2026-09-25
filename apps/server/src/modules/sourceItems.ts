@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { SourceItem, SourcePlatform } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
-import { listings, sourceItems, stores } from "../db/schema.js";
+import { categoryMappings, listings, sourceItems, stores } from "../db/schema.js";
 import { attributesToHtml, buildVariants } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import {
@@ -13,7 +13,7 @@ import {
   applyTitleRules,
   filterSkusByPrice,
 } from "../lib/rules.js";
-import { enqueueAiEnhance } from "../jobs/handlers.js";
+import { enqueueAiEnhance, enqueueCategorySuggest } from "../jobs/handlers.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
@@ -36,6 +36,8 @@ export function toSourceItemDto(
     images,
     attributes: r.attributes,
     sellerName: r.sellerName,
+    sourceCategoryId: r.sourceCategoryId,
+    sourceCategoryName: r.sourceCategoryName,
     collectedAt: r.collectedAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     claimedStoreIds,
@@ -146,6 +148,29 @@ export function sourceItemRoutes() {
       .where(and(eq(sourceItems.workspaceId, workspaceId), inArray(sourceItems.id, ids)));
     if (!items.length) throw new HttpError(400, "没有可认领的商品");
 
+    // 已确认的来源类目映射：同来源类目认领时直接套用
+    const catIds = new Set(
+      items.map((i) => i.sourceCategoryId).filter((v): v is string => !!v),
+    );
+    const mappings = catIds.size
+      ? await db
+          .select()
+          .from(categoryMappings)
+          .where(
+            and(
+              eq(categoryMappings.workspaceId, workspaceId),
+              inArray(categoryMappings.sourceCategoryId, [...catIds]),
+            ),
+          )
+      : [];
+    const mappingOf = (item: (typeof items)[number], store: (typeof targetStores)[number]) =>
+      mappings.find(
+        (m) =>
+          m.sourceCategoryId === item.sourceCategoryId &&
+          m.sourcePlatform === item.sourcePlatform &&
+          m.channel === store.platform,
+      );
+
     const values = targetStores.flatMap((store) =>
       items.flatMap((item) => {
         const rules = store.rules ?? {};
@@ -157,6 +182,7 @@ export function sourceItemRoutes() {
           priceText: item.priceText,
           pricing: store.pricing,
         });
+        const mapping = mappingOf(item, store);
         return [
           {
             workspaceId,
@@ -169,6 +195,8 @@ export function sourceItemRoutes() {
             variants,
             // never expose the supplier as the brand
             vendor: store.vendor,
+            channelCategoryId: mapping?.channelCategoryId ?? null,
+            channelCategoryName: mapping?.channelCategoryName ?? null,
           },
         ];
       }),
@@ -178,7 +206,11 @@ export function sourceItemRoutes() {
           .insert(listings)
           .values(values)
           .onConflictDoNothing({ target: [listings.storeId, listings.sourceItemId] })
-          .returning({ id: listings.id, storeId: listings.storeId })
+          .returning({
+            id: listings.id,
+            storeId: listings.storeId,
+            sourceItemId: listings.sourceItemId,
+          })
       : [];
     // 认领即入 AI 产线（店铺设置可关、服务端需配 AI）；建议出现在刊登编辑页，接受前不改草稿。
     if (c.var.deps.config.ai) {
@@ -189,6 +221,16 @@ export function sourceItemRoutes() {
         .filter((l) => aiStoreIds.has(l.storeId))
         .map((l) => l.id);
       await enqueueAiEnhance(db, aiListingIds, workspaceId);
+      // 未套用映射的来源类目 → 类目建议产线（AI Top-3 → 用户确认）
+      const noCategoryIds = created
+        .filter((l) => aiStoreIds.has(l.storeId))
+        .filter((l) => {
+          const item = items.find((i) => i.id === l.sourceItemId);
+          const store = targetStores.find((s) => s.id === l.storeId);
+          return item?.sourceCategoryId && store && !mappingOf(item, store);
+        })
+        .map((l) => l.id);
+      await enqueueCategorySuggest(db, noCategoryIds, workspaceId);
     }
     return c.json({
       created: created.length,
