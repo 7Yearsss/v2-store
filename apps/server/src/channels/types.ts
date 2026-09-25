@@ -1,4 +1,4 @@
-import type { RemoteStatus } from "@caiji/shared";
+import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
 
@@ -41,4 +41,10 @@ export interface ChannelAdapter {
   publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult>;
   /** Channel-side status per remote id; missing products map to DELETED. */
   fetchStatuses(deps: Deps, store: StoreRow, remoteIds: string[]): Promise<Map<string, RemoteStatus>>;
+  /** Search the platform's category tree (taxonomy) by keyword; absent = no category support yet. */
+  searchCategories?(
+    deps: Deps,
+    store: StoreRow,
+    query: string,
+  ): Promise<CategoryCandidate[]>;
 }

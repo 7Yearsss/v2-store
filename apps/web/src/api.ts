@@ -1,4 +1,5 @@
 import type {
+  CategoryMapping,
   Listing,
   ListingStatus,
   ListingSuggestion,
@@ -102,11 +103,17 @@ export const api = {
       "GET",
       `/listings/${id}/suggestions`,
     ),
-  decideSuggestions: (id: string, decisions: Array<{ id: string; action: "accept" | "reject" }>) =>
+  decideSuggestions: (
+    id: string,
+    decisions: Array<{ id: string; action: "accept" | "reject"; choice?: string }>,
+  ) =>
     request<{ accepted: number; rejected: number }>(
       "POST",
       `/listings/${id}/suggestions/decide`,
       { decisions },
     ),
   aiEnhance: (id: string) => request<{ queued: boolean }>("POST", `/listings/${id}/ai-enhance`, {}),
+
+  categoryMappings: () => request<{ items: CategoryMapping[] }>("GET", "/category-mappings"),
+  deleteCategoryMapping: (id: string) => request<{ ok: boolean }>("DELETE", `/category-mappings/${id}`),
 };

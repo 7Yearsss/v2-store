@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { AppLayout } from "./layout/AppLayout";
+import { CategoryMappingsPage } from "./pages/CategoryMappings";
 import { CollectBoxPage } from "./pages/CollectBox";
 import { ListingEditPage } from "./pages/ListingEdit";
 import { ListingsPage } from "./pages/Listings";
@@ -18,6 +19,7 @@ export const router = createBrowserRouter([
       { path: "listings", element: <ListingsPage /> },
       { path: "listings/:id", element: <ListingEditPage /> },
       { path: "stores", element: <StoresPage /> },
+      { path: "category-mappings", element: <CategoryMappingsPage /> },
     ],
   },
 ]);

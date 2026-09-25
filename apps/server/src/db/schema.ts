@@ -103,6 +103,9 @@ export const sourceItems = pgTable(
       .notNull()
       .default({}),
     sellerName: text("seller_name"),
+    /** 来源平台叶子类目（1688 leafCategoryId / leafCategoryName）。 */
+    sourceCategoryId: text("source_category_id"),
+    sourceCategoryName: text("source_category_name"),
     collectedBy: uuid("collected_by").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -225,6 +228,9 @@ export const listings = pgTable(
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
     productType: text("product_type").notNull().default(""),
     vendor: text("vendor").notNull().default(""),
+    /** 已确认的平台类目（Shopify taxonomy gid）；发布时写入 productSet.category。 */
+    channelCategoryId: text("channel_category_id"),
+    channelCategoryName: text("channel_category_name"),
     remoteId: text("remote_id"),
     remoteUrl: text("remote_url"),
     /** channel-side status (ACTIVE/DRAFT/ARCHIVED/DELETED…), synced back */
@@ -255,7 +261,7 @@ export const listingSuggestions = pgTable(
       .notNull()
       .references(() => listings.id, { onDelete: "cascade" }),
     field: text("field", {
-      enum: ["title", "descriptionHtml", "productType", "tags", "options"],
+      enum: ["title", "descriptionHtml", "productType", "tags", "options", "category"],
     }).notNull(),
     /** proposed value; for `options` it's {options, variantOptionValues}. */
     value: jsonb("value").notNull(),
@@ -290,6 +296,66 @@ export const aiUsage = pgTable(
   (t) => [
     index("ai_usage_ws_created_idx").on(t.workspaceId, t.createdAt),
     index("ai_usage_listing_idx").on(t.listingId),
+  ],
+);
+
+// --- category mapping --------------------------------------------------------
+
+/** 平台类目树缓存（按需写入；Shopify taxonomy 只缓存解析过的节点）。 */
+export const channelCategories = pgTable(
+  "channel_categories",
+  {
+    id: id(),
+    platform: text("platform").notNull(),
+    /** 平台类目版本；Shopify taxonomy 无显式版本时固定 "taxonomy"。 */
+    version: text("version").notNull(),
+    categoryId: text("category_id").notNull(),
+    name: text("name").notNull(),
+    /** 完整路径数组（["Apparel","Tops"]）。 */
+    path: jsonb("path").$type<string[]>().notNull().default([]),
+    attributesSchema: jsonb("attributes_schema")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("channel_categories_platform_version_id_uq").on(
+      t.platform,
+      t.version,
+      t.categoryId,
+    ),
+  ],
+);
+
+/** 来源类目 → 平台类目：确认一次，同来源类目以后自动套用。 */
+export const categoryMappings = pgTable(
+  "category_mappings",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourcePlatform: text("source_platform").notNull(),
+    sourceCategoryId: text("source_category_id").notNull(),
+    sourceCategoryName: text("source_category_name"),
+    channel: text("channel").notNull(),
+    channelCategoryId: text("channel_category_id").notNull(),
+    channelCategoryName: text("channel_category_name").notNull(),
+    version: text("version").notNull().default(""),
+    confidence: integer("confidence").notNull().default(0),
+    confirmedBy: text("confirmed_by", { enum: ["user", "ai"] }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("category_mappings_ws_src_channel_uq").on(
+      t.workspaceId,
+      t.sourcePlatform,
+      t.sourceCategoryId,
+      t.channel,
+    ),
+    index("category_mappings_ws_idx").on(t.workspaceId),
   ],
 );
 

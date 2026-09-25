@@ -5,6 +5,7 @@ import { shopifyAppRoutes } from "./channels/shopify/oauth.js";
 import type { AppEnv, Deps } from "./context.js";
 import { HttpError } from "./lib/errors.js";
 import { authRoutes } from "./modules/auth.js";
+import { categoryMappingRoutes } from "./modules/categoryMappings.js";
 import { collectRoutes } from "./modules/collect.js";
 import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
@@ -26,6 +27,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/source-items", sourceItemRoutes());
   app.route("/api/stores", storeRoutes());
   app.route("/api/listings", listingRoutes());
+  app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/media", mediaRoutes());
   app.route("/api/shopify", shopifyAppRoutes());
 

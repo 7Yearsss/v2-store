@@ -314,7 +314,9 @@ export function normalizeOffer(
 ): CollectedOffer {
   const base = getBaseInfo(data);
   const offerId = String(base?.offerId ?? base?.id ?? offerIdHint ?? "") || undefined;
-  const category = getModel(data)?.offerDetail?.leafCategoryName;
+  const detail = getModel(data)?.offerDetail;
+  const category = detail?.leafCategoryName;
+  const categoryId = detail?.leafCategoryId ?? detail?.categoryId ?? detail?.cid;
   return {
     sourcePlatform: "1688",
     sourceUrl:
@@ -326,6 +328,7 @@ export function normalizeOffer(
     skus: extractSkus(data),
     images: extractImages(data),
     attributes: extractAttributes(data),
+    categoryId: categoryId ? String(categoryId) : undefined,
     categoryPath: category ? [String(category)] : undefined,
     sellerName: extractSeller(data),
     collectedAt: new Date().toISOString(),

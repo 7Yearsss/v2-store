@@ -2,13 +2,24 @@ import { zValidator } from "@hono/zod-validator";
 import { and, count, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Listing, ListingSuggestion, OptionsSuggestionValue } from "@caiji/shared";
+import type {
+  CategorySuggestionValue,
+  Listing,
+  ListingSuggestion,
+  OptionsSuggestionValue,
+} from "@caiji/shared";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
 import { jobs, listings, listingSuggestions, stores } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
-import { AI_ENHANCE_LISTING, enqueueAiEnhance, PUBLISH_LISTING } from "../jobs/handlers.js";
+import {
+  AI_ENHANCE_LISTING,
+  CATEGORY_SUGGEST,
+  enqueueAiEnhance,
+  PUBLISH_LISTING,
+} from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
@@ -28,6 +39,8 @@ export function toListingDto(r: ListingRow, images: string[] = r.images): Listin
     tags: r.tags,
     productType: r.productType,
     vendor: r.vendor,
+    channelCategoryId: r.channelCategoryId,
+    channelCategoryName: r.channelCategoryName,
     remoteId: r.remoteId,
     remoteUrl: r.remoteUrl,
     remoteStatus: r.remoteStatus,
@@ -90,6 +103,8 @@ const decideSchema = z.object({
       z.object({
         id: z.string().uuid(),
         action: z.enum(["accept", "reject"]),
+        /** 类目建议：接受哪个候选（缺省取 AI 排第一的）。 */
+        choice: z.string().max(500).optional(),
       }),
     )
     .min(1)
@@ -267,7 +282,7 @@ export function listingRoutes() {
         .from(jobs)
         .where(
           and(
-            eq(jobs.type, AI_ENHANCE_LISTING),
+            inArray(jobs.type, [AI_ENHANCE_LISTING, CATEGORY_SUGGEST]),
             inArray(jobs.status, ["queued", "running"]),
             sql`${jobs.payload}->>'listingId' = ${listingId}`,
           ),
@@ -285,9 +300,10 @@ export function listingRoutes() {
     const { decisions } = c.req.valid("json");
 
     const result = await db.transaction(async (tx) => {
-      const [listing] = await tx
-        .select()
+      const [row] = await tx
+        .select({ listing: listings, storePlatform: stores.platform })
         .from(listings)
+        .innerJoin(stores, eq(stores.id, listings.storeId))
         .where(
           and(
             eq(listings.id, listingId),
@@ -295,7 +311,8 @@ export function listingRoutes() {
             ne(listings.status, "publishing"),
           ),
         );
-      if (!listing) throw new HttpError(409, "刊登不存在或正在发布中");
+      if (!row) throw new HttpError(409, "刊登不存在或正在发布中");
+      const { listing } = row;
       const ids = decisions.map((d) => d.id);
       const rows = await tx
         .select()
@@ -316,7 +333,30 @@ export function listingRoutes() {
         const s = byId.get(d.id);
         if (!s) continue;
         if (d.action === "accept") {
-          Object.assign(listingPatch, applySuggestion(listing, s));
+          if (s.field === "category") {
+            const v = s.value as CategorySuggestionValue;
+            const cand =
+              v.candidates.find((cd) => cd.id === d.choice) ?? v.candidates[0];
+            if (!cand) throw new HttpError(400, "类目建议没有可选候选");
+            Object.assign(listingPatch, {
+              channelCategoryId: cand.id,
+              channelCategoryName: cand.fullName || cand.name,
+            });
+            // 用户确认即记住：同来源类目以后自动套用
+            await upsertCategoryMapping(tx, {
+              workspaceId,
+              sourcePlatform: "1688",
+              sourceCategoryId: v.sourceCategoryId ?? "",
+              sourceCategoryName: v.sourceCategoryName,
+              channel: row.storePlatform,
+              candidate: cand,
+              confidence: 100,
+              confirmedBy: "user",
+              version: TAXONOMY_VERSION,
+            });
+          } else {
+            Object.assign(listingPatch, applySuggestion(listing, s));
+          }
           accepted++;
         } else rejected++;
         await tx

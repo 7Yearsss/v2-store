@@ -109,6 +109,9 @@ export function ListingEditPage() {
         <Typography.Text type="secondary">
           {store ? `${store.name}（${store.currency ?? ""}）` : ""}
         </Typography.Text>
+        <Tag color={listing.channelCategoryId ? "green" : "default"}>
+          类目：{listing.channelCategoryName ?? "未映射"}
+        </Tag>
         {listing.remoteUrl && (
           <a href={listing.remoteUrl} target="_blank" rel="noreferrer">
             在 Shopify 后台查看

@@ -11,6 +11,8 @@ export function fakeShopify(
     remoteStatuses?: Record<string, string | null>;
     /** simulate an app installed without publication scopes */
     noPublicationScope?: boolean;
+    /** taxonomy search results keyed by the search query substring, else a default set */
+    taxonomy?: Record<string, Array<{ id: string; name: string; fullName: string }>>;
   } = {},
 ): FakeFetch {
   return (url, init) => {
@@ -26,6 +28,16 @@ export function fakeShopify(
       const headers = init.headers as Record<string, string>;
       if (!headers["X-Shopify-Access-Token"]?.startsWith("shpat_")) return json({}, 401);
       const { query, variables } = JSON.parse(String(init.body));
+      if (query.includes("TaxonomySearch")) {
+        const nodes =
+          opts.taxonomy?.[variables.query] ??
+          opts.taxonomy?.["*"] ?? [
+            { id: "gid://shopify/TaxonomyCategory/c1", name: "Coats", fullName: "Apparel > Outerwear > Coats" },
+            { id: "gid://shopify/TaxonomyCategory/c2", name: "Jackets", fullName: "Apparel > Outerwear > Jackets" },
+            { id: "gid://shopify/TaxonomyCategory/c3", name: "Hoodies", fullName: "Apparel > Tops > Hoodies" },
+          ];
+        return json({ data: { taxonomy: { categories: { nodes } } } });
+      }
       if (query.includes("stagedUploadsCreate")) {
         return json({
           data: {

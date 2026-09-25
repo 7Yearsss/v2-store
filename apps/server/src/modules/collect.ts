@@ -69,6 +69,8 @@ export async function ingestOffer(
     images: offer.images,
     attributes: offer.attributes,
     sellerName: offer.sellerName ?? null,
+    sourceCategoryId: offer.categoryId ?? null,
+    sourceCategoryName: offer.categoryPath?.[0] ?? null,
     collectedBy: userId,
     collectedAt: new Date(offer.collectedAt || Date.now()),
   };

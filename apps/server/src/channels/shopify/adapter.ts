@@ -1,4 +1,4 @@
-import type { RemoteStatus } from "@caiji/shared";
+import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
 import type { Deps } from "../../context.js";
 import {
   ChannelError,
@@ -72,6 +72,7 @@ export function toProductSetInput(
     productType: listing.productType || undefined,
     tags: listing.tags,
     status: isCreate ? "ACTIVE" : undefined,
+    category: listing.channelCategoryId || undefined,
     productOptions,
     variants,
     files: fileSources.map((src) => ({
@@ -140,6 +141,17 @@ export const shopifyAdapter: ChannelAdapter = {
     };
   },
 
+  async searchCategories(deps, store, query): Promise<CategoryCandidate[]> {
+    const data = await shopifyGraphql<{
+      taxonomy: {
+        categories: {
+          nodes: Array<{ id: string; name: string; fullName: string }>;
+        };
+      };
+    }>(deps, store, TAXONOMY_SEARCH, { query });
+    return data.taxonomy.categories.nodes;
+  },
+
   async fetchStatuses(deps, store, remoteIds) {
     const out = new Map<string, RemoteStatus>();
     for (let i = 0; i < remoteIds.length; i += 100) {
@@ -163,6 +175,16 @@ const PUBLISHABLE_PUBLISH = /* GraphQL */ `
   mutation PublishablePublish($id: ID!, $input: [PublicationInput!]!) {
     publishablePublish(id: $id, input: $input) {
       userErrors { field message }
+    }
+  }
+`;
+
+const TAXONOMY_SEARCH = /* GraphQL */ `
+  query TaxonomySearch($query: String!) {
+    taxonomy {
+      categories(first: 8, search: $query) {
+        nodes { id name fullName }
+      }
     }
   }
 `;
