@@ -214,6 +214,93 @@ describe("属性映射", () => {
     ).toBe(true);
   });
 
+  it("发布把 choice 属性写进 Shopify 标准 metafield（metaobject 引用）", async () => {
+    const captured: Array<{ key: string; namespace: string; value: string; ownerId: string }> =
+      [];
+    ctx = await setup(fakeShopify({ capturedMetafields: captured }));
+    const t = await ctx.register();
+    // 术语映射先铺：认领时属性值 棉 → Cotton（与 taxonomy 候选值一致）
+    await ctx.api(
+      "PUT",
+      "/api/term-mappings",
+      { lang: "en", sourceText: "棉", targetText: "Cotton" },
+      t,
+    );
+    await ctx.api(
+      "PUT",
+      "/api/attribute-mappings",
+      {
+        channel: "shopify",
+        sourceName: "材质",
+        channelAttrId: "gid://shopify/TaxonomyChoiceListAttribute/material",
+        channelAttrName: "Material",
+      },
+      t,
+    );
+    const { listing } = await storeAndClaim(ctx, t, "attr-pub1");
+    const cur = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(cur.body.channelAttributes[0]?.value).toBe("Cotton");
+
+    // 确认类目后发布
+    await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/category`,
+      {
+        channelCategoryId: "gid://shopify/TaxonomyCategory/c1",
+        channelCategoryName: "Apparel > Outerwear > Coats",
+        remember: false,
+      },
+      t,
+    );
+    const pub = await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
+    expect(pub.status).toBe(200);
+    await drain(ctx);
+
+    const mf = captured.find((m) => m.key === "material");
+    expect(mf).toBeTruthy();
+    expect(mf!.namespace).toBe("shopify");
+    expect(mf!.ownerId).toBe("gid://shopify/Product/42");
+    expect(JSON.parse(mf!.value)[0]).toMatch(/^gid:\/\/shopify\/Metaobject\//);
+
+    const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(done.body.status).toBe("published");
+  });
+
+  it("非候选值 / 无映射模板的属性写入跳过并告警，不阻塞发布", async () => {
+    const captured: Array<{ key: string }> = [];
+    ctx = await setup(fakeShopify({ capturedMetafields: captured }));
+    const t = await ctx.register();
+    await ctx.api(
+      "PUT",
+      "/api/attribute-mappings",
+      {
+        channel: "shopify",
+        sourceName: "材质",
+        channelAttrId: "gid://shopify/TaxonomyChoiceListAttribute/material",
+        channelAttrName: "Material",
+      },
+      t,
+    );
+    const { listing } = await storeAndClaim(ctx, t, "attr-pub2");
+    // 值是原文「棉」，匹配不到 taxonomy 候选值 → 跳过并告警
+    await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/category`,
+      {
+        channelCategoryId: "gid://shopify/TaxonomyCategory/c1",
+        channelCategoryName: "Coats",
+        remember: false,
+      },
+      t,
+    );
+    await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
+    await drain(ctx);
+    expect(captured.length).toBe(0);
+    const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(done.body.status).toBe("published");
+    expect(done.body.lastError?.includes("非标准候选值")).toBe(true);
+  });
+
   it("类目属性端点：懒拉取 + 缓存 + 跨工作区店铺 404", async () => {
     ctx = await setup(fakeShopify());
     const t = await ctx.register();

@@ -4,6 +4,7 @@ import type {
   RemoteStatus,
 } from "@caiji/shared";
 import { cacheCategoryNodes, TAXONOMY_VERSION } from "../../lib/category.js";
+import { cachedCategoryAttributes } from "../../lib/attributes.js";
 import type { Deps } from "../../context.js";
 import {
   ChannelError,
@@ -312,6 +313,189 @@ async function bindVariantImages(
   }
 }
 
+const STD_TEMPLATES = /* GraphQL */ `
+  query StdTemplates {
+    standardMetafieldDefinitionTemplates(first: 250) {
+      nodes { id name namespace key type { name } }
+    }
+  }
+`;
+
+const ENABLE_STD_DEF = /* GraphQL */ `
+  mutation EnableStdDef($id: ID!) {
+    standardMetafieldDefinitionEnable(id: $id, ownerType: PRODUCT) {
+      createdDefinition { id }
+      userErrors { field message code }
+    }
+  }
+`;
+
+const METAOBJECT_BY_TAXREF = /* GraphQL */ `
+  query MetaobjectByTaxref($type: String!, $query: String!) {
+    metaobjects(first: 1, type: $type, query: $query) {
+      nodes { id }
+    }
+  }
+`;
+
+const METAOBJECT_MINT = /* GraphQL */ `
+  mutation MetaobjectMint($metaobject: MetaobjectCreateInput!) {
+    metaobjectCreate(metaobject: $metaobject) {
+      metaobject { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+const ATTR_METAFIELDS = /* GraphQL */ `
+  mutation AttrMetafields($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields { namespace key }
+      userErrors { field message }
+    }
+  }
+`;
+
+/** 类目标准属性写回 Shopify。
+ *  choice 属性值 = Metaobject 引用：按 taxonomy_reference 找到已有
+ *  metaobject（Shopify 懒创建，店里只有商家选过的值），没有就铸一个，
+ *  然后 metafieldsSet 到 shopify.<key>。attribute → metafield key 没有官方
+ *  映射，用 standardMetafieldDefinitionTemplates 按名称匹配。
+ *  text/measurement 属性无标准 metafield 写法，跳过。
+ *  需要 read_metaobjects/write_metaobjects scope——缺失只警告不阻塞发布。 */
+async function writeCategoryAttributes(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+  listing: ListingRow,
+): Promise<string[]> {
+  if (!listing.channelAttributes.length || !listing.channelCategoryId) return [];
+  try {
+    const schema = await cachedCategoryAttributes(
+      deps.db,
+      deps,
+      store,
+      listing.channelCategoryId,
+    ).catch(() => []);
+    const schemaById = new Map(schema.map((a) => [a.id, a]));
+    const wanted = listing.channelAttributes
+      .map((w) => ({ w, attr: schemaById.get(w.attrId) }))
+      .filter((x): x is { w: (typeof listing.channelAttributes)[0]; attr: ChannelAttribute } => !!x.attr);
+    if (!wanted.length) return [];
+
+    const tplData = await shopifyGraphql<{
+      standardMetafieldDefinitionTemplates: {
+        nodes: Array<{ id: string; name: string; namespace: string; key: string }>;
+      };
+    }>(deps, store, STD_TEMPLATES);
+    const templates = tplData.standardMetafieldDefinitionTemplates.nodes.filter(
+      (t) => t.namespace === "shopify",
+    );
+
+    const metafields: Array<{
+      ownerId: string;
+      namespace: "shopify";
+      key: string;
+      type: string;
+      value: string;
+    }> = [];
+    const skipped: string[] = [];
+    const enabled = new Set<string>();
+    const moCache = new Map<string, string>();
+
+    for (const { w, attr } of wanted) {
+      const tpl = templates.find((t) => t.name.toLowerCase() === attr.name.toLowerCase());
+      if (!tpl || attr.kind !== "choice") {
+        skipped.push(attr.name);
+        continue;
+      }
+      if (!enabled.has(tpl.key)) {
+        const en = await shopifyGraphql<{
+          standardMetafieldDefinitionEnable: {
+            userErrors: Array<{ message: string; code?: string }>;
+          };
+        }>(deps, store, ENABLE_STD_DEF, { id: tpl.id });
+        const errs = en.standardMetafieldDefinitionEnable.userErrors.filter(
+          (e) => !/already|taken|exist/i.test(e.message + (e.code ?? "")),
+        );
+        if (errs.length) {
+          skipped.push(`${attr.name}（启用 metafield 失败：${errs[0]!.message}）`);
+          continue;
+        }
+        enabled.add(tpl.key);
+      }
+      const taxGid = attr.values?.find(
+        (v) => v.name.toLowerCase() === w.value.trim().toLowerCase(),
+      )?.id;
+      if (!taxGid) {
+        skipped.push(`${attr.name}=${w.value}（非标准候选值）`);
+        continue;
+      }
+      const moType = `shopify--${tpl.key}`;
+      const cacheKey = `${moType}|${taxGid}`;
+      let moGid = moCache.get(cacheKey);
+      if (!moGid) {
+        const found = await shopifyGraphql<{ metaobjects: { nodes: Array<{ id: string }> } }>(
+          deps,
+          store,
+          METAOBJECT_BY_TAXREF,
+          { type: moType, query: `fields.taxonomy_reference:"${taxGid}"` },
+        );
+        moGid = found.metaobjects.nodes[0]?.id;
+        if (!moGid) {
+          const minted = await shopifyGraphql<{
+            metaobjectCreate: {
+              metaobject: { id: string } | null;
+              userErrors: Array<{ message: string }>;
+            };
+          }>(deps, store, METAOBJECT_MINT, {
+            metaobject: {
+              type: moType,
+              fields: [{ key: "taxonomy_reference", value: taxGid }],
+            },
+          });
+          if (minted.metaobjectCreate.userErrors.length || !minted.metaobjectCreate.metaobject) {
+            skipped.push(
+              `${attr.name}=${w.value}（metaobject 创建失败：${minted.metaobjectCreate.userErrors[0]?.message ?? "无返回"}）`,
+            );
+            continue;
+          }
+          moGid = minted.metaobjectCreate.metaobject.id;
+        }
+        moCache.set(cacheKey, moGid);
+      }
+      metafields.push({
+        ownerId: productId,
+        namespace: "shopify",
+        key: tpl.key,
+        type: "list.metaobject_reference",
+        value: JSON.stringify([moGid]),
+      });
+    }
+
+    const warnings: string[] = [];
+    if (metafields.length) {
+      const res = await shopifyGraphql<{
+        metafieldsSet: { userErrors: Array<{ field?: string[]; message: string }> };
+      }>(deps, store, ATTR_METAFIELDS, { metafields });
+      if (res.metafieldsSet.userErrors.length) {
+        warnings.push(
+          `类目属性写入失败：${res.metafieldsSet.userErrors.map((e) => e.message).join("；")}`,
+        );
+      }
+    }
+    if (skipped.length) warnings.push(`未写入的类目属性：${skipped.join("、")}`);
+    return warnings;
+  } catch (e) {
+    if (e instanceof ChannelError || /access|denied|权限|scope/i.test(String(e))) {
+      return [
+        `类目属性未写入：${e instanceof Error ? e.message : String(e)}（需要 read_metaobjects / write_metaobjects 权限，给应用版本加 scope 后重新授权店铺）`,
+      ];
+    }
+    return [`类目属性未写入：${e instanceof Error ? e.message : String(e)}`];
+  }
+}
+
 export const shopifyAdapter: ChannelAdapter = {
   async verify(deps: Deps, store: StoreRow): Promise<ShopInfo> {
     const data = await shopifyGraphql<{
@@ -377,6 +561,8 @@ export const shopifyAdapter: ChannelAdapter = {
       const stockWarning = await setVariantStock(deps, store, product.id, listing);
       if (stockWarning) warnings.push(stockWarning);
     }
+    const attrWarnings = await writeCategoryAttributes(deps, store, product.id, listing);
+    warnings.push(...attrWarnings);
     if (!listing.remoteId && publishStatus !== "draft") {
       const channelWarning = await publishToOnlineStore(deps, store, product.id);
       if (channelWarning) warnings.push(channelWarning);
