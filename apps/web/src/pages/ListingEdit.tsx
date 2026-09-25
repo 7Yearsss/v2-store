@@ -335,17 +335,36 @@ export function ListingEditPage() {
         />
       </Card>
 
-      <Space>
+      <div
+        style={{
+          position: "sticky",
+          bottom: 0,
+          zIndex: 10,
+          marginTop: -8,
+          padding: "12px 16px",
+          background: "rgba(255,255,255,0.92)",
+          backdropFilter: "blur(8px)",
+          borderTop: "1px solid #f0f0f0",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
         <Button disabled={!dirty || locked} loading={save.isPending && !save.variables} onClick={() => save.mutate(false)}>
           保存
         </Button>
         <Button type="primary" disabled={locked} loading={save.isPending && save.variables} onClick={() => save.mutate(true)}>
           {listing.status === "published" ? "保存并同步到店铺" : "保存并发布"}
         </Button>
-        <Link to={`/collect-box`}>
+        {dirty && (
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            有未保存的修改
+          </Typography.Text>
+        )}
+        <Link to={`/collect-box`} style={{ marginLeft: "auto" }}>
           <Typography.Text type="secondary">来源：采集箱</Typography.Text>
         </Link>
-      </Space>
+      </div>
     </Space>
   );
 }

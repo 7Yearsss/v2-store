@@ -175,6 +175,21 @@ export function CollectBoxPage() {
           loading={list.isFetching}
           dataSource={list.data?.items}
           rowSelection={{ selectedRowKeys: selected, onChange: (k) => setSelected(k as string[]), preserveSelectedRowKeys: true }}
+          locale={{
+            emptyText: (
+              <Empty
+                description={
+                  q ? (
+                    "没有匹配的商品"
+                  ) : (
+                    <span>
+                      采集箱是空的。在 1688 商品页点「加入采集箱」，或在上方粘贴商品链接/offerId 批量采集。
+                    </span>
+                  )
+                }
+              />
+            ),
+          }}
           pagination={{
             current: page,
             pageSize,
@@ -191,8 +206,16 @@ export function CollectBoxPage() {
               title: "图片",
               dataIndex: "images",
               width: 80,
-              render: (imgs: string[]) =>
-                imgs[0] ? <Image src={imgs[0]} width={56} height={56} style={{ objectFit: "cover" }} /> : null,
+              render: (imgs: string[]) => (
+                <Image
+                  src={imgs[0] || "/placeholder.svg"}
+                  fallback="/placeholder.svg"
+                  width={56}
+                  height={56}
+                  style={{ objectFit: "cover" }}
+                  preview={!!imgs[0]}
+                />
+              ),
             },
             {
               title: "标题",

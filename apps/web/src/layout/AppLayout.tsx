@@ -1,5 +1,6 @@
 import {
   ApartmentOutlined,
+  DashboardOutlined,
   InboxOutlined,
   LogoutOutlined,
   ShopOutlined,
@@ -13,10 +14,11 @@ import { api } from "../api";
 import { authorizeExtension, pingExtension } from "../extensionBridge";
 
 const MENU = [
+  { key: "/", icon: <DashboardOutlined />, label: "工作台" },
   { key: "/collect-box", icon: <InboxOutlined />, label: "采集箱" },
   { key: "/listings", icon: <UnorderedListOutlined />, label: "刊登管理" },
   { key: "/stores", icon: <ShopOutlined />, label: "店铺授权" },
-  { key: "/category-mappings", icon: <ApartmentOutlined />, label: "类目映射" },
+  { key: "/category-mappings", icon: <ApartmentOutlined />, label: "映射管理" },
 ];
 
 export function useExtension() {
@@ -80,7 +82,8 @@ export function AppLayout() {
     );
   }
 
-  const selected = MENU.find((m) => pathname.startsWith(m.key))?.key ?? "/collect-box";
+  const selected =
+    pathname === "/" ? "/" : (MENU.find((m) => m.key !== "/" && pathname.startsWith(m.key))?.key ?? "/collect-box");
 
   return (
     <Layout style={{ minHeight: "100vh" }}>

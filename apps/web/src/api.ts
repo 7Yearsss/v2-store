@@ -10,12 +10,27 @@ import type {
   Me,
   Page,
   PricingRule,
+  RemoteStatus,
   SourceItem,
   Store,
   StoreRules,
   TermMapping,
   StoreSettingsPayload,
 } from "@caiji/shared";
+
+export interface Overview {
+  collectBox: { total: number; unclaimed: number };
+  listings: Record<ListingStatus, number>;
+  jobs: { pending: number; running: number; failed24h: number };
+  recentResults: Array<{
+    id: string;
+    title: string;
+    status: ListingStatus;
+    remoteStatus: RemoteStatus | null;
+    lastError: string | null;
+    updatedAt: string;
+  }>;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -103,6 +118,7 @@ export const api = {
 
   listings: (p: { status?: ListingStatus; storeId?: string; q?: string; page?: number; pageSize?: number }) =>
     request<Page<Listing>>("GET", `/listings${qs(p)}`),
+  overview: () => request<Overview>("GET", "/overview"),
   listingCounts: () => request<Partial<Record<ListingStatus, number>>>("GET", "/listings/counts"),
   listing: (id: string) => request<Listing>("GET", `/listings/${id}`),
   updateListing: (id: string, body: Partial<Listing>) => request<Listing>("PATCH", `/listings/${id}`, body),
