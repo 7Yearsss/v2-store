@@ -11,6 +11,7 @@ import { termMappingRoutes } from "./modules/termMappings.js";
 import { collectRoutes } from "./modules/collect.js";
 import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
+import { overviewRoutes } from "./modules/overview.js";
 import { sourceItemRoutes } from "./modules/sourceItems.js";
 import { storeRoutes } from "./modules/stores.js";
 import { templateRoutes } from "./modules/templates.js";
@@ -30,6 +31,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/source-items", sourceItemRoutes());
   app.route("/api/stores", storeRoutes());
   app.route("/api/listings", listingRoutes());
+  app.route("/api/overview", overviewRoutes());
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
   app.route("/api/templates", templateRoutes());

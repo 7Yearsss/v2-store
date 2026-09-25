@@ -7,6 +7,7 @@ import {
   Card,
   Form,
   Input,
+  Empty,
   InputNumber,
   Modal,
   Popconfirm,
@@ -558,6 +559,9 @@ export function StoresPage() {
         loading={stores.isLoading}
         dataSource={stores.data}
         pagination={false}
+        locale={{
+          emptyText: <Empty description="还没有店铺，点右上角「连接 Shopify 店铺」授权一个" />,
+        }}
         columns={[
           {
             title: "店铺",

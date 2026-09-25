@@ -1,6 +1,6 @@
 import type { Listing, ListingStatus, RemoteStatus } from "@caiji/shared";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Card, Image, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Card, Empty, Image, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import dayjs from "dayjs";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
@@ -153,6 +153,23 @@ export function ListingsPage() {
           onChange: (k) => setSelected(k as string[]),
           getCheckboxProps: (r) => ({ disabled: r.status === "publishing" }),
         }}
+        locale={{
+          emptyText: (
+            <Empty
+              description={
+                status === "draft" && !q ? (
+                  <span>
+                    还没有草稿。去<Link to="/collect-box">采集箱</Link>把商品认领到店铺，或切换上方状态查看。
+                  </span>
+                ) : status === "failed" ? (
+                  "没有发布失败的刊登"
+                ) : (
+                  "暂无记录"
+                )
+              }
+            />
+          ),
+        }}
         pagination={{
           current: page,
           pageSize,
@@ -169,8 +186,16 @@ export function ListingsPage() {
             title: "图片",
             dataIndex: "images",
             width: 80,
-            render: (imgs: string[]) =>
-              imgs[0] ? <Image src={imgs[0]} width={56} height={56} style={{ objectFit: "cover" }} /> : null,
+            render: (imgs: string[]) => (
+              <Image
+                src={imgs[0] || "/placeholder.svg"}
+                fallback="/placeholder.svg"
+                width={56}
+                height={56}
+                style={{ objectFit: "cover" }}
+                preview={!!imgs[0]}
+              />
+            ),
           },
           {
             title: "标题",
@@ -220,10 +245,13 @@ export function ListingsPage() {
           { title: "更新时间", dataIndex: "updatedAt", width: 130, render: (t: string) => dayjs(t).format("MM-DD HH:mm") },
           {
             title: "操作",
-            width: 150,
+            width: 170,
             render: (_, r) => (
               <Space>
                 <Link to={`/listings/${r.id}`}>编辑</Link>
+                {r.status === "failed" && (
+                  <Typography.Link onClick={() => publish.mutate([r.id])}>重发</Typography.Link>
+                )}
                 {r.remoteUrl && (
                   <a href={r.remoteUrl} target="_blank" rel="noreferrer">
                     店铺后台
