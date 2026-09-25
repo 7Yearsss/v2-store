@@ -199,7 +199,7 @@ function payloadToForm(p: StoreSettingsPayload): SettingsForm {
 }
 
 function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () => void }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const [form] = Form.useForm<SettingsForm>();
   useEffect(() => {
@@ -278,7 +278,7 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         <Button
           onClick={() => {
             let name = "";
-            Modal.confirm({
+            modal.confirm({
               title: "存为模板",
               content: (
                 <Input
