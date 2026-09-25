@@ -1,3 +1,4 @@
+import type { AntiCode, CollectHarvest, SourceInfo } from "@caiji/shared";
 import {
   findInitData,
   findOfferList,
@@ -127,6 +128,50 @@ if (!window.__v2_1688_collect_main_ready) {
     return origSend.apply(this, args as []);
   };
 
+  // --- harvest contract:收割 HTML + URL tokens,解析下沉服务端 ---------------
+
+  function sourceInfo(): SourceInfo {
+    const href = location.href;
+    return {
+      itemUrl: href,
+      itemId:
+        href.match(/offer\/(\d+)\.htm/)?.[1] ??
+        href.match(/detail\/(\d+)\.htm/)?.[1] ??
+        href.match(/[?&]offerId=(\d+)/)?.[1],
+      site: location.hostname.replace(/\.(1688\.com)$/i, "") || "www",
+      source: "1688",
+    };
+  }
+
+  /** Anti-bot/login gate before collection — miaoshou validatorCollectDetail. */
+  function validatorCollectDetail(): { antiCode: AntiCode; message: string } | null {
+    const html = document.documentElement?.innerHTML ?? "";
+    if (/punish|deny_pc|verifycode|滑块|安全验证/.test(html)) {
+      return {
+        antiCode: "needVerifySecurity",
+        message: "页面出现安全验证，请通过验证后再采集",
+      };
+    }
+    // detail page missing both init data and any SKU UI usually means a
+    // login-gated variant of the offer was served.
+    const skuUi = document.querySelector("#skuSelection,.sku-item,[class*=skuName]");
+    if (!window.__INIT_DATA && !skuUi && /signin|login/i.test(location.href)) {
+      return { antiCode: "notLogin", message: "货源平台需要登录，请先登录" };
+    }
+    return null;
+  }
+
+  function harvest(pageContent?: string): CollectHarvest {
+    const { data } = pageData();
+    return {
+      sourceInfo: sourceInfo(),
+      pageContent: pageContent ?? document.documentElement.innerHTML,
+      afterUrl: location.href,
+      productExtInfo: data ? { initData: data } : undefined,
+      collectedAt: new Date().toISOString(),
+    };
+  }
+
   // --- page-data access ----------------------------------------------------
 
   function pageData(): { data: any; source: string | null } {
@@ -203,7 +248,7 @@ if (!window.__v2_1688_collect_main_ready) {
     );
   }
 
-  /** Fetch an offer detail page in-session and parse its __INIT_DATA. */
+  /** Fetch an offer detail page in-session; ship the raw HTML upstream. */
   async function collectByOfferId(offerId: string) {
     if (isListPage()) {
       throw new Error("列表页禁止页内拉详情（风控保护）");
@@ -214,32 +259,49 @@ if (!window.__v2_1688_collect_main_ready) {
     const resp = await fetch(url, { credentials: "include", cache: "no-store" });
     if (!resp.ok) throw new Error(`拉取详情失败 HTTP ${resp.status}`);
     const html = await resp.text();
-    const data = findInitData(html);
-    if (data) return normalizeOffer(data, id, url);
-    const cached = window[DETAIL_CACHE_KEY]?.[id]?.offer;
-    if (cached) return cached;
-    throw new Error("未解析到 __INIT_DATA");
+    return {
+      sourceInfo: {
+        itemUrl: url,
+        itemId: id,
+        site: "detail",
+        source: "1688",
+      },
+      pageContent: html,
+      afterUrl: url,
+      productExtInfo: { initData: findInitData(html) ?? undefined },
+      collectedAt: new Date().toISOString(),
+    } satisfies CollectHarvest;
   }
 
   document.addEventListener("v2:1688:req", (ev: any) => {
     const { requestId, action, offerId } = ev?.detail ?? {};
     if (!requestId) return;
     (async () => {
+      if (action === "validateCollectDetail") {
+        return { violation: validatorCollectDetail() };
+      }
       if (action === "getProductData") {
-        const { data, source } = pageData();
-        if (data) {
-          return { offer: normalizeOffer(data, offerId, location.href), source };
+        const violation = validatorCollectDetail();
+        if (violation) throw new Error(violation.message);
+        const h = harvest();
+        const { data } = pageData();
+        // Cheap structured fallbacks so the server can skip HTML parsing when
+        // it only needs fields we already hold.
+        const idFromUrl = h.sourceInfo.itemId;
+        const cached = idFromUrl
+          ? window[DETAIL_CACHE_KEY]?.[idFromUrl]?.offer
+          : undefined;
+        const offer = data
+          ? normalizeOffer(data, offerId, location.href)
+          : (cached ?? domFallbackOffer(idFromUrl) ?? undefined);
+        if (offer) h.productExtInfo = { ...h.productExtInfo, offer };
+        if (!data && !offer && !h.pageContent) {
+          throw new Error("当前页无 __INIT_DATA/context，DOM 兜底也采不到");
         }
-        const idFromUrl = location.pathname.match(/offer\/(\d+)/)?.[1];
-        const key = offerId ?? idFromUrl;
-        const cached = key ? window[DETAIL_CACHE_KEY]?.[key]?.offer : undefined;
-        if (cached) return { offer: cached, source: "sniffed-api" };
-        const dom = domFallbackOffer(key);
-        if (dom) return { offer: dom, source: "dom-fallback" };
-        throw new Error("当前页无 __INIT_DATA/context，DOM 兜底也采不到");
+        return { harvest: h, source: data ? "page" : "fallback" };
       }
       if (action === "collectProductByOfferId") {
-        return { offer: await collectByOfferId(offerId) };
+        return { harvest: await collectByOfferId(offerId) };
       }
       if (action === "getShopOfferList") {
         const cached = window[CACHE_KEY];
