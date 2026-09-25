@@ -24,6 +24,8 @@ export interface Overview {
   collectBox: { total: number; unclaimed: number };
   listings: Record<ListingStatus, number>;
   jobs: { pending: number; running: number; failed24h: number };
+  /** 最近 24h AI 调用用量 */
+  ai24h: { calls: number; tokens: number; errors: number };
   recentResults: Array<{
     id: string;
     title: string;

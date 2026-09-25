@@ -115,6 +115,14 @@ export function DashboardPage() {
             </>
           )}
         </div>
+        {(d?.ai24h.calls ?? 0) > 0 && (
+          <Card size="small">
+            <Typography.Text type="secondary">
+              最近 24 小时 AI 调用 {d!.ai24h.calls} 次，消耗 {d!.ai24h.tokens.toLocaleString()} tokens
+              {d!.ai24h.errors > 0 ? `，失败 ${d!.ai24h.errors} 次` : ""}
+            </Typography.Text>
+          </Card>
+        )}
         {(d?.jobs.failed24h ?? 0) > 0 && (
           <Alert
             type="error"
