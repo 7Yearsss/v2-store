@@ -12,6 +12,12 @@ export interface AppConfig {
     scopes: string;
     apiVersion: string;
   };
+  /** AI listing pipeline; undefined when AI_BASE_URL/AI_API_KEY are unset. */
+  ai?: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  };
 }
 
 /** Everything a request handler needs; injected so tests build isolated apps. */

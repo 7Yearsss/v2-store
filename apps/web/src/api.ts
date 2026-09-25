@@ -1,6 +1,7 @@
 import type {
   Listing,
   ListingStatus,
+  ListingSuggestion,
   Me,
   Page,
   PricingRule,
@@ -68,8 +69,10 @@ export const api = {
   ) => request<Store>("POST", "/stores/shopify", body),
   shopifyInstallUrl: (shop: string) =>
     request<{ url: string }>("GET", `/shopify/install${qs({ shop })}`),
-  updateStore: (id: string, body: { name?: string; pricing?: PricingRule; vendor?: string }) =>
-    request<Store>("PATCH", `/stores/${id}`, body),
+  updateStore: (
+    id: string,
+    body: { name?: string; pricing?: PricingRule; vendor?: string; aiEnhance?: boolean; language?: string },
+  ) => request<Store>("PATCH", `/stores/${id}`, body),
   verifyStore: (id: string) => request<Store>("POST", `/stores/${id}/verify`, {}),
   deleteStore: (id: string) => request("DELETE", `/stores/${id}`),
   syncStore: (id: string) => request<{ queued: boolean }>("POST", `/stores/${id}/sync`, {}),
@@ -81,4 +84,16 @@ export const api = {
   updateListing: (id: string, body: Partial<Listing>) => request<Listing>("PATCH", `/listings/${id}`, body),
   publish: (ids: string[]) => request<{ queued: number; skipped: number }>("POST", "/listings/publish", { ids }),
   deleteListings: (ids: string[]) => request<{ deleted: number }>("POST", "/listings/delete", { ids }),
+  listingSuggestions: (id: string) =>
+    request<{ items: ListingSuggestion[]; pending: boolean }>(
+      "GET",
+      `/listings/${id}/suggestions`,
+    ),
+  decideSuggestions: (id: string, decisions: Array<{ id: string; action: "accept" | "reject" }>) =>
+    request<{ accepted: number; rejected: number }>(
+      "POST",
+      `/listings/${id}/suggestions/decide`,
+      { decisions },
+    ),
+  aiEnhance: (id: string) => request<{ queued: boolean }>("POST", `/listings/${id}/ai-enhance`, {}),
 };

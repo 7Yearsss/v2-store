@@ -1,13 +1,13 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, count, desc, eq, ilike, inArray, ne } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Listing } from "@caiji/shared";
+import type { Listing, ListingSuggestion, OptionsSuggestionValue } from "@caiji/shared";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
-import { listings } from "../db/schema.js";
+import { jobs, listings, listingSuggestions } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
-import { PUBLISH_LISTING } from "../jobs/handlers.js";
+import { AI_ENHANCE_LISTING, enqueueAiEnhance, PUBLISH_LISTING } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
@@ -82,6 +82,56 @@ const patchSchema = z
   );
 
 const idsSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
+
+const decideSchema = z.object({
+  decisions: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        action: z.enum(["accept", "reject"]),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
+
+function toSuggestionDto(r: typeof listingSuggestions.$inferSelect): ListingSuggestion {
+  return {
+    id: r.id,
+    listingId: r.listingId,
+    field: r.field,
+    value: r.value,
+    status: r.status,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+/** Write an accepted suggestion into the listing row (must run inside the caller's tx). */
+function applySuggestion(
+  listing: ListingRow,
+  s: typeof listingSuggestions.$inferSelect,
+): Partial<ListingRow> {
+  switch (s.field) {
+    case "title":
+      return { title: String(s.value).slice(0, 255) };
+    case "descriptionHtml":
+      return { descriptionHtml: String(s.value).slice(0, 200_000) };
+    case "productType":
+      return { productType: String(s.value).slice(0, 255) };
+    case "tags":
+      return { tags: (s.value as string[]).slice(0, 250) };
+    case "options": {
+      const v = s.value as OptionsSuggestionValue;
+      const variants = listing.variants.map((vr, i) => ({
+        ...vr,
+        optionValues: v.variantOptionValues[i] ?? vr.optionValues,
+      }));
+      return { options: v.options, variants };
+    }
+    default:
+      return {};
+  }
+}
 
 export function listingRoutes() {
   const r = new Hono<AppEnv>();
@@ -175,6 +225,115 @@ export function listingRoutes() {
       return rows.length;
     });
     return c.json({ queued, skipped: ids.length - queued });
+  });
+
+  /** AI 建议列表 + 是否还有 AI 任务在跑（用于轮询提示）。 */
+  r.get("/:id/suggestions", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const [listing] = await db
+      .select({ id: listings.id })
+      .from(listings)
+      .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+    if (!listing) throw notFound("刊登");
+    const [items, pendingJobs] = await Promise.all([
+      db
+        .select()
+        .from(listingSuggestions)
+        .where(
+          and(
+            eq(listingSuggestions.listingId, listingId),
+            eq(listingSuggestions.workspaceId, workspaceId),
+          ),
+        )
+        .orderBy(desc(listingSuggestions.createdAt)),
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.type, AI_ENHANCE_LISTING),
+            inArray(jobs.status, ["queued", "running"]),
+            sql`${jobs.payload}->>'listingId' = ${listingId}`,
+          ),
+        )
+        .limit(1),
+    ]);
+    return c.json({ items: items.map(toSuggestionDto), pending: pendingJobs.length > 0 });
+  });
+
+  /** Accept → write the field into the listing; reject → mark. Batch in one tx. */
+  r.post("/:id/suggestions/decide", zValidator("json", decideSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const { decisions } = c.req.valid("json");
+
+    const result = await db.transaction(async (tx) => {
+      const [listing] = await tx
+        .select()
+        .from(listings)
+        .where(
+          and(
+            eq(listings.id, listingId),
+            eq(listings.workspaceId, workspaceId),
+            ne(listings.status, "publishing"),
+          ),
+        );
+      if (!listing) throw new HttpError(409, "刊登不存在或正在发布中");
+      const ids = decisions.map((d) => d.id);
+      const rows = await tx
+        .select()
+        .from(listingSuggestions)
+        .where(
+          and(
+            inArray(listingSuggestions.id, ids),
+            eq(listingSuggestions.listingId, listingId),
+            eq(listingSuggestions.workspaceId, workspaceId),
+            eq(listingSuggestions.status, "pending"),
+          ),
+        );
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      let accepted = 0;
+      let rejected = 0;
+      const listingPatch: Partial<ListingRow> = {};
+      for (const d of decisions) {
+        const s = byId.get(d.id);
+        if (!s) continue;
+        if (d.action === "accept") {
+          Object.assign(listingPatch, applySuggestion(listing, s));
+          accepted++;
+        } else rejected++;
+        await tx
+          .update(listingSuggestions)
+          .set({ status: d.action === "accept" ? "accepted" : "rejected" })
+          .where(eq(listingSuggestions.id, s.id));
+      }
+      if (Object.keys(listingPatch).length) {
+        await tx.update(listings).set(listingPatch).where(eq(listings.id, listingId));
+      }
+      return { accepted, rejected };
+    });
+    return c.json(result);
+  });
+
+  /** Manually re-run the AI pass (fresh suggestions supersede pending ones). */
+  r.post("/:id/ai-enhance", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const [listing] = await db
+      .select({ id: listings.id })
+      .from(listings)
+      .where(
+        and(
+          eq(listings.id, c.req.param("id")),
+          eq(listings.workspaceId, workspaceId),
+        ),
+      );
+    if (!listing) throw notFound("刊登");
+    const queued = await enqueueAiEnhance(db, [listing.id], workspaceId);
+    return c.json({ queued: queued > 0 });
   });
 
   /** Removes our draft only; a product already on the shop stays there. */

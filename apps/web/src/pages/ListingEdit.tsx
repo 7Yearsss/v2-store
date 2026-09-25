@@ -22,6 +22,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
+import { acceptedPatch, AiSuggestionsCard } from "../components/AiSuggestions";
 import { REMOTE, STATUS } from "./Listings";
 
 type Editable = Pick<
@@ -119,6 +120,11 @@ export function ListingEditPage() {
       {listing.remoteStatus === "DELETED" && (
         <Alert type="warning" showIcon message="该商品已在店铺中被删除，再次发布会新建一个商品" />
       )}
+
+      <AiSuggestionsCard
+        listing={listing}
+        onAccepted={(s) => setDraft((d) => ({ ...d!, ...acceptedPatch(s, d!.variants) }))}
+      />
 
       <Card title="基本信息">
         <Form layout="vertical" disabled={locked}>
