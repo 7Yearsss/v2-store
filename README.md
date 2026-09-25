@@ -24,7 +24,7 @@ npm run typecheck
 
 - 环境变量见 [apps/server/.env.example](apps/server/.env.example)；生产必须配 `DATABASE_URL` 和 `ENCRYPTION_KEY`
 - 本地要连真 Postgres：`docker compose up -d`
-- 改了 `apps/server/src/db/schema.ts` 后：`npm run db:generate -w @caiji/server` 生成迁移（服务启动时自动执行）
+- 改了 `apps/server/src/db/schema.ts` 后：`npm run db:generate -w @caiji/server` 生成迁移。迁移只在服务启动时执行，`tsx watch` 不会因为新迁移文件重启，**生成后要手动重启 dev:server**
 - 插件信任的工作台域名在构建时指定：`EXT_APP_ORIGINS=https://app.example.com npm run build:ext`
 
 ## 核心流程与数据模型

@@ -18,7 +18,7 @@ interface Card {
 }
 
 const BTN_CSS =
-  "position:absolute;top:8px;right:8px;z-index:20;padding:4px 10px;border:none;border-radius:14px;" +
+  "position:absolute;white-space:nowrap;padding:4px 10px;border:none;border-radius:14px;" +
   "font:12px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;cursor:pointer;" +
   "box-shadow:0 2px 8px rgba(0,0,0,.2);";
 const STYLE: Record<CardState, string> = {
@@ -62,6 +62,7 @@ function setState(card: Card, state: CardState, note?: string) {
   card.btn.style.cssText = BTN_CSS + STYLE[state];
   card.btn.title = note ?? "";
   card.btn.disabled = state === "busy";
+  queueLayout(); // cssText reset dropped the position
 }
 
 function cardInfo(card: Card): { title: string; image?: string } {
@@ -99,23 +100,65 @@ async function collect(card: Card): Promise<boolean> {
   }
 }
 
+/**
+ * Buttons live in our own Shadow-DOM layer positioned over the cards, NOT
+ * inside 1688's markup: cards are `<a target=_blank>` with page-level click
+ * handlers that fire before (and instead of) anything nested inside them.
+ */
+const layerHost = el("div", {
+  id: "v2store-card-layer",
+  style: "position:absolute;left:0;top:0;width:0;height:0;z-index:2147482000;",
+});
+const layer = layerHost.attachShadow({ mode: "open" });
+document.body.append(layerHost);
+// keep page listeners from seeing our clicks at all
+for (const type of ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "auxclick"]) {
+  layerHost.addEventListener(type, (ev) => ev.stopPropagation());
+}
+
+/** Is the card's corner covered by page chrome (e.g. the sticky search bar)? */
+function occluded(card: Card, x: number, y: number): boolean {
+  if (y < 0 || y > window.innerHeight || x < 0 || x > window.innerWidth) return false;
+  const hit = document.elementsFromPoint(x, y).find((n) => n !== layerHost);
+  return !!hit && !card.root.contains(hit);
+}
+
+/** Pin every button to its card's top-right corner (document coordinates). */
+function layout() {
+  for (const card of cards.values()) {
+    const r = card.root.getBoundingClientRect();
+    const hidden =
+      !card.root.isConnected || r.width < 80 || r.height < 80 || occluded(card, r.right - 30, r.top + 20);
+    card.btn.style.display = hidden ? "none" : "";
+    if (hidden) continue;
+    card.btn.style.top = `${r.top + window.scrollY + 8}px`;
+    card.btn.style.left = `${r.right + window.scrollX - card.btn.offsetWidth - 8}px`;
+  }
+}
+
+let layoutQueued = false;
+function queueLayout() {
+  if (layoutQueued) return;
+  layoutQueued = true;
+  requestAnimationFrame(() => {
+    layoutQueued = false;
+    layout();
+  });
+}
+
 function attach(a: HTMLAnchorElement) {
   const offerId = offerIdOf(a.href);
   if (!offerId || cards.has(offerId)) return;
   const root = cardRootOf(a);
   if (!root || root.dataset.v2Card) return;
   root.dataset.v2Card = offerId;
-  if (getComputedStyle(root).position === "static") root.style.position = "relative";
   const btn = el("button", { type: "button" });
   const card: Card = { offerId, root, btn, state: "idle" };
-  btn.addEventListener("click", (ev) => {
-    // cards are often <a> links — don't navigate
-    ev.preventDefault();
-    ev.stopPropagation();
+  btn.addEventListener("click", () => {
     collect(card).catch(() => {});
   });
   setState(card, "idle");
-  root.append(btn);
+  layer.append(btn);
   cards.set(offerId, card);
 }
 
@@ -153,6 +196,7 @@ function scan() {
     queueCheck(added);
     renderStats();
   }
+  queueLayout();
 }
 
 // --- panel -------------------------------------------------------------------
@@ -224,7 +268,12 @@ async function runBatch() {
     stopBtn,
     el("div", { class: "stat", style: "font-size:12px" }, "也可以点每个商品卡片右上角的「+ 采集」单独采集。"),
   );
+  renderStats();
   scan();
+  // cards move as images load and the layout reflows
+  window.addEventListener("resize", queueLayout);
+  window.addEventListener("scroll", queueLayout, { passive: true });
+  window.setInterval(queueLayout, 1000);
   // search results and shop lists lazy-load while scrolling
   let t: number | undefined;
   new MutationObserver(() => {
