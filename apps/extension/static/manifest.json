@@ -17,7 +17,13 @@
       "world": "MAIN"
     },
     {
-      "matches": ["*://*.1688.com/offer/*"],
+      "matches": [
+        "*://*.1688.com/offer/*",
+        "*://*.1688.com//offer/*",
+        "*://*.1688.com/detail/*",
+        "*://detail.m.1688.com/*",
+        "*://detailp4p.1688.com/buyer/offerdetail/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     },

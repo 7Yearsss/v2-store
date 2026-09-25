@@ -56,7 +56,11 @@ chrome.runtime.onInstalled.addListener(() => {
     id: "v2-collect-offer",
     title: "采集此 1688 商品",
     contexts: ["page"],
-    documentUrlPatterns: ["*://*.1688.com/offer/*"],
+    documentUrlPatterns: [
+      "*://*.1688.com/offer/*",
+      "*://*.1688.com//offer/*",
+      "*://*.1688.com/detail/*",
+    ],
   });
 });
 
