@@ -4,7 +4,8 @@ import type { CollectHarvest } from "@caiji/shared";
 export type BgMessage =
   | { type: "SUBMIT_HARVEST"; harvest: CollectHarvest }
   | { type: "CHECK_COLLECTED"; items: Array<{ itemUrl?: string; itemId?: string }> }
-  | { type: "COLLECT_BY_OFFER_ID"; offerId: string };
+  | { type: "COLLECT_BY_OFFER_ID"; offerId: string }
+  | { type: "GET_STATUS" };
 
 export interface BgResponse<T = unknown> {
   ok: boolean;
@@ -25,6 +26,6 @@ export async function sendToBackground<T = unknown>(msg: BgMessage): Promise<T> 
 }
 
 export interface SubmitResult {
-  item: { id: string; title: string };
+  item: { id: string; title: string; images: string[] };
   duplicated: boolean;
 }

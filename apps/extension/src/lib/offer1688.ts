@@ -6,5 +6,6 @@ export {
   findOfferList,
   normalizeOffer,
   normalizeUrl,
+  productOnlyData,
   tryParseJson,
 } from "@caiji/shared";

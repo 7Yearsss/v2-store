@@ -3,6 +3,7 @@ import {
   findInitData,
   findOfferList,
   normalizeOffer,
+  productOnlyData,
   tryParseJson,
 } from "../lib/offer1688";
 
@@ -161,13 +162,16 @@ if (!window.__v2_1688_collect_main_ready) {
     return null;
   }
 
-  function harvest(pageContent?: string): CollectHarvest {
+  /** Ship product data only; raw HTML goes along just when parsing failed
+   *  page-side (it's ~3MB and also contains the viewer's account data). */
+  function harvest(): CollectHarvest {
     const { data } = pageData();
+    const parsed = data ? normalizeOffer(data, undefined, location.href) : null;
     return {
       sourceInfo: sourceInfo(),
-      pageContent: pageContent ?? document.documentElement.innerHTML,
+      pageContent: parsed?.title ? undefined : document.documentElement.innerHTML,
       afterUrl: location.href,
-      productExtInfo: data ? { initData: data } : undefined,
+      productExtInfo: data ? { initData: productOnlyData(data) } : undefined,
       collectedAt: new Date().toISOString(),
     };
   }
@@ -259,6 +263,7 @@ if (!window.__v2_1688_collect_main_ready) {
     const resp = await fetch(url, { credentials: "include", cache: "no-store" });
     if (!resp.ok) throw new Error(`拉取详情失败 HTTP ${resp.status}`);
     const html = await resp.text();
+    const data = findInitData(html);
     return {
       sourceInfo: {
         itemUrl: url,
@@ -266,9 +271,9 @@ if (!window.__v2_1688_collect_main_ready) {
         site: "detail",
         source: "1688",
       },
-      pageContent: html,
-      afterUrl: url,
-      productExtInfo: { initData: findInitData(html) ?? undefined },
+      pageContent: data ? undefined : html,
+      afterUrl: resp.url,
+      productExtInfo: data ? { initData: productOnlyData(data) } : undefined,
       collectedAt: new Date().toISOString(),
     } satisfies CollectHarvest;
   }
@@ -291,8 +296,9 @@ if (!window.__v2_1688_collect_main_ready) {
         const cached = idFromUrl
           ? window[DETAIL_CACHE_KEY]?.[idFromUrl]?.offer
           : undefined;
-        const offer = data
-          ? normalizeOffer(data, offerId, location.href)
+        const parsed = data ? normalizeOffer(data, offerId, location.href) : null;
+        const offer = parsed?.title
+          ? parsed
           : (cached ?? domFallbackOffer(idFromUrl) ?? undefined);
         if (offer) h.productExtInfo = { ...h.productExtInfo, offer };
         if (!data && !offer && !h.pageContent) {

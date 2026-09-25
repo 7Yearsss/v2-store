@@ -1,4 +1,5 @@
 import type { CollectHarvest } from "@caiji/shared";
+import { findInitData, productOnlyData } from "@caiji/shared";
 import type { BgMessage, BgResponse, SubmitResult } from "./lib/messages";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -12,6 +13,15 @@ interface ExtAuth {
 async function getAuth(): Promise<ExtAuth | null> {
   const { auth } = await chrome.storage.local.get("auth");
   return (auth as ExtAuth | undefined) ?? null;
+}
+
+/** First dashboard origin the build trusts (site-bridge content-script match). */
+function defaultAppOrigin(): string | null {
+  const cs = chrome.runtime
+    .getManifest()
+    .content_scripts?.find((c) => c.js?.includes("site-bridge.js"));
+  const pattern = cs?.matches?.[0];
+  return pattern ? pattern.replace(/\/\*$/, "") : null;
 }
 
 class NotAuthorizedError extends Error {
@@ -52,10 +62,18 @@ async function collectByOfferId(offerId: string) {
   if (/login\.(taobao|1688)\.com|punish/.test(resp.url)) {
     throw new Error("1688 要求登录或安全验证，请先在浏览器打开 1688 完成验证");
   }
+  const html = await resp.text();
+  // Parse here and ship only product data; raw HTML (which also holds the
+  // viewer's 1688 account) goes up only when parsing failed.
+  const data = findInitData(html);
+  if (!data && /punish|verifycode|滑块验证/.test(html)) {
+    throw new Error("1688 触发了安全验证，请在浏览器里打开任一 1688 商品页完成滑块后重试");
+  }
   return submitHarvest({
     sourceInfo: { itemUrl: url, itemId: offerId, site: "detail", source: "1688" },
-    pageContent: await resp.text(),
+    pageContent: data ? undefined : html,
     afterUrl: resp.url,
+    productExtInfo: data ? { initData: productOnlyData(data) } : undefined,
     collectedAt: new Date().toISOString(),
   });
 }
@@ -78,6 +96,15 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(api("/collect/check", { items: (msg as any).items }), sendResponse);
     case "COLLECT_BY_OFFER_ID":
       return reply(collectByOfferId(String((msg as any).offerId ?? "")), sendResponse);
+    case "GET_STATUS":
+      return reply(
+        getAuth().then((auth) => ({
+          authorized: !!auth,
+          // before authorization, point at the first trusted dashboard origin
+          appUrl: auth?.apiBase ?? defaultAppOrigin(),
+        })),
+        sendResponse,
+      );
 
     // --- site-bridge (our web app origin only; see manifest matches) -------
     case "SITE_PING":
