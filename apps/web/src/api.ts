@@ -3,6 +3,8 @@ import type {
   ChannelAttribute,
   CategoryCandidate,
   CategoryMapping,
+  Job,
+  JobStatus,
   Listing,
   ListingStatus,
   ListingSuggestion,
@@ -119,6 +121,9 @@ export const api = {
   listings: (p: { status?: ListingStatus; storeId?: string; q?: string; page?: number; pageSize?: number }) =>
     request<Page<Listing>>("GET", `/listings${qs(p)}`),
   overview: () => request<Overview>("GET", "/overview"),
+  jobs: (p: { status?: JobStatus; page?: number; pageSize?: number }) =>
+    request<Page<Job>>("GET", `/jobs${qs(p)}`),
+  retryJob: (id: string) => request<Job>("POST", `/jobs/${id}/retry`),
   listingCounts: () => request<Partial<Record<ListingStatus, number>>>("GET", "/listings/counts"),
   listing: (id: string) => request<Listing>("GET", `/listings/${id}`),
   updateListing: (id: string, body: Partial<Listing>) => request<Listing>("PATCH", `/listings/${id}`, body),

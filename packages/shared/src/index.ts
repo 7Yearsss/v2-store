@@ -369,3 +369,20 @@ export interface ListingSuggestion {
 }
 
 export * from "./offer1688.js";
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+
+/** Background job row exposed to the tasks page; listingId/storeId lifted from payload when present. */
+export interface Job {
+  id: string;
+  type: string;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+  lastError: string | null;
+  runAt: string;
+  createdAt: string;
+  updatedAt: string;
+  listingId: string | null;
+  storeId: string | null;
+}

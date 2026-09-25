@@ -4,6 +4,7 @@ import {
   InboxOutlined,
   LogoutOutlined,
   ShopOutlined,
+  SyncOutlined,
   UnorderedListOutlined,
 } from "@ant-design/icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,6 +20,7 @@ const MENU = [
   { key: "/listings", icon: <UnorderedListOutlined />, label: "刊登管理" },
   { key: "/stores", icon: <ShopOutlined />, label: "店铺授权" },
   { key: "/category-mappings", icon: <ApartmentOutlined />, label: "映射管理" },
+  { key: "/jobs", icon: <SyncOutlined />, label: "任务中心" },
 ];
 
 export function useExtension() {
