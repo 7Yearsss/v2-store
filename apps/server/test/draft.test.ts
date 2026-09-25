@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPricing, buildVariants, DEFAULT_PRICING } from "../src/lib/draft.js";
+import { applyPricing, buildVariants, DEFAULT_PRICING, parseWeightKg } from "../src/lib/draft.js";
 
 describe("pricing", () => {
   it("converts, marks up and applies a .99 ending without undercutting", () => {
@@ -59,5 +59,23 @@ describe("buildVariants", () => {
     expect(r.options).toEqual([]);
     expect(r.variants).toHaveLength(1);
     expect(r.variants[0]!.costCny).toBe(12);
+  });
+});
+
+describe("parseWeightKg", () => {
+  it("parses Chinese and imperial weight values into kg", () => {
+    expect(parseWeightKg({ 净重: "0.5kg" })).toBe(0.5);
+    expect(parseWeightKg({ 重量: "500g" })).toBe(0.5);
+    expect(parseWeightKg({ 毛重: "1.2千克" })).toBe(1.2);
+    expect(parseWeightKg({ 净重: "0.3公斤" })).toBe(0.3);
+    expect(parseWeightKg({ 单件重量: "800克" })).toBe(0.8);
+    expect(parseWeightKg({ weight: "12oz" })).toBeCloseTo(0.34, 2);
+    expect(parseWeightKg({ Weight: "1 lb" })).toBeCloseTo(0.454, 2);
+  });
+
+  it("returns null when no weight-like attribute or unparseable", () => {
+    expect(parseWeightKg({ 材质: "棉" })).toBeNull();
+    expect(parseWeightKg({ 净重: "不详" })).toBeNull();
+    expect(parseWeightKg({})).toBeNull();
   });
 });

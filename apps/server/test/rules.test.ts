@@ -118,6 +118,58 @@ describe("采集预处理规则", () => {
   });
 });
 
+describe("重量", () => {
+  it("认领时从货源属性解析 weightKg；店铺默认重量兜底；发布写入变体 measurement", async () => {
+    const captured: Array<Record<string, any>> = [];
+    ctx = await setup(fakeShopify({ capturedProductSet: captured }));
+    const t = await ctx.register();
+    const store = await connectStore(ctx, t);
+
+    // 货源带净重 → 直接解析
+    const item = await ctx.api(
+      "POST",
+      "/api/collect",
+      harvest("w1", "测试", [{ name: "净重", value: "500g" }]),
+      t,
+    );
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    let list = await ctx.api("GET", "/api/listings", undefined, t);
+    expect(list.body.items[0].weightKg).toBe(0.5);
+
+    // 货源没有重量 → 店铺默认兜底
+    await ctx.api(
+      "PATCH",
+      `/api/stores/${store.id}`,
+      { rules: { defaultWeightKg: 0.25 } },
+      t,
+    );
+    const item2 = await ctx.api("POST", "/api/collect", harvest("w2", "测试"), t);
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item2.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    list = await ctx.api("GET", "/api/listings", undefined, t);
+    const l2 = list.body.items.find((l: any) => l.sourceItemId === item2.body.item.id);
+    expect(l2.weightKg).toBe(0.25);
+
+    // 发布 → productSet 变体带 measurement.weight
+    await ctx.api("POST", "/api/listings/publish", { ids: [l2.id] }, t);
+    await drain(ctx);
+    const input = captured.at(-1)!;
+    expect(input.variants[0].inventoryItem.measurement.weight).toEqual({
+      value: 0.25,
+      unit: "KILOGRAMS",
+    });
+  });
+});
+
 describe("发布前检查", () => {
   it("命中禁售词的刊登不排队，逐条返回原因", async () => {
     ctx = await setup(fakeAll());

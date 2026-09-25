@@ -129,6 +129,7 @@ export const rulesSchema = z.object({
   trackStock: z.boolean().optional(),
   defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   defaultProductType: z.string().trim().max(255).optional(),
+  defaultWeightKg: z.number().min(0).max(100_000).optional(),
 }) satisfies z.ZodType<StoreRules>;
 
 const patchSchema = z.object({

@@ -20,16 +20,12 @@ export function fakeShopify(
       name: string;
       values?: { nodes: Array<{ id: string; name: string }> };
     }>;
-    /** records metafieldsSet inputs so tests can assert attribute writes */
-    capturedMetafields?: Array<{
-      ownerId: string;
-      namespace: string;
-      key: string;
-      type: string;
-      value: string;
-    }>;
+    /** records metafieldsSet input; tests may declare a narrower element type */
+    capturedMetafields?: Array<Record<string, unknown>>;
     /** taxonomy_reference gid → pre-existing metaobject gid (skip minting) */
     metaobjectsByTaxref?: Record<string, string>;
+    /** records the last productSet input (variants/files/….) for assertions */
+    capturedProductSet?: Array<Record<string, unknown>>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -291,6 +287,7 @@ export function fakeShopify(
       }
       if (query.includes("productSet")) {
         filesCount = variables.input?.files?.length ?? 0;
+        if (opts.capturedProductSet) opts.capturedProductSet.push(variables.input);
         variantsCount = variables.input?.variants?.length ?? 0;
         return json({
           data: {

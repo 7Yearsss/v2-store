@@ -68,7 +68,11 @@ export async function setup(fakeFetch?: FakeFetch) {
   return { app, deps, api, register, calls, close: handle.close };
 }
 
-export function offerHtml(offerId: string, title: string) {
+export function offerHtml(
+  offerId: string,
+  title: string,
+  extraAttrs: Array<{ name: string; value: string }> = [],
+) {
   const data = {
     globalData: {
       offerBaseInfo: { subject: title, offerId, imageList: ["//cbu01.alicdn.com/a.jpg"] },
@@ -79,20 +83,24 @@ export function offerHtml(offerId: string, title: string) {
           "红色&gt;L": { specId: "s2", price: "11", canBookCount: 50 },
         },
       },
-      productFeatureList: [{ name: "材质", value: "棉" }],
+      productFeatureList: [{ name: "材质", value: "棉" }, ...extraAttrs],
     },
   };
   return `<html><script>window.__INIT_DATA = ${JSON.stringify(data)};</script></html>`;
 }
 
-export function harvest(offerId: string, title = "测试商品") {
+export function harvest(
+  offerId: string,
+  title = "测试商品",
+  extraAttrs: Array<{ name: string; value: string }> = [],
+) {
   return {
     sourceInfo: {
       itemUrl: `https://detail.1688.com/offer/${offerId}.html`,
       itemId: offerId,
       source: "1688",
     },
-    pageContent: offerHtml(offerId, title),
+    pageContent: offerHtml(offerId, title, extraAttrs),
     collectedAt: new Date().toISOString(),
   };
 }

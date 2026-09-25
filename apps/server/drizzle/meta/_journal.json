@@ -71,6 +71,13 @@
       "when": 1790340624137,
       "tag": "0009_first_lilandra",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790343450684,
+      "tag": "0010_charming_guardsmen",
+      "breakpoints": true
     }
   ]
 }

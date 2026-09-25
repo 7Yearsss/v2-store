@@ -137,6 +137,7 @@ type SettingsForm = PricingRule & {
   trackStock?: boolean;
   defaultTags?: string[];
   defaultProductType?: string;
+  defaultWeightKg?: number;
 };
 
 const rulesToText = (rules?: StoreRules["replacements"]) =>
@@ -166,6 +167,7 @@ function formToPayload(v: SettingsForm): StoreSettingsPayload {
       trackStock: v.trackStock ?? false,
       defaultTags: v.defaultTags ?? [],
       defaultProductType: v.defaultProductType?.trim() || undefined,
+      defaultWeightKg: v.defaultWeightKg ?? undefined,
     },
     pricing: {
       exchangeRate: v.exchangeRate,
@@ -195,6 +197,7 @@ function payloadToForm(p: StoreSettingsPayload): SettingsForm {
     trackStock: p.rules.trackStock ?? false,
     defaultTags: p.rules.defaultTags ?? [],
     defaultProductType: p.rules.defaultProductType,
+    defaultWeightKg: p.rules.defaultWeightKg,
   };
 }
 
@@ -377,6 +380,13 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             extra="打开后按 1688 库存发布并追踪，售罄自动停售；关闭则不限量可售"
           >
             <Switch />
+          </Form.Item>
+          <Form.Item
+            name="defaultWeightKg"
+            label="默认重量（kg）"
+            extra="货源没有重量字段时用这个；发布写入变体 weight"
+          >
+            <InputNumber min={0} step={0.01} style={{ width: 140 }} placeholder="如 0.3" />
           </Form.Item>
           <Form.Item name="defaultProductType" label="默认商品类型">
             <Input placeholder="如 Women's Clothing" style={{ width: 200 }} maxLength={255} />

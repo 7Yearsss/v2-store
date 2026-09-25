@@ -27,7 +27,15 @@ import { REMOTE, STATUS } from "./Listings";
 
 type Editable = Pick<
   Listing,
-  "title" | "descriptionHtml" | "images" | "options" | "variants" | "tags" | "productType" | "vendor"
+  | "title"
+  | "descriptionHtml"
+  | "images"
+  | "options"
+  | "variants"
+  | "tags"
+  | "productType"
+  | "vendor"
+  | "weightKg"
 >;
 
 const pickEditable = (l: Listing): Editable => ({
@@ -39,6 +47,7 @@ const pickEditable = (l: Listing): Editable => ({
   tags: l.tags,
   productType: l.productType,
   vendor: l.vendor,
+  weightKg: l.weightKg,
 });
 
 export function ListingEditPage() {
@@ -185,6 +194,17 @@ export function ListingEditPage() {
             <Col span={8}>
               <Form.Item label="商品类型 / Product type">
                 <Input value={draft.productType} onChange={(e) => set({ productType: e.target.value })} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="重量（kg，发布写入变体 weight）">
+                <InputNumber
+                  min={0}
+                  step={0.01}
+                  style={{ width: "100%" }}
+                  value={draft.weightKg ?? undefined}
+                  onChange={(v) => set({ weightKg: v ?? null })}
+                />
               </Form.Item>
             </Col>
             <Col span={8}>
