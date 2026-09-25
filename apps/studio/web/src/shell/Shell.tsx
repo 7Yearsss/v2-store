@@ -1,12 +1,31 @@
 import { Outlet } from "react-router";
+import { useJobsStatus } from "./jobsStatus.js";
+import { NavRail } from "./NavRail.js";
+import { ShopScopeProvider, useShopScope } from "./shopScope.js";
+import { StatusBar } from "./StatusBar.js";
+import "./shell.css";
 
-// TODO(shell-A / shell-B 竞赛): Linear 风壳层——左侧导航(5 项)、顶栏(店铺范围切换
-// + 全局任务状态)、内容区。当前为可编译占位，竞赛赢家整体替换本文件。
+function ShellBody() {
+  const jobs = useJobsStatus();
+  const scope = useShopScope();
+  return (
+    <div className="sh">
+      <NavRail jobs={jobs} scope={scope} />
+      <div className="sh-main">
+        <StatusBar jobs={jobs} scope={scope} />
+        <main className="sh-content">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/** 方案 B「状态优先」壳：窄 icon 栏 + 顶栏状态条（页上下文/店铺范围/任务 pill）。 */
 export function Shell() {
   return (
-    <div style={{ padding: 24 }}>
-      <p style={{ color: "var(--text-secondary)" }}>shell placeholder — awaiting competition winner</p>
-      <Outlet />
-    </div>
+    <ShopScopeProvider>
+      <ShellBody />
+    </ShopScopeProvider>
   );
 }
