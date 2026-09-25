@@ -250,6 +250,8 @@ export interface OptionsSuggestionValue {
   options: ListingOption[];
   /** variantOptionValues[i] replaces variants[i].optionValues. */
   variantOptionValues: string[][];
+  /** 生成建议时刊登的原始选项快照；学习词对与配对以此为准，避免接受期间草稿被改过。 */
+  sourceOptions?: ListingOption[];
 }
 
 export interface CategoryCandidate {

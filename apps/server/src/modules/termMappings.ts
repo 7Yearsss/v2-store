@@ -40,8 +40,7 @@ export function termMappingRoutes() {
           lang != null ? eq(termMappings.lang, lang) : undefined,
         ),
       )
-      .orderBy(desc(termMappings.updatedAt))
-      .limit(2000);
+      .orderBy(desc(termMappings.updatedAt));
     return c.json({ items: rows.map(toDto) });
   });
 

@@ -428,9 +428,9 @@ export function listingRoutes() {
             Object.assign(listingPatch, applySuggestion(listing, s));
             if (s.field === "options") {
               const v = s.value as OptionsSuggestionValue;
-              // 接受即学习：选项名/值按位成对存入术语映射，之后同类词认领自动预翻
+              // 接受即学习：以建议生成时的选项快照为准（用户可能已改过草稿），按位成对存术语映射
               const pairs: Array<[string, string]> = [];
-              listing.options.forEach((o, i) => {
+              (v.sourceOptions ?? listing.options).forEach((o, i) => {
                 pairs.push([o.name, v.options[i]?.name ?? o.name]);
                 o.values.forEach((sv, j) => {
                   pairs.push([sv, v.options[i]?.values[j] ?? sv]);

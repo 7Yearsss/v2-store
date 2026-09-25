@@ -208,11 +208,15 @@ export function sourceItemRoutes() {
           termMap: term,
         });
         const mapping = mappingOf(item, store);
+        // 属性名译文撞名时保留原名消歧，避免两个属性合成一条丢值
+        const attrSeen = new Map<string, number>();
         const attrs = Object.fromEntries(
-          Object.entries(applyAttrRules(item.attributes, rules)).map(([k, v]) => [
-            term(k),
-            term(v),
-          ]),
+          Object.entries(applyAttrRules(item.attributes, rules)).map(([k, v]) => {
+            const tk = term(k);
+            const n = (attrSeen.get(tk) ?? 0) + 1;
+            attrSeen.set(tk, n);
+            return [n > 1 ? `${tk}（${k}）` : tk, term(v)];
+          }),
         );
         return [
           {

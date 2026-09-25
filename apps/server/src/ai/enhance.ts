@@ -160,6 +160,7 @@ export async function runAiEnhance(deps: Deps, listingId: string) {
       const value: OptionsSuggestionValue = {
         options: translated,
         variantOptionValues: translatedVariantValues(listing.options, translated, listing.variants),
+        sourceOptions: listing.options,
       };
       proposals.push({ field: "options", value });
     }
