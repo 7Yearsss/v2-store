@@ -166,7 +166,112 @@ function TermMappingCard() {
   );
 }
 
-/** 映射管理：类目映射 + 术语翻译映射。 */
+function AttributeMappingCard() {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<{
+    channel: string;
+    sourceName: string;
+    channelAttrName: string;
+    channelAttrId: string;
+  }>();
+  const query = useQuery({ queryKey: ["attribute-mappings"], queryFn: () => api.attributeMappings() });
+  const upsert = useMutation({
+    mutationFn: api.upsertAttributeMapping,
+    onSuccess: () => {
+      form.resetFields(["sourceName", "channelAttrName", "channelAttrId"]);
+      qc.invalidateQueries({ queryKey: ["attribute-mappings"] });
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteAttributeMapping(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["attribute-mappings"] }),
+    onError: (e) => message.error(e.message),
+  });
+
+  return (
+    <Card
+      title="属性映射"
+      extra={
+        <Form
+          form={form}
+          layout="inline"
+          onFinish={(v) =>
+            upsert.mutate({
+              channel: v.channel,
+              sourceName: v.sourceName,
+              channelAttrName: v.channelAttrName,
+              channelAttrId: v.channelAttrId,
+            })
+          }
+        >
+          <Form.Item name="channel" initialValue="shopify" style={{ marginBottom: 0 }}>
+            <Input placeholder="平台" style={{ width: 90 }} disabled />
+          </Form.Item>
+          <Form.Item name="sourceName" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="来源属性名（如 材质）" style={{ width: 150 }} />
+          </Form.Item>
+          <Form.Item name="channelAttrName" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="平台属性名（如 Material）" style={{ width: 160 }} />
+          </Form.Item>
+          <Form.Item name="channelAttrId" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="平台属性 ID" style={{ width: 240 }} />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" size="small" loading={upsert.isPending}>
+            添加
+          </Button>
+        </Form>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+        来源属性名 → 平台类目标准属性。认领时自动套用进刊登；接受 AI
+        属性建议时也会自动学习同名映射。属性 ID 可在店铺 → 类目属性接口或刊登编辑页 AI
+        建议里查到。
+      </Typography.Paragraph>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={query.isLoading}
+        dataSource={query.data?.items ?? []}
+        pagination={{ pageSize: 50, hideOnSinglePage: true }}
+        columns={[
+          { title: "来源属性", dataIndex: "sourceName" },
+          {
+            title: "平台属性",
+            render: (_, m) => (
+              <>
+                <Tag color="blue">{m.channel}</Tag>
+                {m.channelAttrName}
+              </>
+            ),
+          },
+          {
+            title: "属性 ID",
+            render: (_, m) => (
+              <Typography.Text code copyable style={{ fontSize: 12 }}>
+                {m.channelAttrId}
+              </Typography.Text>
+            ),
+          },
+          {
+            title: "操作",
+            width: 90,
+            render: (_, m) => (
+              <Popconfirm title="删除该映射？" onConfirm={() => del.mutate(m.id)}>
+                <Button size="small" danger loading={del.isPending}>
+                  删除
+                </Button>
+              </Popconfirm>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+/** 映射管理：类目映射 + 术语翻译映射 + 属性映射。 */
 export function CategoryMappingsPage() {
   return (
     <Tabs
@@ -174,6 +279,7 @@ export function CategoryMappingsPage() {
       items={[
         { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
         { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
+        { key: "attribute", label: "属性映射", children: <AttributeMappingCard /> },
       ]}
     />
   );
