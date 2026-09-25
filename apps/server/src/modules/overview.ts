@@ -1,7 +1,7 @@
-import { and, count, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, ne, sql, sum } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../context.js";
-import { jobs, listings, sourceItems } from "../db/schema.js";
+import { aiUsage, jobs, listings, sourceItems } from "../db/schema.js";
 import { requireAuth } from "./auth.js";
 
 /** 工作台首页一张图：采集箱/刊登/任务概览 + 最近发布结果。
@@ -72,6 +72,15 @@ export function overviewRoutes() {
         ),
       );
 
+    const [aiRows] = await db
+      .select({
+        calls: count(),
+        tokens: sum(aiUsage.totalTokens),
+        errors: sql<number>`count(*) filter (where ${aiUsage.status} = 'error')`,
+      })
+      .from(aiUsage)
+      .where(and(eq(aiUsage.workspaceId, workspaceId), gte(aiUsage.createdAt, dayAgo)));
+
     const byStatus = Object.fromEntries(listingRows.map((r) => [r.status, r.n]));
     const jobByStatus = Object.fromEntries(jobRows.map((r) => [r.status, r.n]));
     return c.json({
@@ -86,6 +95,11 @@ export function overviewRoutes() {
         pending: jobByStatus.queued ?? 0,
         running: jobByStatus.running ?? 0,
         failed24h: failed24h[0]?.n ?? 0,
+      },
+      ai24h: {
+        calls: aiRows?.calls ?? 0,
+        tokens: Number(aiRows?.tokens ?? 0),
+        errors: Number(aiRows?.errors ?? 0),
       },
       recentResults: recent.map((r) => ({
         ...r,
