@@ -1,14 +1,10 @@
 {
   "manifest_version": 3,
   "name": "V2Store Collector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "采集 1688 商品到 V2Store 工作台",
   "permissions": ["storage", "contextMenus"],
-  "host_permissions": [
-    "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*",
-    "*://*.1688.com/*"
-  ],
+  "host_permissions": ["*://*.1688.com/*"],
   "content_scripts": [
     {
       "matches": ["*://*.1688.com/*", "*://1688.com/*"],
@@ -33,7 +29,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "matches": [],
       "js": ["site-bridge.js"],
       "run_at": "document_idle"
     }

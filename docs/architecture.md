@@ -27,11 +27,16 @@
 - `CollectedOffer` → `Product`：采集载荷→入库草稿（已实现）
 - 状态机：`draft → processed（AI 完成）→ listed → error`
 
-## 数据模型（下一步落 DB，当前 JSONL）
+## 数据模型（2026-09-25 重建后，Postgres + Drizzle，见 apps/server/src/db/schema.ts）
 
-- `products`：Product + 各通道刊登记录 `listings[]`（channel, remoteId, status, syncedAt）
-- `stores`：店铺绑定 `{channel, shopDomain/shopId, accessToken, refreshToken?, meta}`——统一 token vault
-- `orders`：外部订单 + 关联货源 SKU + 采购/运单状态
+- 租户：`users` / `workspaces`（计费挂这里，`plan`）/ `memberships`（owner/admin/member）/ `sessions`（网页 cookie 与插件 Bearer 共用，只存 token 的 SHA-256）
+- `source_items`：采集箱（货源原料），按 workspace 隔离，offerId 去重
+- `stores`：店铺授权，凭据 AES-256-GCM 加密（统一 token vault）+ 店铺级定价规则
+- `listings`：认领结果 = 采集条目 × 店铺的平台侧草稿/在线商品，状态 `draft → publishing → published | failed`，`remoteId` 保证重复发布幂等
+- `jobs`：Postgres 任务队列（FOR UPDATE SKIP LOCKED），发布走队列；后续 AI 管线、库存同步同样挂这里
+- 待建：`orders`（外部订单 + 关联货源 SKU + 采购/运单状态）
+
+技术栈选择：TypeScript 全栈（插件/服务端/工作台共享类型）；Hono（轻、可跑 Node/边缘）；Drizzle + Postgres（开发/测试用 PGlite 内嵌同方言，零安装）；zod 校验；工作台 React + Ant Design + React Query。
 
 ## 已验证的技术事实（调研结论）
 
@@ -44,11 +49,14 @@
 ## MVP 执行顺序
 
 1. ✅ 骨架（采集→商品库→列表）
-2. 插件真实 1688 页验证提取 + SKU/图/属性完整度
-3. AI 管线 job：翻译 + 标题重写 + 详情生成（LLM，先文案后图片）
-4. Shopify adapter：店铺绑定（custom app token）→ productSet 刊登 → listed 状态
-5. Webhook：orders/create → OrderBridge 占位
-6. 之后：DB 换 Postgres、Shopee/TikTok 开发者申请、订单履约
+2. ✅ 地基重建：账号/团队多租户、Postgres、采集箱 → 认领 → 刊登草稿、任务队列
+3. ✅ Shopify adapter：OAuth 安装 / Dev Dashboard client credentials / 旧版 token 三种授权 → productSet 刊登
+4. 插件真实 1688 页验证提取 + SKU/图/属性完整度
+5. 托管：在线商品回拉同步、库存/价格同步、Webhook（products/update、orders/create）
+6. AI 管线 job：翻译 + 标题重写 + 详情生成（LLM，先文案后图片）
+7. 之后：Shopee/TikTok/Ozon 开发者申请、订单履约、计费
+
+注：Shopify 自 2026-01-01 起不能在店铺后台新建旧版自定义应用，新接入走 Dev Dashboard（client credentials，令牌 24h）或公开 App OAuth。
 
 ## 合规定位
 

@@ -10,7 +10,8 @@
     "dev:server": "npm run dev -w @caiji/server",
     "dev:web": "npm run dev -w @caiji/web",
     "build:ext": "npm run build -w @caiji/extension",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test -w @caiji/server"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

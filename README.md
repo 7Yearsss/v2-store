@@ -1,28 +1,49 @@
-# caiji-saas
+# V2Store（caiji-saas）
 
-跨平台货源采集 + AI 刊登 SaaS（MVP 骨架）。
+跨境铺货 SaaS：插件采集货源 → 采集箱 → 认领到店铺 → 编辑/（AI 优化）→ 发布到平台 → 托管在线商品。
 
 ```
-apps/extension   Chrome MV3 插件：在 1688 商品页一键采集 → POST 到服务端
-apps/server      Hono API：商品库（JSONL 持久化），后续接 AI 管线与平台 API
-apps/web         Vite + React 工作台：商品库浏览、AI 处理/刊登入口（占位）
-packages/shared  插件 ↔ 服务端共享类型（CollectedOffer / Product）
+apps/extension   Chrome MV3 插件：1688 详情页/整店/搜索页采集，提交原始页面给服务端解析
+apps/server      Hono + Drizzle(Postgres) API：账号/团队、采集箱、店铺授权、刊登、任务队列
+apps/web         React + Ant Design 工作台
+packages/shared  插件 / 服务端 / 工作台共享类型与 1688 解析
 ```
 
 ## 开发
 
 ```bash
 npm install
-npm run dev:server    # http://localhost:3000
+npm run dev:server    # http://localhost:3000（未配置 DATABASE_URL 时用内嵌 PGlite，数据在 apps/server/data/）
 npm run dev:web       # http://localhost:5173（/api 代理到 3000）
-npm run build:ext     # 产出 apps/extension/dist，chrome://extensions 加载
+npm run build:ext     # 产出 apps/extension/dist，chrome://extensions 加载已解压的扩展
+npm test              # 服务端集成测试（内存 PGlite + 假 Shopify）
+npm run typecheck
 ```
+
+首次使用：打开 http://localhost:5173 注册 → 右上角「授权插件」→ 在 1688 商品页点「采集此商品」→ 采集箱里勾选「认领到店铺」→ 刊登管理里编辑并发布。
+
+- 环境变量见 [apps/server/.env.example](apps/server/.env.example)；生产必须配 `DATABASE_URL` 和 `ENCRYPTION_KEY`
+- 本地要连真 Postgres：`docker compose up -d`
+- 改了 `apps/server/src/db/schema.ts` 后：`npm run db:generate -w @caiji/server` 生成迁移（服务启动时自动执行）
+- 插件信任的工作台域名在构建时指定：`EXT_APP_ORIGINS=https://app.example.com npm run build:ext`
+
+## 核心流程与数据模型
+
+| 步骤 | 表 | 说明 |
+|---|---|---|
+| 采集 | `source_items` | 按团队隔离；同一 offerId 重复采集会更新原记录 |
+| 认领 | `listings` | 一个采集条目 × 一个店铺 = 一条刊登草稿；按店铺定价规则（汇率 × 加价 × 尾数）生成变体价格 |
+| 发布 | `jobs` | 发布进 Postgres 任务队列（SKIP LOCKED），失败重试，最终失败原因写回刊登 |
+| 店铺 | `stores` | 凭据 AES-256-GCM 加密存储；Shopify 支持 OAuth 安装 / Dev Dashboard client credentials / 旧版 Admin 令牌 |
+
+Shopify 刊登用 `productSet`（API 2026-07），重复发布会同步更新同一个远端商品。
 
 ## 路线图
 
-1. **采集**：1688 offer 页 → `CollectedOffer`（已实现：插件 content script 解析页面内嵌 JSON + DOM 兜底）
-2. **AI 管线**：翻译、标题/描述重写、图片 OCR 换字、敏感词过滤
-3. **刊登**：先接 Shopify Admin API（最友好、无平台规则），再申请 Shopee/TikTok 开放平台
-4. **订单回流**：平台订单 → 货源采购 → 回填运单（后期接货代）
+1. ✅ 地基：账号/团队、Postgres、采集箱、认领、Shopify 发布、任务队列
+2. 托管：在线商品同步回拉、库存/价格同步、货源价格监控
+3. AI 管线：翻译、标题/描述重写、属性补全、图片处理（接在认领后、发布前）
+4. 更多渠道：Shopee / TikTok / Ozon / Amazon（实现 `ChannelAdapter`）
+5. 计费：团队套餐（`workspaces.plan`）+ 用量限制
 
 > 合规提示：采集刊登请优先对接授权货源（1688 跨境专供、一件代发供应链），直接搬运他人店铺商品在多数平台属违规行为。

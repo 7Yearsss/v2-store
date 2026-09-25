@@ -5,6 +5,8 @@
  * fetches on list pages to avoid tripping risk control.
  */
 
+import { sendToBackground } from "./lib/messages";
+
 function toast(msg: string, ok = true) {
   const el = document.createElement("div");
   el.textContent = msg;
@@ -43,21 +45,23 @@ btn.onclick = async () => {
   btn.disabled = true;
   let ok = 0;
   let fail = 0;
+  let lastError = "";
   for (let i = 0; i < ids.length; i++) {
     btn.textContent = `采集本页 ${i + 1}/${ids.length}`;
     try {
-      const res = await chrome.runtime.sendMessage({
-        type: "COLLECT_BY_OFFER_ID",
-        offerId: ids[i],
-      });
-      if (res?.ok) ok++;
-      else fail++;
-    } catch {
+      await sendToBackground({ type: "COLLECT_BY_OFFER_ID", offerId: ids[i]! });
+      ok++;
+    } catch (e) {
       fail++;
+      lastError = e instanceof Error ? e.message : String(e);
+      if (lastError.includes("授权")) break; // every remaining item would fail too
     }
     await new Promise((r) => setTimeout(r, 600));
   }
   btn.disabled = false;
   btn.textContent = "采集本页结果";
-  toast(`本页采集完成：成功 ${ok} 失败 ${fail}`, fail === 0);
+  toast(
+    `本页采集完成：成功 ${ok} 失败 ${fail}${lastError ? `（${lastError}）` : ""}`,
+    fail === 0,
+  );
 };

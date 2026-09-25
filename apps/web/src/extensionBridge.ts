@@ -15,7 +15,7 @@ export function extensionCall<T = unknown>(
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       window.removeEventListener("message", onMsg);
-      reject(new Error("extension_timeout"));
+      reject(new Error("插件无响应"));
     }, timeoutMs);
     function onMsg(ev: MessageEvent) {
       const d = ev.data;
@@ -23,25 +23,35 @@ export function extensionCall<T = unknown>(
       window.removeEventListener("message", onMsg);
       clearTimeout(timer);
       if (d.ok) resolve(d.result as T);
-      else reject(new Error(d.error ?? "extension_error"));
+      else reject(new Error(d.error ?? "插件执行失败"));
     }
     window.addEventListener("message", onMsg);
     window.postMessage({ source: SITE_SOURCE, type, requestId, payload }, window.location.origin);
   });
 }
 
-/** Resolves quickly with whether the extension is installed and reachable. */
-export async function pingExtension(timeoutMs = 1200): Promise<boolean> {
+export interface ExtensionStatus {
+  version: string;
+  /** workspace the extension is currently authorized for, if any. */
+  authorized: boolean;
+}
+
+/** null when the extension isn't installed/reachable. */
+export async function pingExtension(timeoutMs = 1200): Promise<ExtensionStatus | null> {
   try {
-    await extensionCall("PING", {}, timeoutMs);
-    return true;
+    return await extensionCall<ExtensionStatus>("PING", {}, timeoutMs);
   } catch {
-    return false;
+    return null;
   }
 }
 
+/** Hand the extension an API base + bearer token so it can post collections. */
+export function authorizeExtension(apiBase: string, token: string) {
+  return extensionCall("SET_AUTH", { apiBase, token });
+}
+
 export function collectOfferById(offerId: string) {
-  return extensionCall<{ product?: { title: string }; pushed: boolean }>(
+  return extensionCall<{ item?: { title: string }; duplicated?: boolean }>(
     "COLLECT_1688",
     { offerId },
     30000,

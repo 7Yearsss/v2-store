@@ -1,0 +1,167 @@
+import { zValidator } from "@hono/zod-validator";
+import { and, eq, inArray, or } from "drizzle-orm";
+import { Hono } from "hono";
+import { z } from "zod";
+import type { CollectedOffer, CollectHarvest } from "@caiji/shared";
+import { findInitData, normalizeOffer } from "@caiji/shared";
+import type { AppEnv } from "../context.js";
+import type { Db } from "../db/client.js";
+import { sourceItems } from "../db/schema.js";
+import { HttpError } from "../lib/errors.js";
+import { requireAuth } from "./auth.js";
+import { toSourceItemDto } from "./sourceItems.js";
+
+/** Harvest contract: extension ships pageContent + URL tokens; all field
+ * extraction happens here so site adaptors hot-update without releases.
+ * Falls back to productExtInfo.offer when the page side already parsed
+ * (sniffed API payloads / DOM fallback). */
+export function harvestToOffer(body: CollectHarvest): CollectedOffer | null {
+  const { sourceInfo, pageContent, productExtInfo } = body;
+  const initData =
+    productExtInfo?.initData ?? (pageContent ? findInitData(pageContent) : null);
+  if (initData) {
+    const offer = normalizeOffer(initData, sourceInfo.itemId, sourceInfo.itemUrl);
+    if (offer.title) {
+      return { ...offer, collectedAt: body.collectedAt ?? offer.collectedAt };
+    }
+  }
+  const offer = productExtInfo?.offer as CollectedOffer | undefined;
+  if (offer?.title) {
+    return {
+      ...offer,
+      skus: offer.skus ?? [],
+      images: offer.images ?? [],
+      attributes: offer.attributes ?? {},
+      sourceUrl: offer.sourceUrl || sourceInfo.itemUrl,
+      offerId: offer.offerId ?? sourceInfo.itemId,
+      collectedAt: body.collectedAt ?? offer.collectedAt,
+    };
+  }
+  return null;
+}
+
+/** Canonical URL so different URL shapes of one offer dedupe to one row. */
+export function canonicalSourceUrl(offer: CollectedOffer): string {
+  if (offer.sourcePlatform === "1688" && offer.offerId) {
+    return `https://detail.1688.com/offer/${offer.offerId}.html`;
+  }
+  return offer.sourceUrl;
+}
+
+/** Insert or refresh a collect-box row; re-collecting updates source data. */
+export async function ingestOffer(
+  db: Db,
+  workspaceId: string,
+  userId: string,
+  offer: CollectedOffer,
+) {
+  const sourceUrl = canonicalSourceUrl(offer);
+  const values = {
+    workspaceId,
+    sourcePlatform: offer.sourcePlatform,
+    sourceUrl,
+    sourceItemId: offer.offerId ?? null,
+    title: offer.title,
+    priceText: offer.priceText ?? null,
+    skus: offer.skus,
+    images: offer.images,
+    attributes: offer.attributes,
+    sellerName: offer.sellerName ?? null,
+    collectedBy: userId,
+    collectedAt: new Date(offer.collectedAt || Date.now()),
+  };
+  const [existing] = await db
+    .select({ id: sourceItems.id })
+    .from(sourceItems)
+    .where(
+      and(
+        eq(sourceItems.workspaceId, workspaceId),
+        offer.offerId
+          ? or(
+              and(
+                eq(sourceItems.sourcePlatform, offer.sourcePlatform),
+                eq(sourceItems.sourceItemId, offer.offerId),
+              ),
+              eq(sourceItems.sourceUrl, sourceUrl),
+            )
+          : eq(sourceItems.sourceUrl, sourceUrl),
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    const [row] = await db
+      .update(sourceItems)
+      .set(values)
+      .where(eq(sourceItems.id, existing.id))
+      .returning();
+    return { item: row!, duplicated: true };
+  }
+  const [row] = await db.insert(sourceItems).values(values).returning();
+  return { item: row!, duplicated: false };
+}
+
+const harvestSchema = z.object({
+  sourceInfo: z.object({
+    itemUrl: z.string().url(),
+    itemId: z.string().optional(),
+    site: z.string().optional(),
+    source: z.enum(["1688", "taobao", "pdd", "temu", "amazon", "unknown"]),
+    postFee: z.string().optional(),
+  }),
+  pageContent: z.string().max(8_000_000).optional(),
+  afterUrl: z.string().optional(),
+  productExtInfo: z.record(z.string(), z.unknown()).optional(),
+  collectedAt: z.string().default(() => new Date().toISOString()),
+});
+
+const checkSchema = z.object({
+  items: z
+    .array(z.object({ itemUrl: z.string().optional(), itemId: z.string().optional() }))
+    .max(500),
+});
+
+export function collectRoutes() {
+  const r = new Hono<AppEnv>();
+  r.use(requireAuth);
+
+  r.post("/", zValidator("json", harvestSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId, userId } = c.var.auth;
+    const offer = harvestToOffer(c.req.valid("json") as CollectHarvest);
+    if (!offer) {
+      throw new HttpError(422, "页面未解析出商品数据", "rowDataInvalid");
+    }
+    const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer);
+    return c.json(
+      { ok: true, item: toSourceItemDto(item, []), duplicated },
+      duplicated ? 200 : 201,
+    );
+  });
+
+  /** Dedup marking — pages batch-check which items are already collected. */
+  r.post("/check", zValidator("json", checkSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const { items } = c.req.valid("json");
+    const idOf = (i: { itemUrl?: string; itemId?: string }) =>
+      i.itemId ?? i.itemUrl?.match(/offer\/(\d+)/)?.[1];
+    const ids = items.map(idOf).filter((v): v is string => !!v);
+    const urls = items.map((i) => i.itemUrl).filter((v): v is string => !!v);
+    if (!ids.length && !urls.length) return c.json({ ok: true, collected: [] });
+    const conds = [];
+    if (ids.length) conds.push(inArray(sourceItems.sourceItemId, ids));
+    if (urls.length) conds.push(inArray(sourceItems.sourceUrl, urls));
+    const rows = await db
+      .select({ url: sourceItems.sourceUrl, itemId: sourceItems.sourceItemId })
+      .from(sourceItems)
+      .where(and(eq(sourceItems.workspaceId, workspaceId), or(...conds)));
+    const hitIds = new Set(rows.map((r) => r.itemId));
+    const hitUrls = new Set(rows.map((r) => r.url));
+    const collected = items
+      .filter((i) => hitIds.has(idOf(i) ?? null) || (i.itemUrl && hitUrls.has(i.itemUrl)))
+      .map((i) => i.itemUrl ?? i.itemId);
+    return c.json({ ok: true, collected });
+  });
+
+  return r;
+}

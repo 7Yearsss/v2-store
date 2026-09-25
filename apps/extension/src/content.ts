@@ -1,8 +1,6 @@
 import type { CollectHarvest } from "@caiji/shared";
 import { collectorRequest } from "./lib/bridge";
-import { proxyFetchJson } from "./lib/proxyFetch";
-
-const API = "http://localhost:3000";
+import { sendToBackground, type SubmitResult } from "./lib/messages";
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "V2_TOAST") toast(String(msg.msg ?? ""), msg.ok !== false);
@@ -14,9 +12,9 @@ function toast(msg: string, ok = true) {
   el.style.cssText =
     "position:fixed;top:16px;right:16px;z-index:999999;padding:10px 14px;border-radius:8px;font-size:13px;color:#fff;background:" +
     (ok ? "#16a34a" : "#dc2626") +
-    ";box-shadow:0 4px 14px rgba(0,0,0,.25);font-family:system-ui";
+    ";box-shadow:0 4px 14px rgba(0,0,0,.25);font-family:system-ui;max-width:360px";
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  setTimeout(() => el.remove(), 4000);
 }
 
 function makeBtn(text: string, top: number): HTMLButtonElement {
@@ -30,45 +28,31 @@ function makeBtn(text: string, top: number): HTMLButtonElement {
   return b;
 }
 
-async function pushOffer(harvest: CollectHarvest) {
-  const res = await proxyFetchJson<{ ok: boolean; duplicated?: boolean }>(
-    `${API}/api/collect`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: harvest,
-    },
-  );
-  return res;
-}
+const pushOffer = (harvest: CollectHarvest) =>
+  sendToBackground<SubmitResult>({ type: "SUBMIT_HARVEST", harvest });
 
 const collectBtn = makeBtn("采集此商品", 96);
 
 // Dedup mark on page load (batch_check_item_has_fetch equivalent).
 (async () => {
   try {
-    const res = await proxyFetchJson<{ collected?: string[] }>(
-      `${API}/api/collect/check`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: { items: [{ itemUrl: location.href }] },
-      },
-    );
+    const res = await sendToBackground<{ collected?: string[] }>({
+      type: "CHECK_COLLECTED",
+      items: [{ itemUrl: location.href }],
+    });
     if (res.collected?.length) collectBtn.textContent = "已采集 · 重新采集";
   } catch {
-    /* server offline — keep default label */
+    /* not authorized / server offline — keep default label */
   }
 })();
 
 collectBtn.onclick = async () => {
   collectBtn.disabled = true;
   try {
-    const { harvest } = await collectorRequest<{ harvest: CollectHarvest }>(
-      "getProductData",
-    );
+    const { harvest } = await collectorRequest<{ harvest: CollectHarvest }>("getProductData");
     const res = await pushOffer(harvest);
-    toast(res.duplicated ? "已更新（重复采集）" : "采集成功");
+    toast(res.duplicated ? "已更新（重复采集）" : "采集成功，已进入采集箱");
+    collectBtn.textContent = "已采集 · 重新采集";
   } catch (e) {
     toast(`失败: ${e instanceof Error ? e.message : e}`, false);
   } finally {
@@ -81,15 +65,9 @@ shopBtn.onclick = async () => {
   shopBtn.disabled = true;
   shopBtn.textContent = "读取店铺列表…";
   try {
-    const { offerList } = await collectorRequest<{ offerList: any[] }>(
-      "getShopOfferList",
-    );
+    const { offerList } = await collectorRequest<{ offerList: any[] }>("getShopOfferList");
     const ids = [
-      ...new Set(
-        offerList
-          .map((o) => String(o?.offerId ?? o?.id ?? ""))
-          .filter(Boolean),
-      ),
+      ...new Set(offerList.map((o) => String(o?.offerId ?? o?.id ?? "")).filter(Boolean)),
     ].slice(0, 50); // 限速且限量，防风控
     let ok = 0;
     let fail = 0;
