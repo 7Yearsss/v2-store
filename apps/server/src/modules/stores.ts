@@ -28,6 +28,8 @@ export function toStoreDto(r: StoreRow): Store {
     currency: r.currency,
     pricing: { ...DEFAULT_PRICING, ...r.pricing },
     vendor: r.vendor,
+    aiEnhance: r.aiEnhance === "on",
+    language: r.language,
     lastError: r.lastError,
     createdAt: r.createdAt.toISOString(),
   };
@@ -110,6 +112,8 @@ const patchSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   pricing: pricingSchema.optional(),
   vendor: z.string().trim().max(255).optional(),
+  aiEnhance: z.boolean().optional(),
+  language: z.string().trim().min(2).max(32).optional(),
 });
 
 export function storeRoutes() {
@@ -159,9 +163,10 @@ export function storeRoutes() {
   });
 
   r.patch("/:id", zValidator("json", patchSchema), async (c) => {
+    const { aiEnhance, ...rest } = c.req.valid("json");
     const [row] = await c.var.deps.db
       .update(stores)
-      .set(c.req.valid("json"))
+      .set({ ...rest, ...(aiEnhance === undefined ? {} : { aiEnhance: aiEnhance ? "on" : "off" }) })
       .where(
         and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
       )

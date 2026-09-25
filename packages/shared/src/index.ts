@@ -118,6 +118,10 @@ export interface Store {
   pricing: PricingRule;
   /** brand shown on published products; empty = none (never the supplier). */
   vendor: string;
+  /** AI pipeline runs on claim when true. */
+  aiEnhance: boolean;
+  /** target language of AI-rewritten content (BCP-47-ish, e.g. "en", "zh-CN"). */
+  language: string;
   lastError: string | null;
   createdAt: string;
 }
@@ -170,6 +174,31 @@ export interface Listing {
 export interface Page<T> {
   items: T[];
   total: number;
+}
+
+// --- AI 建议（字段级，审核后才进刊登） ---------------------------------------
+
+/** Listing fields the AI pipeline may propose changes for. */
+export type SuggestionField = "title" | "descriptionHtml" | "productType" | "tags" | "options";
+
+/** Composite value for the `options` field: translated options plus every
+ *  variant's optionValues (index-aligned with listing.variants). */
+export interface OptionsSuggestionValue {
+  options: ListingOption[];
+  /** variantOptionValues[i] replaces variants[i].optionValues. */
+  variantOptionValues: string[][];
+}
+
+export type SuggestionStatus = "pending" | "accepted" | "rejected";
+
+/** One field-level AI proposal; the listing row is only touched on accept. */
+export interface ListingSuggestion {
+  id: string;
+  listingId: string;
+  field: SuggestionField;
+  value: unknown;
+  status: SuggestionStatus;
+  createdAt: string;
 }
 
 export * from "./offer1688.js";

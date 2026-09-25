@@ -18,6 +18,10 @@ const schema = z.object({
   APP_URL: z.string().url().default("http://localhost:5173"),
   /** 32-byte key (hex or base64) for encrypting store credentials at rest. */
   ENCRYPTION_KEY: z.string().optional(),
+  /** OpenAI-compatible chat API for the AI listing pipeline (optional; off when unset). */
+  AI_BASE_URL: z.string().url().optional(),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().default("gpt-5.6-sol"),
   SESSION_TTL_DAYS: z.coerce.number().default(30),
   /** Shopify public-app credentials (OAuth install flow). */
   SHOPIFY_API_KEY: z.string().optional(),

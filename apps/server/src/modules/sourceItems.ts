@@ -7,6 +7,7 @@ import type { AppEnv } from "../context.js";
 import { listings, sourceItems, stores } from "../db/schema.js";
 import { attributesToHtml, buildVariants } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { enqueueAiEnhance } from "../jobs/handlers.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
@@ -164,7 +165,17 @@ export function sourceItemRoutes() {
       .insert(listings)
       .values(values)
       .onConflictDoNothing({ target: [listings.storeId, listings.sourceItemId] })
-      .returning({ id: listings.id });
+      .returning({ id: listings.id, storeId: listings.storeId });
+    // 认领即入 AI 产线（店铺设置可关、服务端需配 AI）；建议出现在刊登编辑页，接受前不改草稿。
+    if (c.var.deps.config.ai) {
+      const aiStoreIds = new Set(
+        targetStores.filter((s) => s.aiEnhance === "on").map((s) => s.id),
+      );
+      const aiListingIds = created
+        .filter((l) => aiStoreIds.has(l.storeId))
+        .map((l) => l.id);
+      await enqueueAiEnhance(db, aiListingIds, workspaceId);
+    }
     return c.json({
       created: created.length,
       skipped: values.length - created.length,

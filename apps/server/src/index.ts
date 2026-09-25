@@ -38,6 +38,9 @@ const deps: Deps = {
       scopes: env.SHOPIFY_SCOPES,
       apiVersion: env.SHOPIFY_API_VERSION,
     },
+    ...(env.AI_BASE_URL && env.AI_API_KEY
+      ? { ai: { baseUrl: env.AI_BASE_URL, apiKey: env.AI_API_KEY, model: env.AI_MODEL } }
+      : {}),
   },
 };
 

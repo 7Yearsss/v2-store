@@ -1,4 +1,5 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { runAiEnhance } from "../ai/enhance.js";
 import { adapterFor } from "../channels/index.js";
 import type { Deps } from "../context.js";
 import type { Db } from "../db/client.js";
@@ -9,6 +10,33 @@ import { enqueue, type JobHandler, PermanentJobError } from "./queue.js";
 export const PUBLISH_LISTING = "listing.publish";
 export const FETCH_MISSING_MEDIA = "media.fetchMissing";
 export const SYNC_STORE = "store.syncListings";
+export const AI_ENHANCE_LISTING = "listing.aiEnhance";
+
+/** Queue an AI pass for a listing unless one is already waiting/running. */
+export async function enqueueAiEnhance(
+  db: Db,
+  listingIds: string[],
+  workspaceId: string,
+) {
+  if (!listingIds.length) return 0;
+  const pending = await db
+    .select({ lid: sql<string>`${jobs.payload}->>'listingId'` })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, AI_ENHANCE_LISTING),
+        inArray(jobs.status, ["queued", "running"]),
+        inArray(sql`${jobs.payload}->>'listingId'`, listingIds),
+      ),
+    );
+  const have = new Set(pending.map((p) => p.lid));
+  let queued = 0;
+  for (const id of listingIds.filter((id) => !have.has(id))) {
+    await enqueue(db, AI_ENHANCE_LISTING, { listingId: id }, { workspaceId, maxAttempts: 2 });
+    queued++;
+  }
+  return queued;
+}
 
 /** Queue a status sync for a store unless one is already waiting. */
 export async function enqueueStoreSync(db: Db, storeId: string, workspaceId: string) {
@@ -107,8 +135,15 @@ const publishListing: JobHandler = {
   },
 };
 
+const aiEnhance: JobHandler = {
+  async run(deps: Deps, job) {
+    await runAiEnhance(deps, String(job.payload.listingId));
+  },
+};
+
 export const jobHandlers: Record<string, JobHandler> = {
   [PUBLISH_LISTING]: publishListing,
   [FETCH_MISSING_MEDIA]: fetchMissingMedia,
   [SYNC_STORE]: syncStore,
+  [AI_ENHANCE_LISTING]: aiEnhance,
 };

@@ -12,6 +12,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -120,7 +121,12 @@ function previewPrice(costCny: number, p: Partial<PricingRule> & { endingOn?: bo
   return (v < raw ? v + 1 : v).toFixed(2);
 }
 
-type SettingsForm = PricingRule & { endingOn: boolean; vendor: string };
+type SettingsForm = PricingRule & {
+  endingOn: boolean;
+  vendor: string;
+  aiEnhance: boolean;
+  language: string;
+};
 
 function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () => void }) {
   const { message } = App.useApp();
@@ -132,11 +138,14 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         ...store.pricing,
         endingOn: store.pricing.priceEnding != null,
         vendor: store.vendor,
+        aiEnhance: store.aiEnhance,
+        language: store.language,
       });
     }
   }, [store, form]);
   const save = useMutation({
-    mutationFn: (body: { pricing: PricingRule; vendor: string }) => api.updateStore(store!.id, body),
+    mutationFn: (body: { pricing: PricingRule; vendor: string; aiEnhance: boolean; language: string }) =>
+      api.updateStore(store!.id, body),
     onSuccess: () => {
       message.success("已保存，对之后认领的商品生效");
       qc.invalidateQueries({ queryKey: ["stores"] });
@@ -156,6 +165,8 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         const v = await form.validateFields();
         save.mutate({
           vendor: v.vendor ?? "",
+          aiEnhance: v.aiEnhance ?? true,
+          language: v.language ?? "en",
           pricing: {
             exchangeRate: v.exchangeRate,
             markup: v.markup,
@@ -212,6 +223,36 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         >
           <Input placeholder="你的品牌名" maxLength={255} />
         </Form.Item>
+        <Typography.Title level={5}>AI 产线</Typography.Title>
+        <Space size={12} style={{ display: "flex" }}>
+          <Form.Item
+            name="aiEnhance"
+            label="认领后自动生成 AI 建议"
+            extra="翻译标题/描述/选项、生成卖点描述，在刊登编辑页逐条审核"
+            valuePropName="checked"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item name="language" label="刊登语言" rules={[{ required: true }]}>
+            <Select
+              style={{ width: 170 }}
+              options={[
+                { value: "en", label: "English" },
+                { value: "zh-CN", label: "简体中文" },
+                { value: "zh-TW", label: "繁體中文" },
+                { value: "ja", label: "日本語" },
+                { value: "ko", label: "한국어" },
+                { value: "de", label: "Deutsch" },
+                { value: "fr", label: "Français" },
+                { value: "es", label: "Español" },
+                { value: "pt", label: "Português" },
+                { value: "th", label: "ไทย" },
+                { value: "vi", label: "Tiếng Việt" },
+                { value: "id", label: "Bahasa Indonesia" },
+              ]}
+            />
+          </Form.Item>
+        </Space>
       </Form>
     </Modal>
   );

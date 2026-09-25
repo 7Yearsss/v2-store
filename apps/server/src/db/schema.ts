@@ -176,6 +176,12 @@ export const stores = pgTable(
     currency: text("currency"),
     pricing: jsonb("pricing").$type<PricingRule>().notNull(),
     vendor: text("vendor").notNull().default(""),
+    /** AI pipeline runs on claim when true (store settings opt-out). */
+    aiEnhance: text("ai_enhance", { enum: ["on", "off"] })
+      .notNull()
+      .default("on"),
+    /** target language for AI-rewritten listing content. */
+    language: text("language").notNull().default("en"),
     lastError: text("last_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -230,6 +236,33 @@ export const listings = pgTable(
     uniqueIndex("listings_store_source_uq").on(t.storeId, t.sourceItemId),
     index("listings_ws_status_idx").on(t.workspaceId, t.status),
   ],
+);
+
+// --- AI suggestions ------------------------------------------------------------
+
+/** 字段级 AI 建议：认领后 AI 产线生成，用户逐条接受/拒绝，接受前不改刊登本体。 */
+export const listingSuggestions = pgTable(
+  "listing_suggestions",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listings.id, { onDelete: "cascade" }),
+    field: text("field", {
+      enum: ["title", "descriptionHtml", "productType", "tags", "options"],
+    }).notNull(),
+    /** proposed value; for `options` it's {options, variantOptionValues}. */
+    value: jsonb("value").notNull(),
+    status: text("status", { enum: ["pending", "accepted", "rejected"] })
+      .notNull()
+      .default("pending"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("listing_suggestions_listing_status_idx").on(t.listingId, t.status)],
 );
 
 // --- jobs -------------------------------------------------------------------
