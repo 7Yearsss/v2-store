@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, count, desc, eq, ilike, inArray } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, notExists } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { SourceItem, SourcePlatform } from "@caiji/shared";
@@ -50,6 +50,7 @@ export function toSourceItemDto(
 
 const listQuery = z.object({
   q: z.string().trim().optional(),
+  unclaimed: z.coerce.boolean().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
@@ -68,10 +69,11 @@ export function sourceItemRoutes() {
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
     const { workspaceId } = c.var.auth;
-    const { q, page, pageSize } = c.req.valid("query");
+    const { q, unclaimed, page, pageSize } = c.req.valid("query");
     const where = and(
       eq(sourceItems.workspaceId, workspaceId),
       q ? ilike(sourceItems.title, `%${q}%`) : undefined,
+      unclaimed ? notExists(db.select({ id: listings.id }).from(listings).where(eq(listings.sourceItemId, sourceItems.id))) : undefined,
     );
     const [rows, [total]] = await Promise.all([
       db

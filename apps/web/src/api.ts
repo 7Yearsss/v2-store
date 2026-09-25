@@ -80,8 +80,8 @@ export const api = {
   extensionToken: () =>
     request<{ token: string; expiresAt: string }>("POST", "/auth/extension-token", {}),
 
-  sourceItems: (p: { q?: string; page?: number; pageSize?: number }) =>
-    request<Page<SourceItem>>("GET", `/source-items${qs(p)}`),
+  sourceItems: (p: { q?: string; unclaimed?: boolean; page?: number; pageSize?: number }) =>
+    request<Page<SourceItem>>("GET", `/source-items${qs({ ...p, unclaimed: p.unclaimed ? 1 : undefined })}`),
   deleteSourceItems: (ids: string[]) => request<{ deleted: number }>("POST", "/source-items/delete", { ids }),
   claim: (ids: string[], storeIds: string[]) =>
     request<{ created: number; skipped: number }>("POST", "/source-items/claim", { ids, storeIds }),

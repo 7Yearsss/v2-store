@@ -284,7 +284,7 @@ export function ListingEditPage() {
               width: 56,
               render: (_, v: ListingVariant) =>
                 v.image ? (
-                  <Image src={v.image} width={40} height={40} style={{ objectFit: "cover" }} />
+                  <Image src={v.image} fallback="/placeholder.svg" width={40} height={40} style={{ objectFit: "cover" }} />
                 ) : (
                   "—"
                 ),

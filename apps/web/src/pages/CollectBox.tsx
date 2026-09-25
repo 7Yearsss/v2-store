@@ -125,14 +125,15 @@ export function CollectBoxPage() {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const [q, setQ] = useState("");
+  const [unclaimedOnly, setUnclaimedOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [selected, setSelected] = useState<string[]>([]);
   const [claimOpen, setClaimOpen] = useState(false);
 
   const list = useQuery({
-    queryKey: ["source-items", q, page, pageSize],
-    queryFn: () => api.sourceItems({ q, page, pageSize }),
+    queryKey: ["source-items", q, unclaimedOnly, page, pageSize],
+    queryFn: () => api.sourceItems({ q, unclaimed: unclaimedOnly || undefined, page, pageSize }),
     placeholderData: keepPreviousData,
   });
   const stores = useQuery({ queryKey: ["stores"], queryFn: api.stores });
@@ -161,6 +162,9 @@ export function CollectBoxPage() {
             }}
             style={{ width: 260 }}
           />
+          <Checkbox checked={unclaimedOnly} onChange={(e) => { setUnclaimedOnly(e.target.checked); setPage(1); }}>
+            只看未认领
+          </Checkbox>
           <Button type="primary" disabled={!selected.length} onClick={() => setClaimOpen(true)}>
             认领到店铺 {selected.length ? `(${selected.length})` : ""}
           </Button>
