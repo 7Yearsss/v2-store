@@ -24,6 +24,7 @@ export function toSourceItemDto(
   r: Row,
   claimedStoreIds: string[],
   images: string[] = r.images,
+  descImages: string[] = r.descImages,
 ): SourceItem {
   return {
     id: r.id,
@@ -34,6 +35,7 @@ export function toSourceItemDto(
     priceText: r.priceText,
     skus: r.skus,
     images,
+    descImages,
     attributes: r.attributes,
     sellerName: r.sellerName,
     sourceCategoryId: r.sourceCategoryId,
@@ -89,9 +91,15 @@ export function sourceItemRoutes() {
     for (const cl of claims) {
       byItem.set(cl.sid, [...(byItem.get(cl.sid) ?? []), cl.storeId]);
     }
-    const show = await displayUrls(db, workspaceId, rows.map((r) => r.images));
+    const show = await displayUrls(
+      db,
+      workspaceId,
+      rows.map((r) => [...r.images, ...r.descImages]),
+    );
     return c.json({
-      items: rows.map((r) => toSourceItemDto(r, byItem.get(r.id) ?? [], show(r.images))),
+      items: rows.map((r) =>
+        toSourceItemDto(r, byItem.get(r.id) ?? [], show(r.images), show(r.descImages)),
+      ),
       total: total?.n ?? 0,
     });
   });
@@ -112,8 +120,10 @@ export function sourceItemRoutes() {
       .select({ storeId: listings.storeId })
       .from(listings)
       .where(eq(listings.sourceItemId, row.id));
-    const show = await displayUrls(db, c.var.auth.workspaceId, [row.images]);
-    return c.json(toSourceItemDto(row, claims.map((x) => x.storeId), show(row.images)));
+    const show = await displayUrls(db, c.var.auth.workspaceId, [[...row.images, ...row.descImages]]);
+    return c.json(
+      toSourceItemDto(row, claims.map((x) => x.storeId), show(row.images), show(row.descImages)),
+    );
   });
 
   r.post("/delete", zValidator("json", idsSchema), async (c) => {
@@ -191,6 +201,7 @@ export function sourceItemRoutes() {
             title: applyTitleRules(item.title, rules),
             descriptionHtml: attributesToHtml(applyAttrRules(item.attributes, rules)),
             images: applyImageLimit(item.images, rules),
+            descImages: item.descImages.slice(0, 30),
             options,
             variants,
             tags: rules.defaultTags ?? [],

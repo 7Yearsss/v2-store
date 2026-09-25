@@ -175,7 +175,14 @@ describe("claim → publish", () => {
   });
 
   it("草稿发布 + SEO + 默认项 + 变体图绑定", async () => {
-    ctx = await setup(fakeShopify());
+    ctx = await setup(
+      fakeShopify({
+        sourceImages: {
+          "https://cbu01.alicdn.com/d1.jpg": new Uint8Array([0xff, 0xd8, 0xff, 1]),
+          "https://cbu01.alicdn.com/d2.jpg": new Uint8Array([0xff, 0xd8, 0xff, 2]),
+        },
+      }),
+    );
     const t = await ctx.register();
     const store = (
       await ctx.api(
@@ -222,6 +229,7 @@ describe("claim → publish", () => {
               },
             ],
             images: ["https://cbu01.alicdn.com/a.jpg"],
+            descImages: ["https://cbu01.alicdn.com/d1.jpg", "https://cbu01.alicdn.com/d2.jpg"],
             attributes: {},
             collectedAt: new Date().toISOString(),
           },
@@ -237,6 +245,11 @@ describe("claim → publish", () => {
     );
     const list = await ctx.api("GET", "/api/listings", undefined, t);
     const listing = list.body.items[0];
+    // 详情图随认领进刊登
+    expect(listing.descImages).toEqual([
+      "https://cbu01.alicdn.com/d1.jpg",
+      "https://cbu01.alicdn.com/d2.jpg",
+    ]);
     // 刊登默认项在认领时生效
     expect(listing.tags).toEqual(["dropship"]);
     expect(listing.productType).toBe("Cups");
@@ -258,6 +271,9 @@ describe("claim → publish", () => {
     // files = 主图 + 变体图
     expect(input.files).toHaveLength(2);
     expect(input.files[1].originalSource).toBe("https://cbu01.alicdn.com/red.jpg");
+    // 详情图：fileCreate 转永久 cdn URL 后追加到描述末尾
+    expect(input.descriptionHtml).toContain('<img src="https://cdn.example/desc/f0.jpg"/>');
+    expect(input.descriptionHtml).toContain('<img src="https://cdn.example/desc/f1.jpg"/>');
 
     // 变体图绑定：productSet → BindData 拿 media/variant id → productVariantsBulkUpdate
     const bind = ctx.calls.find((c) =>

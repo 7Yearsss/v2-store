@@ -43,6 +43,13 @@
       "when": 1790323057603,
       "tag": "0005_graceful_oracle",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790328639667,
+      "tag": "0006_funny_ironclad",
+      "breakpoints": true
     }
   ]
 }

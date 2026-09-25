@@ -98,6 +98,8 @@ export const sourceItems = pgTable(
     priceText: text("price_text"),
     skus: jsonb("skus").$type<OfferSku[]>().notNull().default([]),
     images: jsonb("images").$type<string[]>().notNull().default([]),
+    /** 详情区长图（1688 详情 tab DOM/descUrl 采集，认领进刊登，发布进描述）。 */
+    descImages: jsonb("desc_images").$type<string[]>().notNull().default([]),
     attributes: jsonb("attributes")
       .$type<Record<string, string>>()
       .notNull()
@@ -223,6 +225,8 @@ export const listings = pgTable(
     title: text("title").notNull(),
     descriptionHtml: text("description_html").notNull().default(""),
     images: jsonb("images").$type<string[]>().notNull().default([]),
+    /** 详情图：发布时上传并追加到 descriptionHtml 末尾。 */
+    descImages: jsonb("desc_images").$type<string[]>().notNull().default([]),
     options: jsonb("options").$type<ListingOption[]>().notNull().default([]),
     variants: jsonb("variants").$type<ListingVariant[]>().notNull().default([]),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),

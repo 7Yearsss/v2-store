@@ -322,6 +322,32 @@ function extractSkus(data: any): OfferSku[] {
   return Object.entries(skuModel?.skuInfoMap ?? {}).map(([k, r]) => toSku(k, r, props));
 }
 
+/**
+ * 1688 详情页 offerDetail.descUrl / detailUrl：详情区 HTML 的拉取地址
+ * （插件 background 拉它解析长图；同域页面请求，不经过 CORS）。
+ */
+export function descUrlFromData(data: any): string | undefined {
+  const detail = getModel(data)?.offerDetail ?? getBaseInfo(data) ?? {};
+  const u =
+    detail.descUrl ?? detail.detailUrl ?? detail.descriptionUrl ?? detail.desc_url;
+  const s = normalizeUrl(u);
+  return s.startsWith("http") ? s : undefined;
+}
+
+const IMG_TAG_RE = /<img[^>]+?(?:data-src|data-lazyload-src|data-ks-lazyload|src)\s*=\s*["']([^"']+)["']/gi;
+const SKIP_IMG = /logo|sprite|icon|blank\.gif|search-lazyload/i;
+
+/** Detail/desc HTML → ordered unique image urls. */
+export function descImagesFromHtml(html: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(IMG_TAG_RE)) {
+    const u = normalizeUrl(m[1]);
+    if (!u.startsWith("http") || SKIP_IMG.test(u) || out.includes(u)) continue;
+    out.push(u);
+  }
+  return out;
+}
+
 function extractPriceText(data: any): string | undefined {
   const trade = getModel(data)?.tradeModel;
   if (trade) {

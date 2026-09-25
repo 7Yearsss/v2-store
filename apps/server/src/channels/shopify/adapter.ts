@@ -112,6 +112,64 @@ const PRODUCT_BIND_DATA = /* GraphQL */ `
   }
 `;
 
+const FILE_CREATE = /* GraphQL */ `
+  mutation DescFiles($files: [FileCreateInput!]!) {
+    fileCreate(files: $files) {
+      files { id fileStatus ... on MediaImage { image { url } } }
+      userErrors { field message }
+    }
+  }
+`;
+
+const FILE_POLL = /* GraphQL */ `
+  query DescFilePoll($ids: [ID!]!) {
+    nodes(ids: $ids) { id ... on MediaImage { fileStatus image { url } } }
+  }
+`;
+
+interface DescFile {
+  id: string;
+  fileStatus?: string;
+  image?: { url: string } | null;
+}
+
+/**
+ * staged resourceUrl 是临时地址，不能直接留在描述里（会过期）。
+ * 经 fileCreate 转存成 Files 里永久的 cdn URL 后再写进描述 HTML；
+ * 处理未就绪的轮询几次，超时退回 staged/原始地址保底。
+ */
+async function permanentDescUrls(
+  deps: Deps,
+  store: StoreRow,
+  sources: string[],
+): Promise<string[]> {
+  if (!sources.length) return [];
+  try {
+    const created = await shopifyGraphql<{
+      fileCreate: { files: DescFile[]; userErrors: Array<{ message: string }> };
+    }>(deps, store, FILE_CREATE, {
+      files: sources.map((originalSource) => ({ contentType: "IMAGE", originalSource })),
+    });
+    if (created.fileCreate.userErrors.length) {
+      return sources; // Shopify 拒绝批量建文件时保底用原地址
+    }
+    let files = created.fileCreate.files;
+    for (let n = 0; n < 6 && files.some((f) => !f?.image?.url); n++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const polled = await shopifyGraphql<{ nodes: Array<DescFile | null> }>(
+        deps,
+        store,
+        FILE_POLL,
+        { ids: files.map((f) => f.id) },
+      );
+      files = files.map((f, i) => ({ ...f, ...polled.nodes[i] }));
+    }
+    return sources.map((src, i) => files[i]?.image?.url ?? src);
+  } catch {
+    return sources;
+  }
+}
+
 const VARIANTS_BIND = /* GraphQL */ `
   mutation BindVariantMedia($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
     productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -180,15 +238,29 @@ export const shopifyAdapter: ChannelAdapter = {
     for (const v of listing.variants) {
       if (v.image && !allImages.includes(v.image)) allImages.push(v.image);
     }
-    const media = await prepareShopifyMedia(deps, store, listing.workspaceId, allImages);
+    // 详情图：同一批 staged 上传拿 resourceUrl，再 fileCreate 转永久 cdn URL
+    // 写进描述 HTML（商品 media 里没有的位置，描述内嵌图只能用 URL）。
+    const media = await prepareShopifyMedia(deps, store, listing.workspaceId, [
+      ...allImages,
+      ...listing.descImages,
+    ]);
+    const fileSources = media.sources.slice(0, allImages.length);
+    const descSources = media.sources.slice(allImages.length).filter(Boolean);
+    const descUrls = await permanentDescUrls(deps, store, descSources);
+    const descHtml = descUrls
+      .map((src) => `<p><img src="${src}"/></p>`)
+      .join("");
     const publishStatus = store.rules?.publishStatus ?? "active";
+    const inputListing: ListingRow = descHtml
+      ? { ...listing, descriptionHtml: `${listing.descriptionHtml}${descHtml}` }
+      : listing;
     const data = await shopifyGraphql<{
       productSet: {
         product: { id: string; handle: string; onlineStoreUrl: string | null } | null;
         userErrors: Array<{ field?: string[]; message: string }>;
       };
     }>(deps, store, PRODUCT_SET, {
-      input: toProductSetInput(listing, store.pricing.exchangeRate, media.sources, !listing.remoteId, {
+      input: toProductSetInput(inputListing, store.pricing.exchangeRate, fileSources, !listing.remoteId, {
         publishStatus,
       }),
       identifier: listing.remoteId ? { id: listing.remoteId } : undefined,

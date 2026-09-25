@@ -21,10 +21,14 @@ export function harvestToOffer(body: CollectHarvest): CollectedOffer | null {
   const { sourceInfo, pageContent, productExtInfo } = body;
   const initData =
     productExtInfo?.initData ?? (pageContent ? findInitData(pageContent) : null);
+  // 详情图只能来自页面侧（DOM/descUrl），initData 里没有，附带在 extInfo 上传。
+  const extDesc = Array.isArray(productExtInfo?.descImages)
+    ? productExtInfo.descImages.filter((u): u is string => typeof u === "string")
+    : undefined;
   if (initData) {
     const offer = normalizeOffer(initData, sourceInfo.itemId, sourceInfo.itemUrl);
     if (offer.title) {
-      return { ...offer, collectedAt: body.collectedAt ?? offer.collectedAt };
+      return { ...offer, descImages: extDesc, collectedAt: body.collectedAt ?? offer.collectedAt };
     }
   }
   const offer = productExtInfo?.offer as CollectedOffer | undefined;
@@ -33,6 +37,7 @@ export function harvestToOffer(body: CollectHarvest): CollectedOffer | null {
       ...offer,
       skus: offer.skus ?? [],
       images: offer.images ?? [],
+      descImages: offer.descImages ?? extDesc,
       attributes: offer.attributes ?? {},
       sourceUrl: offer.sourceUrl || sourceInfo.itemUrl,
       offerId: offer.offerId ?? sourceInfo.itemId,
@@ -67,6 +72,7 @@ export async function ingestOffer(
     priceText: offer.priceText ?? null,
     skus: offer.skus,
     images: offer.images,
+    descImages: offer.descImages ?? [],
     attributes: offer.attributes,
     sellerName: offer.sellerName ?? null,
     sourceCategoryId: offer.categoryId ?? null,
@@ -137,7 +143,7 @@ export function collectRoutes() {
     }
     const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer);
     // the extension uploads images right after this; the server fills gaps later
-    if (item.images.length) {
+    if (item.images.length || item.descImages.length) {
       await enqueue(
         db,
         FETCH_MISSING_MEDIA,

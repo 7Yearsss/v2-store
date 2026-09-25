@@ -224,6 +224,21 @@ export function ListingEditPage() {
         </Image.PreviewGroup>
       </Card>
 
+      {!!listing?.descImages?.length && (
+        <Card
+          title={`详情图（${listing.descImages.length}）`}
+          extra={<Typography.Text type="secondary">发布时追加到描述末尾</Typography.Text>}
+        >
+          <Image.PreviewGroup>
+            <Space wrap>
+              {listing.descImages.map((src) => (
+                <Image key={src} src={src} width={110} style={{ borderRadius: 6 }} />
+              ))}
+            </Space>
+          </Image.PreviewGroup>
+        </Card>
+      )}
+
       <Card
         title={`变体（${draft.variants.length}）`}
         extra={
