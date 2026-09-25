@@ -73,6 +73,26 @@ const qs = (params: Record<string, string | number | undefined>) => {
   return s ? `?${s}` : "";
 };
 
+export interface PublishPreview {
+  ok: boolean;
+  warnings: string[];
+  product: {
+    title: string;
+    vendor: string;
+    productType: string;
+    tags: string[];
+    status: string;
+    seo: { title: string; description: string };
+    categoryId: string;
+    categoryName: string;
+    imageCount: number;
+    options: { name: string; values: string[] }[];
+    variants: { sku: string; price: string; compareAtPrice: string; cost: string; optionValues: string[] }[];
+    trackStock: boolean;
+    attributes: { name: string; value: string }[];
+  } | null;
+}
+
 export const api = {
   me: () => request<Me>("GET", "/auth/me"),
   login: (body: { email: string; password: string }) => request("POST", "/auth/login", body),
@@ -140,6 +160,7 @@ export const api = {
     request<{ queued: number; skipped: number }>("POST", "/listings/delist", { ids }),
   copyListing: (id: string, storeId: string) =>
     request<Listing>("POST", `/listings/${id}/copy`, { storeId }),
+  publishPreview: (id: string) => request<PublishPreview>("GET", `/listings/${id}/publish-preview`),
   listingSuggestions: (id: string) =>
     request<{ items: ListingSuggestion[]; pending: boolean }>(
       "GET",

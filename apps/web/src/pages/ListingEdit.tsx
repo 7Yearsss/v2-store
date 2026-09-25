@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   Col,
+  Descriptions,
   Form,
   Image,
   Input,
@@ -22,9 +23,11 @@ import {
 } from "antd";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api } from "../api";
+import { api, type PublishPreview } from "../api";
 import { acceptedPatch, AiSuggestionsCard } from "../components/AiSuggestions";
 import { REMOTE, STATUS } from "./Listings";
+
+type PreviewVariant = NonNullable<PublishPreview["product"]>["variants"][number];
 
 type Editable = Pick<
   Listing,
@@ -65,6 +68,8 @@ export function ListingEditPage() {
   const [draft, setDraft] = useState<Editable>();
   const [catOptions, setCatOptions] = useState<CategoryCandidate[]>([]);
   const [vsel, setVsel] = useState<number[]>([]);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [preview, setPreview] = useState<PublishPreview>();
   const [bulk, setBulk] = useState<{ field: "price" | "compareAtPrice"; op: "set" | "add" | "sub" | "mul" } | null>(null);
   const [bulkValue, setBulkValue] = useState<number | null>(null);
 
@@ -119,6 +124,15 @@ export function ListingEditPage() {
   }
 
   const set = (patch: Partial<Editable>) => setDraft((d) => ({ ...d!, ...patch }));
+  const openPreview = async () => {
+    if (dirty) {
+      const saved = await api.updateListing(id, draft!);
+      setDraft(pickEditable(saved));
+      setBaseline(JSON.stringify(pickEditable(saved)));
+    }
+    setPreview(await api.publishPreview(id));
+    setPreviewOpen(true);
+  };
   const applyBulk = () => {
     if (!bulk || bulkValue == null || !draft) return;
     const calc = (cur: number | undefined) => {
@@ -382,6 +396,9 @@ export function ListingEditPage() {
         <Button disabled={!dirty || locked} loading={save.isPending && !save.variables} onClick={() => save.mutate(false)}>
           保存
         </Button>
+        <Button disabled={locked} onClick={() => openPreview().catch((e) => message.error(e.message))}>
+          发布预览
+        </Button>
         <Button type="primary" disabled={locked} loading={save.isPending && save.variables} onClick={() => save.mutate(true)}>
           {listing.status === "published" ? "保存并同步到店铺" : "保存并发布"}
         </Button>
@@ -394,6 +411,79 @@ export function ListingEditPage() {
           <Typography.Text type="secondary">来源：采集箱</Typography.Text>
         </Link>
       </div>
+
+      <Modal
+        title="发布预览"
+        open={previewOpen}
+        onCancel={() => setPreviewOpen(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setPreviewOpen(false)}>关闭</Button>
+            <Button
+              type="primary"
+              disabled={locked || !!preview?.warnings.some((w) => w.includes("拦截") || w.includes("不含"))}
+              onClick={() => {
+                setPreviewOpen(false);
+                save.mutate(true);
+              }}
+            >
+              发布
+            </Button>
+          </Space>
+        }
+        width={720}
+      >
+        {!preview ? (
+          <Spin />
+        ) : (
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            {preview.warnings.map((w) => (
+              <Alert key={w} type="warning" showIcon message={w} />
+            ))}
+            {preview.product && (
+              <>
+                <Descriptions size="small" column={2} bordered>
+                  <Descriptions.Item label="标题" span={2}>{preview.product.title}</Descriptions.Item>
+                  <Descriptions.Item label="店铺状态">{preview.product.status}</Descriptions.Item>
+                  <Descriptions.Item label="库存">{preview.product.trackStock ? "同步货源库存" : "不追踪（无限可售）"}</Descriptions.Item>
+                  <Descriptions.Item label="类目">{preview.product.categoryName || "未映射"}</Descriptions.Item>
+                  <Descriptions.Item label="品牌">{preview.product.vendor || "—"}</Descriptions.Item>
+                  <Descriptions.Item label="类型">{preview.product.productType || "—"}</Descriptions.Item>
+                  <Descriptions.Item label="标签">{preview.product.tags.join("、") || "—"}</Descriptions.Item>
+                  <Descriptions.Item label="图片">{preview.product.imageCount} 张（含详情图）</Descriptions.Item>
+                  <Descriptions.Item label="SEO 标题" span={2}>{preview.product.seo.title}</Descriptions.Item>
+                </Descriptions>
+                {!!preview.product.attributes.length && (
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>类目属性</Typography.Text>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {preview.product.attributes.map((a) => (
+                        <Tag key={a.name}>{a.name}: {a.value}</Tag>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <Table<PreviewVariant>
+                  size="small"
+                  rowKey={(_, i) => String(i)}
+                  dataSource={preview.product.variants}
+                  pagination={preview.product.variants.length > 20 ? { pageSize: 20 } : false}
+                  columns={[
+                    ...preview.product.options.map((o, i) => ({
+                      title: o.name,
+                      render: (_: unknown, v: PreviewVariant) => v.optionValues[i],
+                    })),
+                    { title: "SKU", dataIndex: "sku" },
+                    { title: "售价", dataIndex: "price", width: 90 },
+                    { title: "划线价", dataIndex: "compareAtPrice", width: 90 },
+                    { title: "成本", dataIndex: "cost", width: 80 },
+                  ]}
+                />
+              </>
+            )}
+          </Space>
+        )}
+      </Modal>
 
       <Modal
         title={`批量修改 ${vsel.length} 个变体`}

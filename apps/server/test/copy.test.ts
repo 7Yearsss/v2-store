@@ -40,6 +40,34 @@ describe("listing copy", () => {
     expect(res.body.variants).toHaveLength(src.variants.length);
   });
 
+  it("publish-preview summarizes the outgoing payload without touching the store", async () => {
+    ctx = await setup(fakeShopify());
+    const t = await ctx.register();
+    const store = (
+      await ctx.api(
+        "POST",
+        "/api/stores/shopify",
+        { authType: "access_token", shopDomain: "a.myshopify.com", accessToken: "shpat_abcdefghij" },
+        t,
+      )
+    ).body;
+    await ctx.api("PATCH", `/api/stores/${store.id}`, { rules: { publishStatus: "draft", bannedWords: ["厂家"] } }, t);
+    const item = (await ctx.api("POST", "/api/collect", harvest("73", "预览杯厂家直销"), t)).body.item;
+    await ctx.api("POST", "/api/source-items/claim", { ids: [item.id], storeIds: [store.id] }, t);
+    const listing = (await ctx.api("GET", "/api/listings", undefined, t)).body.items[0];
+
+    const res = await ctx.api("GET", `/api/listings/${listing.id}/publish-preview`, undefined, t);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.warnings.join()).toContain("禁售词");
+    expect(res.body.product).toMatchObject({
+      status: "DRAFT",
+      trackStock: false,
+    });
+    expect(res.body.product.variants.length).toBe(listing.variants.length);
+    expect(res.body.product.variants[0]).toHaveProperty("price");
+  });
+
   it("is scoped to the workspace", async () => {
     ctx = await setup(fakeShopify());
     const t1 = await ctx.register();
