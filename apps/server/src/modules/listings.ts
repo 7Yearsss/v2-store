@@ -14,6 +14,7 @@ import { jobs, listings, listingSuggestions, sourceItems, stores } from "../db/s
 import { HttpError, notFound } from "../lib/errors.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
+import { upsertTermPairs } from "../lib/terms.js";
 import {
   AI_ENHANCE_LISTING,
   CATEGORY_SUGGEST,
@@ -370,7 +371,7 @@ export function listingRoutes() {
 
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
-        .select({ listing: listings, storePlatform: stores.platform })
+        .select({ listing: listings, storePlatform: stores.platform, storeLanguage: stores.language })
         .from(listings)
         .innerJoin(stores, eq(stores.id, listings.storeId))
         .where(
@@ -425,6 +426,18 @@ export function listingRoutes() {
             });
           } else {
             Object.assign(listingPatch, applySuggestion(listing, s));
+            if (s.field === "options") {
+              const v = s.value as OptionsSuggestionValue;
+              // 接受即学习：选项名/值按位成对存入术语映射，之后同类词认领自动预翻
+              const pairs: Array<[string, string]> = [];
+              listing.options.forEach((o, i) => {
+                pairs.push([o.name, v.options[i]?.name ?? o.name]);
+                o.values.forEach((sv, j) => {
+                  pairs.push([sv, v.options[i]?.values[j] ?? sv]);
+                });
+              });
+              await upsertTermPairs(tx, workspaceId, row.storeLanguage, pairs);
+            }
           }
           accepted++;
         } else rejected++;

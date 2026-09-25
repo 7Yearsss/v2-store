@@ -53,7 +53,13 @@ function firstPrice(priceText?: string | null): number | undefined {
  */
 export function buildVariants(
   skus: OfferSku[],
-  opts: { skuPrefix: string; priceText?: string | null; pricing: PricingRule },
+  opts: {
+    skuPrefix: string;
+    priceText?: string | null;
+    pricing: PricingRule;
+    /** 术语预翻：选项名/选项值逐词精确映射（未命中原样）。 */
+    termMap?: (t: string) => string;
+  },
 ): { options: ListingOption[]; variants: ListingVariant[] } {
   const fallbackCost = firstPrice(opts.priceText);
   if (!skus.length) {
@@ -108,7 +114,14 @@ export function buildVariants(
     name,
     values: [...new Set(variants.map((v) => v.optionValues[idx]!))],
   }));
-  return { options, variants };
+  const t = opts.termMap ?? ((s: string) => s);
+  return {
+    options: options.map((o) => ({
+      name: t(o.name),
+      values: [...new Set(o.values.map(t))],
+    })),
+    variants: variants.map((v) => ({ ...v, optionValues: v.optionValues.map(t) })),
+  };
 }
 
 const HTML_ESCAPES: Record<string, string> = {

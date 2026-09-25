@@ -10,6 +10,7 @@ import type {
   SourceItem,
   Store,
   StoreRules,
+  TermMapping,
 } from "@caiji/shared";
 
 export class ApiError extends Error {
@@ -125,4 +126,9 @@ export const api = {
 
   categoryMappings: () => request<{ items: CategoryMapping[] }>("GET", "/category-mappings"),
   deleteCategoryMapping: (id: string) => request<{ ok: boolean }>("DELETE", `/category-mappings/${id}`),
+
+  termMappings: () => request<{ items: TermMapping[] }>("GET", "/term-mappings"),
+  upsertTermMapping: (body: { lang: string; sourceText: string; targetText: string }) =>
+    request<{ item: TermMapping }>("PUT", "/term-mappings", body),
+  deleteTermMapping: (id: string) => request<{ ok: boolean }>("DELETE", `/term-mappings/${id}`),
 };

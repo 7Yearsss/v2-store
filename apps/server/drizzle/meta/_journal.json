@@ -50,6 +50,13 @@
       "when": 1790328639667,
       "tag": "0006_funny_ironclad",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790331196058,
+      "tag": "0007_fancy_iron_fist",
+      "breakpoints": true
     }
   ]
 }

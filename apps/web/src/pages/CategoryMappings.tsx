@@ -1,9 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Card, Popconfirm, Table, Tag, Typography } from "antd";
+import {
+  App,
+  Button,
+  Card,
+  Form,
+  Input,
+  Popconfirm,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+} from "antd";
+import { useState } from "react";
 import { api } from "../api";
 
-/** 类目映射：用户确认过的 来源类目 → 平台类目；删除后同来源类目重新走 AI 建议。 */
-export function CategoryMappingsPage() {
+function CategoryMappingCard() {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ["category-mappings"], queryFn: api.categoryMappings });
@@ -65,5 +77,104 @@ export function CategoryMappingsPage() {
         ]}
       />
     </Card>
+  );
+}
+
+function TermMappingCard() {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<{ lang: string; sourceText: string; targetText: string }>();
+  const [langFilter, setLangFilter] = useState("");
+  const query = useQuery({ queryKey: ["term-mappings"], queryFn: api.termMappings });
+  const upsert = useMutation({
+    mutationFn: api.upsertTermMapping,
+    onSuccess: () => {
+      form.resetFields(["sourceText", "targetText"]);
+      qc.invalidateQueries({ queryKey: ["term-mappings"] });
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteTermMapping(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["term-mappings"] }),
+    onError: (e) => message.error(e.message),
+  });
+  const items = (query.data?.items ?? []).filter((m) => !langFilter || m.lang === langFilter);
+  const langs = [...new Set((query.data?.items ?? []).map((m) => m.lang))].sort();
+
+  return (
+    <Card
+      title="术语翻译映射"
+      extra={
+        <Form
+          form={form}
+          layout="inline"
+          onFinish={(v) =>
+            upsert.mutate({ lang: v.lang?.trim() ?? "", sourceText: v.sourceText, targetText: v.targetText })
+          }
+        >
+          <Form.Item name="lang" style={{ marginBottom: 0 }} initialValue="en">
+            <Input placeholder="语言" style={{ width: 70 }} />
+          </Form.Item>
+          <Form.Item name="sourceText" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="源词" style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="targetText" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="译文" style={{ width: 140 }} />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" size="small" loading={upsert.isPending}>
+            添加
+          </Button>
+        </Form>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+        认领时按刊登语言预翻变体选项名/值与商品属性；AI 选项建议被接受时自动学习词对。
+        删除后该词回到待翻译状态。
+      </Typography.Paragraph>
+      <Space style={{ marginBottom: 8 }}>
+        {langs.map((l) => (
+          <Tag.CheckableTag key={l} checked={langFilter === l} onChange={(c) => setLangFilter(c ? l : "")}>
+            {l || "（空语言）"}
+          </Tag.CheckableTag>
+        ))}
+      </Space>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={query.isLoading}
+        dataSource={items}
+        pagination={{ pageSize: 50, hideOnSinglePage: true }}
+        columns={[
+          { title: "语言", width: 80, render: (_, m) => <Tag>{m.lang || "—"}</Tag> },
+          { title: "源词", dataIndex: "sourceText" },
+          { title: "译文", dataIndex: "targetText" },
+          {
+            title: "操作",
+            width: 90,
+            render: (_, m) => (
+              <Popconfirm title="删除该映射？" onConfirm={() => del.mutate(m.id)}>
+                <Button size="small" danger loading={del.isPending}>
+                  删除
+                </Button>
+              </Popconfirm>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+/** 映射管理：类目映射 + 术语翻译映射。 */
+export function CategoryMappingsPage() {
+  return (
+    <Tabs
+      defaultActiveKey="category"
+      items={[
+        { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
+        { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
+      ]}
+    />
   );
 }

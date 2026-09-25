@@ -147,6 +147,15 @@ export interface StoreRules {
   defaultProductType?: string;
 }
 
+/** 术语翻译映射：变体选项名/值、属性名/值的源词 → 目标语译文，按刊登语言分桶。 */
+export interface TermMapping {
+  id: string;
+  lang: string;
+  sourceText: string;
+  targetText: string;
+  createdAt: string;
+}
+
 export interface Store {
   id: string;
   platform: ChannelPlatform;
