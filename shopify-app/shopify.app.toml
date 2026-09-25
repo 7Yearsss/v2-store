@@ -1,0 +1,25 @@
+# Shopify app config for V2Store — managed here, pushed with `npm run deploy`.
+# Docs: https://shopify.dev/docs/apps/tools/cli/configuration
+#
+# The app has no Shopify-hosted code: our own API (apps/server) talks to the
+# Admin API with tokens obtained via client credentials (dev) or OAuth (SaaS).
+
+client_id = "c599f9b76cf77bf6b5ab2b28ca0ce2aa"
+name = "V2Store"
+# Placeholder until the dashboard has a public HTTPS domain; then point this at
+# it and set redirect_urls to <domain>/api/shopify/callback.
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = false
+
+[build]
+
+[webhooks]
+api_version = "2026-07"
+# TODO once public: app/uninstalled + compliance topics → <domain>/api/shopify/webhooks
+
+[access_scopes]
+# Keep in sync with SHOPIFY_SCOPES in apps/server/src/env.ts
+scopes = "write_products,read_products,read_inventory,write_inventory,read_locations"
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]

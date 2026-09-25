@@ -1,0 +1,9 @@
+{
+  "name": "@caiji/shopify-app",
+  "private": true,
+  "description": "Shopify app config only (not an npm workspace; the CLI runs via npx)",
+  "scripts": {
+    "info": "npx -y @shopify/cli@4 app info",
+    "deploy": "npx -y @shopify/cli@4 app deploy"
+  }
+}
