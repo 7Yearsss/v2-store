@@ -21,6 +21,15 @@ export function createApp(deps: Deps) {
     if (err instanceof HttpError) {
       return c.json({ error: err.message }, err.status as never);
     }
+    // PG 22P02 invalid_text_representation（如把非 uuid 文本传给 uuid 列）→ 404 而不是 500
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "cause" in err &&
+      (err.cause as { code?: string }).code === "22P02"
+    ) {
+      return c.json({ error: "记录不存在" }, 404);
+    }
     console.error(err);
     return c.json({ error: "服务器错误" }, 500);
   });
