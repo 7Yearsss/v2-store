@@ -17,6 +17,7 @@ export const SYNC_STORE = "store.syncListings";
 export const AI_ENHANCE_LISTING = "listing.aiEnhance";
 export const CATEGORY_SUGGEST = "listing.categorySuggest";
 export const SYNC_CATEGORIES = "store.syncCategories";
+export const DELIST_LISTING = "listing.delist";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -216,6 +217,42 @@ const publishListing: JobHandler = {
   },
 };
 
+/** Unpublish on the channel (Shopify → DRAFT): remote keeps existing, ERP 记录保留。
+ *  刊登本身保持 published 状态——remoteStatus 反映「已下架」。 */
+const delistListing: JobHandler = {
+  async run(deps: Deps, job) {
+    const listingId = String(job.payload.listingId);
+    const [row] = await deps.db
+      .select({ listing: listings, store: stores })
+      .from(listings)
+      .innerJoin(stores, eq(stores.id, listings.storeId))
+      .where(eq(listings.id, listingId));
+    if (!row) throw new PermanentJobError("刊登记录已删除");
+    if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
+    if (!row.listing.remoteId) {
+      await deps.db
+        .update(listings)
+        .set({ remoteStatus: "DRAFT", syncedAt: new Date(), lastError: null })
+        .where(eq(listings.id, listingId));
+      return;
+    }
+    const adapter = adapterFor(row.store.platform);
+    if (!adapter.delistProduct) throw new PermanentJobError("该平台不支持下架");
+    await adapter.delistProduct(deps, row.store, row.listing.remoteId);
+    await deps.db
+      .update(listings)
+      .set({ remoteStatus: "DRAFT", syncedAt: new Date(), lastError: null })
+      .where(eq(listings.id, listingId));
+  },
+  async onFailed(deps, job, error) {
+    // 保持 published 状态，只留错误信息（lastError 让「已发布」Tag 变黄）
+    await deps.db
+      .update(listings)
+      .set({ lastError: error })
+      .where(eq(listings.id, String(job.payload.listingId)));
+  },
+};
+
 /** Pull the platform's category tree into channel_categories (低频、版本化缓存). */
 const syncCategories: JobHandler = {
   async run(deps: Deps, job) {
@@ -249,4 +286,5 @@ export const jobHandlers: Record<string, JobHandler> = {
   [AI_ENHANCE_LISTING]: aiEnhance,
   [CATEGORY_SUGGEST]: categorySuggest,
   [SYNC_CATEGORIES]: syncCategories,
+  [DELIST_LISTING]: delistListing,
 };

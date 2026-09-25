@@ -134,6 +134,8 @@ export const api = {
       { ids },
     ),
   deleteListings: (ids: string[]) => request<{ deleted: number }>("POST", "/listings/delete", { ids }),
+  delist: (ids: string[]) =>
+    request<{ queued: number; skipped: number }>("POST", "/listings/delist", { ids }),
   listingSuggestions: (id: string) =>
     request<{ items: ListingSuggestion[]; pending: boolean }>(
       "GET",

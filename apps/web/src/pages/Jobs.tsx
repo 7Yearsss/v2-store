@@ -8,6 +8,7 @@ import { api } from "../api";
 
 export const JOB_LABELS: Record<string, string> = {
   "listing.publish": "刊登发布",
+  "listing.delist": "刊登下架",
   "media.fetchMissing": "图片转存",
   "store.syncListings": "店铺状态同步",
   "listing.aiEnhance": "AI 产线",

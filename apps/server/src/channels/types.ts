@@ -45,6 +45,9 @@ export interface ChannelAdapter {
   publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult>;
   /** Channel-side status per remote id; missing products map to DELETED. */
   fetchStatuses(deps: Deps, store: StoreRow, remoteIds: string[]): Promise<Map<string, RemoteStatus>>;
+  /** Unpublish a remote product without deleting it (Shopify status → DRAFT).
+   *  Absent = delisting unsupported on this channel. */
+  delistProduct?(deps: Deps, store: StoreRow, remoteId: string): Promise<void>;
   /** Search the platform's category tree (taxonomy) by keyword; absent = no category support yet. */
   searchCategories?(
     deps: Deps,

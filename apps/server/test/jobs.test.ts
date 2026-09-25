@@ -67,3 +67,42 @@ describe("jobs api", () => {
     expect(theirs.total).toBe(0);
   });
 });
+
+describe("delist", () => {
+  it("下架已发布刊登：远端 status→DRAFT，刊登保留 published + remoteStatus DRAFT", async () => {
+    const capturedDelist: string[] = [];
+    ctx = await setup(fakeShopify({ capturedDelist }));
+    const t = await ctx.register();
+    const store = (
+      await ctx.api(
+        "POST",
+        "/api/stores/shopify",
+        { authType: "access_token", shopDomain: "demo", accessToken: "shpat_abcdefghij" },
+        t,
+      )
+    ).body;
+    const item = (await ctx.api("POST", "/api/collect", harvest("66", "下架杯"), t)).body.item;
+    await ctx.api("POST", "/api/source-items/claim", { ids: [item.id], storeIds: [store.id] }, t);
+    const listing = (await ctx.api("GET", "/api/listings", undefined, t)).body.items[0];
+    await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
+
+    // 草稿不能下架
+    const item2 = (await ctx.api("POST", "/api/collect", harvest("67", "下架杯2"), t)).body.item;
+    await ctx.api("POST", "/api/source-items/claim", { ids: [item2.id], storeIds: [store.id] }, t);
+    const draft = (await ctx.api("GET", "/api/listings?status=draft", undefined, t)).body.items[0];
+    const res = await ctx.api("POST", "/api/listings/delist", { ids: [listing.id, draft.id] }, t);
+    expect(res.body.queued).toBe(1);
+    expect(res.body.skipped).toBe(1);
+
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
+    const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(done.body.status).toBe("published");
+    expect(done.body.remoteStatus).toBe("DRAFT");
+    expect(capturedDelist).toHaveLength(1);
+  });
+});

@@ -88,6 +88,15 @@ export function ListingsPage() {
       invalidate();
     },
   });
+  const delist = useMutation({
+    mutationFn: (ids: string[]) => api.delist(ids),
+    onSuccess: (r) => {
+      message.success(`已提交下架 ${r.queued} 条${r.skipped ? `，跳过 ${r.skipped} 条（未发布）` : ""}`);
+      setSelected([]);
+      invalidate();
+    },
+    onError: (e) => message.error(e.message),
+  });
 
   const storeName = (id: string) => stores.data?.find((s) => s.id === id)?.name ?? "—";
   const tabLabel = (s: ListingStatus) => `${STATUS[s].label} ${counts.data?.[s] ?? 0}`;
@@ -133,6 +142,16 @@ export function ListingsPage() {
         <Button loading={syncAll.isPending} onClick={() => syncAll.mutate()}>
           同步店铺状态
         </Button>
+        <Popconfirm
+          title="下架选中的刊登？"
+          description="店铺里的商品会转为草稿（不再在售），刊登记录保留，之后可重新发布上架"
+          onConfirm={() => delist.mutate(selected)}
+          disabled={!selected.length}
+        >
+          <Button disabled={!selected.length} loading={delist.isPending}>
+            下架
+          </Button>
+        </Popconfirm>
         <Popconfirm
           title="删除选中的刊登草稿？"
           description="只删除本平台记录，已发布到店铺的商品不会被删除"
@@ -251,6 +270,9 @@ export function ListingsPage() {
                 <Link to={`/listings/${r.id}`}>编辑</Link>
                 {r.status === "failed" && (
                   <Typography.Link onClick={() => publish.mutate([r.id])}>重发</Typography.Link>
+                )}
+                {r.status === "published" && r.remoteStatus !== "DRAFT" && (
+                  <Typography.Link onClick={() => delist.mutate([r.id])}>下架</Typography.Link>
                 )}
                 {r.remoteUrl && (
                   <a href={r.remoteUrl} target="_blank" rel="noreferrer">
