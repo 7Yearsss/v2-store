@@ -1,12 +1,26 @@
 import { Outlet } from "react-router";
+import { ShopScopeProvider } from "./ShopScope.js";
+import { SideNav } from "./SideNav.js";
+import { TopBar } from "./TopBar.js";
+import "./shell.css";
 
-// TODO(shell-A / shell-B 竞赛): Linear 风壳层——左侧导航(5 项)、顶栏(店铺范围切换
-// + 全局任务状态)、内容区。当前为可编译占位，竞赛赢家整体替换本文件。
+/**
+ * 方案 A：Linear 严格派壳层。
+ * 208px 左导航（5 项）+ 48px 顶栏（页标题 / 店铺范围切换 / 任务 pill）+ 内容区。
+ * 嵌套路由经 <Outlet> 渲染，切页不重建壳，ShopScope 选择随之保留。
+ */
 export function Shell() {
   return (
-    <div style={{ padding: 24 }}>
-      <p style={{ color: "var(--text-secondary)" }}>shell placeholder — awaiting competition winner</p>
-      <Outlet />
-    </div>
+    <ShopScopeProvider>
+      <div className="shell-root">
+        <SideNav />
+        <div className="shell-main">
+          <TopBar />
+          <main className="shell-content">
+            <Outlet />
+          </main>
+        </div>
+      </div>
+    </ShopScopeProvider>
   );
 }

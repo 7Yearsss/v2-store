@@ -1,0 +1,421 @@
+/* ============ 壳层样式 — 方案 A（Linear 严格派） ============
+   208px 左栏、hairline 分隔、单一 accent、克制 hover（surface-2）、
+   accent 焦点环。所有色值只取 tokens.css 变量。 */
+
+.shell-root {
+  display: flex;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ---------- 左导航 ---------- */
+.shell-nav {
+  width: var(--nav-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  height: var(--topbar-h);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.shell-brand-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  flex: none;
+}
+.shell-brand-name {
+  font-size: var(--fs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.shell-brand-sub {
+  margin-left: auto;
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+
+.shell-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: calc(var(--sp) * 2);
+}
+
+.shell-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: var(--fs);
+  text-decoration: none;
+  outline: none;
+}
+.shell-nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.shell-nav-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.shell-nav-item.active {
+  background: var(--accent-muted);
+  color: var(--text);
+}
+.shell-nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.shell-nav-item svg {
+  flex: none;
+}
+
+.shell-nav-user {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.shell-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  flex: none;
+}
+.shell-user-name {
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 顶栏 ---------- */
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-topbar {
+  height: var(--topbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+.shell-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+.shell-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 店铺范围切换 */
+.shell-scope {
+  position: relative;
+}
+.shell-scope-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-dense);
+  cursor: pointer;
+}
+.shell-scope-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.shell-scope-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.shell-scope-btn-label {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+}
+.shell-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text);
+  font-size: var(--fs);
+  text-align: left;
+  cursor: pointer;
+}
+.shell-menu-item:hover,
+.shell-menu-item:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.shell-menu-item .meta {
+  margin-left: auto;
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+.shell-menu-item .check {
+  width: 14px;
+  flex: none;
+  color: var(--accent);
+  display: inline-flex;
+}
+.shell-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* 全局任务 pill */
+.shell-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-muted);
+  color: var(--text);
+  font-size: var(--fs-dense);
+  cursor: pointer;
+}
+.shell-pill:hover {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.shell-pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* ---------- 内容区 ---------- */
+.shell-content {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg);
+}
+
+/* ============ /__demo 三栏假内容 ============ */
+.demo-grid {
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr) 292px;
+  height: 100%;
+}
+.demo-col {
+  min-width: 0;
+  overflow: auto;
+}
+.demo-col + .demo-col {
+  border-left: 1px solid var(--border);
+}
+.demo-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+}
+.demo-head-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.demo-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-dense);
+  cursor: pointer;
+}
+.demo-ghost-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.demo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs);
+}
+.demo-row.sel {
+  background: var(--surface);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.demo-row-text {
+  min-width: 0;
+}
+.demo-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.demo-row-sub {
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+
+.demo-field {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+}
+.demo-input {
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs);
+}
+.demo-bullet {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: var(--fs);
+}
+.demo-bullet::before {
+  content: "·";
+  color: var(--text-tertiary);
+}
+.demo-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.demo-card {
+  margin: 12px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+.demo-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs);
+}
+.demo-card-meta {
+  margin-top: 2px;
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+.demo-card-issue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+}
+.demo-card-foot {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+
+.demo-btn-primary {
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs);
+  font-weight: 500;
+  cursor: pointer;
+}
+.demo-btn-primary:hover {
+  background: var(--accent-hover);
+}
