@@ -363,6 +363,28 @@ export const categoryMappings = pgTable(
   ],
 );
 
+/** 术语翻译映射（变体名/属性名/值 源词 → 目标语译文）：
+ *  认领时预翻已知词；AI 建议被接受时学习新词对。 */
+export const termMappings = pgTable(
+  "term_mappings",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** target language, matches stores.language (e.g. "en"). */
+    lang: text("lang").notNull().default(""),
+    sourceText: text("source_text").notNull(),
+    targetText: text("target_text").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("term_mappings_ws_lang_src_uq").on(t.workspaceId, t.lang, t.sourceText),
+    index("term_mappings_ws_idx").on(t.workspaceId),
+  ],
+);
+
 // --- jobs -------------------------------------------------------------------
 
 /** Minimal Postgres job queue (SKIP LOCKED); runs on PGlite and Postgres. */

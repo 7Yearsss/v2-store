@@ -147,6 +147,15 @@ export interface StoreRules {
   defaultProductType?: string;
 }
 
+/** 术语翻译映射：变体选项名/值、属性名/值的源词 → 目标语译文，按刊登语言分桶。 */
+export interface TermMapping {
+  id: string;
+  lang: string;
+  sourceText: string;
+  targetText: string;
+  createdAt: string;
+}
+
 export interface Store {
   id: string;
   platform: ChannelPlatform;
@@ -241,6 +250,8 @@ export interface OptionsSuggestionValue {
   options: ListingOption[];
   /** variantOptionValues[i] replaces variants[i].optionValues. */
   variantOptionValues: string[][];
+  /** 生成建议时刊登的原始选项快照；学习词对与配对以此为准，避免接受期间草稿被改过。 */
+  sourceOptions?: ListingOption[];
 }
 
 export interface CategoryCandidate {

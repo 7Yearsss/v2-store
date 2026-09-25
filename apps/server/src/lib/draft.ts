@@ -53,7 +53,13 @@ function firstPrice(priceText?: string | null): number | undefined {
  */
 export function buildVariants(
   skus: OfferSku[],
-  opts: { skuPrefix: string; priceText?: string | null; pricing: PricingRule },
+  opts: {
+    skuPrefix: string;
+    priceText?: string | null;
+    pricing: PricingRule;
+    /** 术语预翻：选项名/选项值逐词精确映射（未命中原样）。 */
+    termMap?: (t: string) => string;
+  },
 ): { options: ListingOption[]; variants: ListingVariant[] } {
   const fallbackCost = firstPrice(opts.priceText);
   if (!skus.length) {
@@ -79,10 +85,27 @@ export function buildVariants(
       (p) => p.length === names.length && p.every(([n], i) => n === names[i]),
     );
 
+  // 预翻在去重之前：不同源词译成同一词时撞名会落进下面的消歧逻辑；
+  // 超过 255 的译文不能用作选项名/值，回落源词。
+  const t0 = opts.termMap ?? ((s: string) => s);
+  const t = (s: string) => {
+    const r = t0(s);
+    return r.length <= 255 ? r : s;
+  };
+
   const rows: string[][] = consistent
-    ? parsed.map((p) => p.map(([, v]) => v))
-    : skus.map((s) => [s.spec.slice(0, 255)]);
-  const optionNames = consistent ? names : ["规格"];
+    ? parsed.map((p) => p.map(([, v]) => t(v)))
+    : skus.map((s) => [t(s.spec.slice(0, 255))]);
+  const optionNames: string[] = [];
+  {
+    const nameSeen = new Map<string, number>();
+    for (const n of consistent ? names : ["规格"]) {
+      const tr = t(n);
+      const c = (nameSeen.get(tr) ?? 0) + 1;
+      nameSeen.set(tr, c);
+      optionNames.push(c > 1 ? `${tr} (${c})` : tr);
+    }
+  }
 
   // Shopify rejects duplicate option-value combos; disambiguate.
   const seen = new Map<string, number>();

@@ -14,6 +14,7 @@ import {
   filterSkusByPrice,
 } from "../lib/rules.js";
 import { enqueueAiEnhance, enqueueCategorySuggest } from "../jobs/handlers.js";
+import { applyTerm, loadTermMap } from "../lib/terms.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
@@ -181,25 +182,49 @@ export function sourceItemRoutes() {
           m.channel === store.platform,
       );
 
+    // 术语翻译映射：每种刊登语言一份，认领时预翻选项名/值与属性
+    const termMaps = new Map<string, Map<string, string>>();
+    for (const store of targetStores) {
+      if (!termMaps.has(store.language)) {
+        termMaps.set(store.language, await loadTermMap(db, workspaceId, store.language));
+      }
+    }
+    const termOf = (store: (typeof targetStores)[number]) => {
+      const map = termMaps.get(store.language)!;
+      return (s: string) => applyTerm(map, s);
+    };
+
     const values = targetStores.flatMap((store) =>
       items.flatMap((item) => {
         const rules = store.rules ?? {};
         // 采集预处理：价格区间过滤 SKU；全部被滤掉则不建这条刊登。
         const skus = filterSkusByPrice(item.skus, rules, item.priceText);
         if (item.skus.length && !skus.length) return [];
+        const term = termOf(store);
         const { options, variants } = buildVariants(skus, {
           skuPrefix: item.sourceItemId ?? item.id.slice(0, 8),
           priceText: item.priceText,
           pricing: store.pricing,
+          termMap: term,
         });
         const mapping = mappingOf(item, store);
+        // 属性名译文撞名时保留原名消歧，避免两个属性合成一条丢值
+        const attrSeen = new Map<string, number>();
+        const attrs = Object.fromEntries(
+          Object.entries(applyAttrRules(item.attributes, rules)).map(([k, v]) => {
+            const tk = term(k);
+            const n = (attrSeen.get(tk) ?? 0) + 1;
+            attrSeen.set(tk, n);
+            return [n > 1 ? `${tk}（${k}）` : tk, term(v)];
+          }),
+        );
         return [
           {
             workspaceId,
             storeId: store.id,
             sourceItemId: item.id,
             title: applyTitleRules(item.title, rules),
-            descriptionHtml: attributesToHtml(applyAttrRules(item.attributes, rules)),
+            descriptionHtml: attributesToHtml(attrs),
             images: applyImageLimit(item.images, rules),
             descImages: item.descImages.slice(0, 30),
             options,
