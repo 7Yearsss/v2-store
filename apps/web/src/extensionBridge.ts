@@ -41,7 +41,7 @@ export async function pingExtension(timeoutMs = 1200): Promise<boolean> {
 }
 
 export function collectOfferById(offerId: string) {
-  return extensionCall<{ offer: { title: string }; pushed: boolean }>(
+  return extensionCall<{ product?: { title: string }; pushed: boolean }>(
     "COLLECT_1688",
     { offerId },
     30000,

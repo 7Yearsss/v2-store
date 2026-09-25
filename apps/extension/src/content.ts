@@ -1,4 +1,4 @@
-import type { CollectedOffer } from "@caiji/shared";
+import type { CollectHarvest } from "@caiji/shared";
 import { collectorRequest } from "./lib/bridge";
 import { proxyFetchJson } from "./lib/proxyFetch";
 
@@ -30,26 +30,44 @@ function makeBtn(text: string, top: number): HTMLButtonElement {
   return b;
 }
 
-async function pushOffer(offer: CollectedOffer) {
+async function pushOffer(harvest: CollectHarvest) {
   const res = await proxyFetchJson<{ ok: boolean; duplicated?: boolean }>(
     `${API}/api/collect`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: offer,
+      body: harvest,
     },
   );
   return res;
 }
 
 const collectBtn = makeBtn("采集此商品", 96);
+
+// Dedup mark on page load (batch_check_item_has_fetch equivalent).
+(async () => {
+  try {
+    const res = await proxyFetchJson<{ collected?: string[] }>(
+      `${API}/api/collect/check`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: { items: [{ itemUrl: location.href }] },
+      },
+    );
+    if (res.collected?.length) collectBtn.textContent = "已采集 · 重新采集";
+  } catch {
+    /* server offline — keep default label */
+  }
+})();
+
 collectBtn.onclick = async () => {
   collectBtn.disabled = true;
   try {
-    const { offer } = await collectorRequest<{ offer: CollectedOffer }>(
+    const { harvest } = await collectorRequest<{ harvest: CollectHarvest }>(
       "getProductData",
     );
-    const res = await pushOffer(offer);
+    const res = await pushOffer(harvest);
     toast(res.duplicated ? "已更新（重复采集）" : "采集成功");
   } catch (e) {
     toast(`失败: ${e instanceof Error ? e.message : e}`, false);
@@ -78,11 +96,11 @@ shopBtn.onclick = async () => {
     for (let i = 0; i < ids.length; i++) {
       shopBtn.textContent = `整店采集 ${i + 1}/${ids.length}`;
       try {
-        const { offer } = await collectorRequest<{ offer: CollectedOffer }>(
+        const { harvest } = await collectorRequest<{ harvest: CollectHarvest }>(
           "collectProductByOfferId",
           { offerId: ids[i] },
         );
-        await pushOffer(offer);
+        await pushOffer(harvest);
         ok++;
       } catch {
         fail++;

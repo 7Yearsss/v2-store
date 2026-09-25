@@ -1,4 +1,4 @@
-import { findInitData, normalizeOffer } from "./lib/offer1688";
+import type { CollectHarvest } from "@caiji/shared";
 
 const API_BASE = "http://localhost:3000";
 
@@ -24,20 +24,31 @@ async function proxyFetch(req: ProxyFetchReq) {
   }
 }
 
-/** Collect an offer by id: fetch detail HTML in-session, parse, push to server. */
+/** Collect an offer by id: fetch detail HTML in-session, ship to server
+ * which owns all field extraction (harvest contract). */
 async function collectByOfferId(offerId: string) {
   const url = `https://detail.1688.com/offer/${offerId}.html`;
   const resp = await fetch(url, { credentials: "include" });
   if (!resp.ok) throw new Error(`拉取详情失败 HTTP ${resp.status}`);
-  const data = findInitData(await resp.text());
-  if (!data) throw new Error("未解析到 __INIT_DATA");
-  const offer = normalizeOffer(data, offerId, url);
+  const harvest: CollectHarvest = {
+    sourceInfo: {
+      itemUrl: url,
+      itemId: offerId,
+      site: "detail",
+      source: "1688",
+    },
+    pageContent: await resp.text(),
+    afterUrl: url,
+    collectedAt: new Date().toISOString(),
+  };
   const push = await fetch(`${API_BASE}/api/collect`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(offer),
+    body: JSON.stringify(harvest),
   });
-  return { offer, pushed: push.ok };
+  const body = await push.json().catch(() => ({}));
+  if (!push.ok) throw new Error(body?.error ?? `提交失败 HTTP ${push.status}`);
+  return { product: body.product, pushed: push.ok };
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -58,7 +69,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       .sendMessage(tab.id!, { type: "V2_TOAST", msg, ok })
       .catch(() => {});
   collectByOfferId(offerId).then(
-    (r) => notify(`采集成功：${(r.offer.title ?? offerId).slice(0, 50)}`),
+    (r) =>
+      notify(`采集成功：${(r.product?.title ?? offerId).slice(0, 50)}`),
     (e) => notify(`采集失败：${String(e?.message ?? e).slice(0, 60)}`, false),
   );
 });

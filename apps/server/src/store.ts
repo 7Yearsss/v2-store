@@ -9,6 +9,7 @@ const DATA_FILE = resolve(process.cwd(), "data", "products.jsonl");
 export class ProductStore {
   private byId = new Map<string, Product>();
   private bySourceUrl = new Map<string, string>();
+  private byOfferId = new Map<string, string>();
 
   constructor() {
     if (!existsSync(DATA_FILE)) return;
@@ -18,6 +19,7 @@ export class ProductStore {
         const p = JSON.parse(line) as Product;
         this.byId.set(p.id, p);
         this.bySourceUrl.set(p.sourceUrl, p.id);
+        if (p.offerId) this.byOfferId.set(p.offerId, p.id);
       } catch {
         /* skip corrupt line */
       }
@@ -25,7 +27,9 @@ export class ProductStore {
   }
 
   ingest(offer: CollectedOffer): { product: Product; duplicated: boolean } {
-    const existingId = this.bySourceUrl.get(offer.sourceUrl);
+    const existingId =
+      this.bySourceUrl.get(offer.sourceUrl) ??
+      (offer.offerId ? this.byOfferId.get(offer.offerId) : undefined);
     if (existingId) {
       const existing = this.byId.get(existingId)!;
       const merged: Product = { ...existing, ...offer, id: existing.id };
@@ -36,6 +40,7 @@ export class ProductStore {
     const product: Product = { ...offer, id: randomUUID(), status: "draft" };
     this.byId.set(product.id, product);
     this.bySourceUrl.set(product.sourceUrl, product.id);
+    if (product.offerId) this.byOfferId.set(product.offerId, product.id);
     this.persist(product);
     return { product, duplicated: false };
   }
@@ -48,6 +53,20 @@ export class ProductStore {
 
   get(id: string): Product | undefined {
     return this.byId.get(id);
+  }
+
+  /** Dedup lookup by itemUrl and/or offerId — the batch_check_item_has_fetch
+   *  equivalent. */
+  hasCollected(itemUrl?: string, itemId?: string): boolean {
+    if (itemUrl && this.bySourceUrl.has(itemUrl)) return true;
+    if (itemId && this.byOfferId.has(itemId)) return true;
+    if (
+      itemId &&
+      this.bySourceUrl.has(`https://detail.1688.com/offer/${itemId}.html`)
+    ) {
+      return true;
+    }
+    return false;
   }
 
   update(id: string, patch: Partial<Product>): Product | undefined {
