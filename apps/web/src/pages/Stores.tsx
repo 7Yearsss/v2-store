@@ -1,4 +1,4 @@
-import type { PricingRule, Store, StoreRules } from "@caiji/shared";
+import type { PricingRule, Store, StoreRules, StoreSettingsPayload } from "@caiji/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -148,44 +148,97 @@ const textToRules = (text?: string) =>
     .filter(([f]) => f?.trim())
     .map(([f, to]) => ({ from: f!.trim(), to: (to ?? "").trim() }));
 
+/** 表单值 ↔ 店铺设置载荷（刊登模板与保存共用同一份转换）。 */
+function formToPayload(v: SettingsForm): StoreSettingsPayload {
+  return {
+    vendor: v.vendor ?? "",
+    aiEnhance: v.aiEnhance ?? true,
+    language: v.language ?? "en",
+    rules: {
+      titlePrefix: v.titlePrefix?.trim() || undefined,
+      titleSuffix: v.titleSuffix?.trim() || undefined,
+      replacements: textToRules(v.replacementsText),
+      priceMinCny: v.priceMinCny ?? null,
+      priceMaxCny: v.priceMaxCny ?? null,
+      maxImages: v.maxImages ?? null,
+      bannedWords: v.bannedWords ?? [],
+      publishStatus: v.publishStatus ?? "active",
+      trackStock: v.trackStock ?? false,
+      defaultTags: v.defaultTags ?? [],
+      defaultProductType: v.defaultProductType?.trim() || undefined,
+    },
+    pricing: {
+      exchangeRate: v.exchangeRate,
+      markup: v.markup,
+      priceEnding: v.endingOn ? (v.priceEnding ?? 0.99) : null,
+      extraCostCny: v.extraCostCny ?? 0,
+      minPrice: v.minPrice ?? null,
+    },
+  };
+}
+
+function payloadToForm(p: StoreSettingsPayload): SettingsForm {
+  return {
+    ...p.pricing,
+    endingOn: p.pricing.priceEnding != null,
+    vendor: p.vendor,
+    aiEnhance: p.aiEnhance,
+    language: p.language,
+    titlePrefix: p.rules.titlePrefix,
+    titleSuffix: p.rules.titleSuffix,
+    replacementsText: rulesToText(p.rules.replacements),
+    priceMinCny: p.rules.priceMinCny ?? undefined,
+    priceMaxCny: p.rules.priceMaxCny ?? undefined,
+    maxImages: p.rules.maxImages ?? undefined,
+    bannedWords: p.rules.bannedWords ?? [],
+    publishStatus: p.rules.publishStatus ?? "active",
+    trackStock: p.rules.trackStock ?? false,
+    defaultTags: p.rules.defaultTags ?? [],
+    defaultProductType: p.rules.defaultProductType,
+  };
+}
+
 function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () => void }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const [form] = Form.useForm<SettingsForm>();
   useEffect(() => {
     if (store) {
-      form.setFieldsValue({
-        ...store.pricing,
-        endingOn: store.pricing.priceEnding != null,
-        vendor: store.vendor,
-        aiEnhance: store.aiEnhance,
-        language: store.language,
-        titlePrefix: store.rules.titlePrefix,
-        titleSuffix: store.rules.titleSuffix,
-        replacementsText: rulesToText(store.rules.replacements),
-        priceMinCny: store.rules.priceMinCny ?? undefined,
-        priceMaxCny: store.rules.priceMaxCny ?? undefined,
-        maxImages: store.rules.maxImages ?? undefined,
-        bannedWords: store.rules.bannedWords ?? [],
-        publishStatus: store.rules.publishStatus ?? "active",
-        trackStock: store.rules.trackStock ?? false,
-        defaultTags: store.rules.defaultTags ?? [],
-        defaultProductType: store.rules.defaultProductType,
-      });
+      form.setFieldsValue(
+        payloadToForm({
+          pricing: store.pricing,
+          vendor: store.vendor,
+          aiEnhance: store.aiEnhance,
+          language: store.language,
+          rules: store.rules,
+        }),
+      );
     }
   }, [store, form]);
   const save = useMutation({
-    mutationFn: (body: {
-      pricing: PricingRule;
-      vendor: string;
-      aiEnhance: boolean;
-      language: string;
-      rules: StoreRules;
-    }) => api.updateStore(store!.id, body),
+    mutationFn: (body: StoreSettingsPayload) => api.updateStore(store!.id, body),
     onSuccess: () => {
       message.success("已保存，对之后认领的商品生效");
       qc.invalidateQueries({ queryKey: ["stores"] });
       onClose();
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const [tplId, setTplId] = useState<string>();
+  const tplQ = useQuery({ queryKey: ["templates"], queryFn: api.templates });
+  const saveTpl = useMutation({
+    mutationFn: api.saveTemplate,
+    onSuccess: (res) => {
+      message.success(`模板「${res.item.name}」已保存`);
+      qc.invalidateQueries({ queryKey: ["templates"] });
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const delTpl = useMutation({
+    mutationFn: api.deleteTemplate,
+    onSuccess: () => {
+      setTplId(undefined);
+      qc.invalidateQueries({ queryKey: ["templates"] });
     },
     onError: (e) => message.error(e.message),
   });
@@ -199,33 +252,61 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
       confirmLoading={save.isPending}
       onOk={async () => {
         const v = await form.validateFields();
-        save.mutate({
-          vendor: v.vendor ?? "",
-          aiEnhance: v.aiEnhance ?? true,
-          language: v.language ?? "en",
-          rules: {
-            titlePrefix: v.titlePrefix?.trim() || undefined,
-            titleSuffix: v.titleSuffix?.trim() || undefined,
-            replacements: textToRules(v.replacementsText),
-            priceMinCny: v.priceMinCny ?? null,
-            priceMaxCny: v.priceMaxCny ?? null,
-            maxImages: v.maxImages ?? null,
-            bannedWords: v.bannedWords ?? [],
-            publishStatus: v.publishStatus ?? "active",
-            trackStock: v.trackStock ?? false,
-            defaultTags: v.defaultTags ?? [],
-            defaultProductType: v.defaultProductType?.trim() || undefined,
-          },
-          pricing: {
-            exchangeRate: v.exchangeRate,
-            markup: v.markup,
-            priceEnding: v.endingOn ? (v.priceEnding ?? 0.99) : null,
-            extraCostCny: v.extraCostCny ?? 0,
-            minPrice: v.minPrice ?? null,
-          },
-        });
+        save.mutate(formToPayload(v));
       }}
     >
+      <Space size={8} style={{ marginBottom: 8 }} wrap>
+        <Select
+          value={tplId}
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="套用刊登模板"
+          style={{ minWidth: 200 }}
+          options={(tplQ.data?.items ?? []).map((tpl) => ({ value: tpl.id, label: tpl.name }))}
+          onChange={(id) => {
+            setTplId(id);
+            const tpl = tplQ.data?.items.find((x) => x.id === id);
+            if (tpl) {
+              form.setFieldsValue(payloadToForm(tpl.payload));
+              message.success(`已套用「${tpl.name}」，确认保存后生效`);
+            }
+          }}
+        />
+        <Button
+          onClick={() => {
+            let name = "";
+            Modal.confirm({
+              title: "存为模板",
+              content: (
+                <Input
+                  placeholder="模板名（同名覆盖）"
+                  maxLength={100}
+                  onChange={(e) => {
+                    name = e.target.value;
+                  }}
+                />
+              ),
+              okText: "保存",
+              cancelText: "取消",
+              onOk: async () => {
+                if (!name.trim()) throw new Error("模板名不能为空");
+                const v = await form.validateFields();
+                await saveTpl.mutateAsync({ name: name.trim(), payload: formToPayload(v) });
+              },
+            });
+          }}
+        >
+          存为模板
+        </Button>
+        {tplId && (
+          <Popconfirm title="删除该模板？" onConfirm={() => delTpl.mutate(tplId)}>
+            <Button danger size="small" loading={delTpl.isPending}>
+              删除模板
+            </Button>
+          </Popconfirm>
+        )}
+      </Space>
       <Form form={form} layout="vertical">
         <Typography.Title level={5}>定价</Typography.Title>
         <Space size={12} style={{ display: "flex" }}>

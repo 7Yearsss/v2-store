@@ -176,6 +176,22 @@ export interface Store {
   createdAt: string;
 }
 
+/** 刊登模板的载体：店铺刊登设置的完整快照（不含店铺连接信息）。 */
+export interface StoreSettingsPayload {
+  pricing: PricingRule;
+  vendor: string;
+  aiEnhance: boolean;
+  language: string;
+  rules: StoreRules;
+}
+
+export interface ListingTemplate {
+  id: string;
+  name: string;
+  payload: StoreSettingsPayload;
+  createdAt: string;
+}
+
 export interface ListingOption {
   name: string;
   values: string[];

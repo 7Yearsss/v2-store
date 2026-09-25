@@ -5,6 +5,7 @@ import type {
   PricingRule,
   RemoteStatus,
   StoreRules,
+  StoreSettingsPayload,
 } from "@caiji/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -382,6 +383,25 @@ export const termMappings = pgTable(
   (t) => [
     uniqueIndex("term_mappings_ws_lang_src_uq").on(t.workspaceId, t.lang, t.sourceText),
     index("term_mappings_ws_idx").on(t.workspaceId),
+  ],
+);
+
+/** 刊登模板：可复用的店铺设置预设（妙手「产品模板」同款），套用即覆盖店铺刊登设置。 */
+export const listingTemplates = pgTable(
+  "listing_templates",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    payload: jsonb("payload").$type<StoreSettingsPayload>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("listing_templates_ws_name_uq").on(t.workspaceId, t.name),
+    index("listing_templates_ws_idx").on(t.workspaceId),
   ],
 );
 

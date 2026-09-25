@@ -4,6 +4,7 @@ import type {
   Listing,
   ListingStatus,
   ListingSuggestion,
+  ListingTemplate,
   Me,
   Page,
   PricingRule,
@@ -11,6 +12,7 @@ import type {
   Store,
   StoreRules,
   TermMapping,
+  StoreSettingsPayload,
 } from "@caiji/shared";
 
 export class ApiError extends Error {
@@ -131,4 +133,9 @@ export const api = {
   upsertTermMapping: (body: { lang: string; sourceText: string; targetText: string }) =>
     request<{ item: TermMapping }>("PUT", "/term-mappings", body),
   deleteTermMapping: (id: string) => request<{ ok: boolean }>("DELETE", `/term-mappings/${id}`),
+
+  templates: () => request<{ items: ListingTemplate[] }>("GET", "/templates"),
+  saveTemplate: (body: { name: string; payload: StoreSettingsPayload }) =>
+    request<{ item: ListingTemplate }>("POST", "/templates", body),
+  deleteTemplate: (id: string) => request<{ ok: boolean }>("DELETE", `/templates/${id}`),
 };
