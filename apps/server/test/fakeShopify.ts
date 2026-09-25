@@ -120,6 +120,31 @@ export function fakeShopify(
           data: { shop: { name: "Demo", currencyCode: "USD", myshopifyDomain: "demo.myshopify.com" } },
         });
       }
+      if (query.includes("DescFiles")) {
+        return json({
+          data: {
+            fileCreate: {
+              files: variables.files.map((_: unknown, i: number) => ({
+                id: `gid://shopify/MediaImage/f${i}`,
+                fileStatus: "READY",
+                image: { url: `https://cdn.example/desc/f${i}.jpg` },
+              })),
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes("DescFilePoll")) {
+        return json({
+          data: {
+            nodes: variables.ids.map((id: string) => ({
+              id,
+              fileStatus: "READY",
+              image: { url: `https://cdn.example/desc/${id.split("/").pop()}.jpg` },
+            })),
+          },
+        });
+      }
       if (query.includes("BindData")) {
         return json({
           data: {

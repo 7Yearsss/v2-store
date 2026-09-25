@@ -132,7 +132,7 @@ const syncStore: JobHandler = {
   },
 };
 
-/** Copy a source item's images the extension didn't upload. */
+/** Copy a source item's images (main + desc) the extension didn't upload. */
 const fetchMissingMedia: JobHandler = {
   async run(deps: Deps, job) {
     const [item] = await deps.db
@@ -140,9 +140,10 @@ const fetchMissingMedia: JobHandler = {
       .from(sourceItems)
       .where(eq(sourceItems.id, String(job.payload.sourceItemId)));
     if (!item) return;
-    const have = await resolveSources(deps.db, item.workspaceId, item.images);
+    const all = [...item.images, ...item.descImages];
+    const have = await resolveSources(deps.db, item.workspaceId, all);
     const failed: string[] = [];
-    for (const url of item.images.filter((u) => !have.has(u))) {
+    for (const url of all.filter((u) => !have.has(u))) {
       await fetchAndStore(deps, item.workspaceId, url).catch(() => failed.push(url));
     }
     if (failed.length) throw new Error(`${failed.length} 张图片下载失败`);

@@ -1,5 +1,10 @@
 import type { CollectHarvest } from "@caiji/shared";
-import { findInitData, productOnlyData } from "@caiji/shared";
+import {
+  descImagesFromHtml,
+  descUrlFromData,
+  findInitData,
+  productOnlyData,
+} from "@caiji/shared";
 import type { BgMessage, BgResponse, SubmitResult } from "./lib/messages";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -85,7 +90,7 @@ async function uploadImages(urls: string[]) {
 async function submitHarvest(harvest: CollectHarvest) {
   const result = await api<SubmitResult>("/collect", harvest);
   // don't make the user wait on image copies
-  uploadImages(result.item.images ?? []).catch(() => {});
+  uploadImages([...(result.item.images ?? []), ...(result.item.descImages ?? [])]).catch(() => {});
   return result;
 }
 
@@ -106,13 +111,27 @@ async function collectByOfferId(offerId: string) {
   if (!data && /punish|verifycode|滑块验证/.test(html)) {
     throw new Error("1688 触发了安全验证，请在浏览器里打开任一 1688 商品页完成滑块后重试");
   }
+  // 详情图只活在 DOM/ descUrl 接口里——后台再拉一次 descUrl HTML 解析。
+  const descUrl = data ? descUrlFromData(data) : undefined;
+  const descImages = descUrl ? await fetchDescImages(descUrl).catch(() => []) : [];
   return submitHarvest({
     sourceInfo: { itemUrl: url, itemId: offerId, site: "detail", source: "1688" },
     pageContent: data ? undefined : html,
     afterUrl: resp.url,
-    productExtInfo: data ? { initData: productOnlyData(data) } : undefined,
+    productExtInfo: data
+      ? { initData: productOnlyData(data), ...(descImages.length ? { descImages } : {}) }
+      : undefined,
     collectedAt: new Date().toISOString(),
   });
+}
+
+/** 拉详情区 HTML（1688 descUrl）并解析长图；同域请求带页面会话。 */
+async function fetchDescImages(descUrl: string): Promise<string[]> {
+  if (!/^https?:\/\/[^/]*1688\.com\//.test(descUrl)) return [];
+  const resp = await fetch(descUrl, { credentials: "include" });
+  if (!resp.ok) return [];
+  const html = await resp.text();
+  return descImagesFromHtml(html).slice(0, 30);
 }
 
 function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
@@ -131,6 +150,8 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(submitHarvest((msg as any).harvest), sendResponse);
     case "CHECK_COLLECTED":
       return reply(api("/collect/check", { items: (msg as any).items }), sendResponse);
+    case "FETCH_DESC_IMAGES":
+      return reply(fetchDescImages(String((msg as any).url ?? "")).then((images) => ({ images })), sendResponse);
     case "COLLECT_BY_OFFER_ID":
       return reply(collectByOfferId(String((msg as any).offerId ?? "")), sendResponse);
     case "GET_STATUS":

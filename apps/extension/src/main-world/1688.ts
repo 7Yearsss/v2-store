@@ -1,8 +1,11 @@
 import type { AntiCode, CollectHarvest, SourceInfo } from "@caiji/shared";
 import {
+  descImagesFromHtml,
+  descUrlFromData,
   findInitData,
   findOfferList,
   normalizeOffer,
+  normalizeUrl,
   productOnlyData,
   tryParseJson,
 } from "../lib/offer1688";
@@ -245,6 +248,29 @@ if (!window.__v2_1688_collect_main_ready) {
     };
   }
 
+  /** 详情区长图：1688 详情 tab 是懒加载 DOM，已渲染的能直接刮；
+   *  没渲染的由 descUrl 兜底（content → background 拉 HTML 解析）。 */
+  function descImagesFromDom(): string[] {
+    const sel = [
+      "#desc-lazyload img",
+      "#mod-detail-description img",
+      "#offer-description img",
+      ".desc-detail img",
+      ".detail-desc img",
+      ".content-detail img",
+      "[class*='detailDesc'] img",
+      "[class*='desc-detail'] img",
+    ].join(",");
+    const urls = [...document.querySelectorAll(sel)].map(
+      (el: any) =>
+        el.getAttribute("data-src") ??
+        el.getAttribute("data-lazyload-src") ??
+        el.getAttribute("data-ks-lazyload") ??
+        el.src,
+    );
+    return descImagesFromHtml(urls.map((u) => `<img src="${u ?? ""}">`).join(""));
+  }
+
   function isListPage(): boolean {
     return (
       /\/page\/offerlist/i.test(location.pathname) ||
@@ -301,6 +327,15 @@ if (!window.__v2_1688_collect_main_ready) {
           ? parsed
           : (cached ?? domFallbackOffer(idFromUrl) ?? undefined);
         if (offer) h.productExtInfo = { ...h.productExtInfo, offer };
+        const descImages = descImagesFromDom();
+        const descUrl = data ? descUrlFromData(data) : undefined;
+        if (descImages.length || descUrl) {
+          h.productExtInfo = {
+            ...h.productExtInfo,
+            ...(descImages.length ? { descImages } : {}),
+            ...(descUrl ? { descUrl } : {}),
+          };
+        }
         if (!data && !offer && !h.pageContent) {
           throw new Error("当前页无 __INIT_DATA/context，DOM 兜底也采不到");
         }

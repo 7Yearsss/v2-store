@@ -5,6 +5,7 @@ export type BgMessage =
   | { type: "SUBMIT_HARVEST"; harvest: CollectHarvest }
   | { type: "CHECK_COLLECTED"; items: Array<{ itemUrl?: string; itemId?: string }> }
   | { type: "COLLECT_BY_OFFER_ID"; offerId: string }
+  | { type: "FETCH_DESC_IMAGES"; url: string }
   | { type: "GET_STATUS" };
 
 export interface BgResponse<T = unknown> {
@@ -26,6 +27,6 @@ export async function sendToBackground<T = unknown>(msg: BgMessage): Promise<T> 
 }
 
 export interface SubmitResult {
-  item: { id: string; title: string; images: string[] };
+  item: { id: string; title: string; images: string[]; descImages?: string[] };
   duplicated: boolean;
 }

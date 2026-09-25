@@ -47,6 +47,24 @@ const offerId = location.href.match(/offer\/(\d+)/)?.[1];
     collectBtn.disabled = true;
     try {
       const { harvest } = await collectorRequest<{ harvest: CollectHarvest }>("getProductData");
+      // 详情区懒加载时 DOM 里没图；用页面数据里的 descUrl 让 background 拉 HTML 兜底
+      const ext = harvest.productExtInfo ?? {};
+      const descUrl = typeof ext.descUrl === "string" ? ext.descUrl : undefined;
+      if (descUrl) {
+        try {
+          const { images } = await sendToBackground<{ images: string[] }>({
+            type: "FETCH_DESC_IMAGES",
+            url: descUrl,
+          });
+          const domImgs = Array.isArray(ext.descImages) ? (ext.descImages as string[]) : [];
+          const merged = [...new Set([...domImgs, ...images])];
+          if (merged.length) {
+            harvest.productExtInfo = { ...ext, descImages: merged };
+          }
+        } catch {
+          /* 详情图兜底失败不阻塞采集 */
+        }
+      }
       const res = await sendToBackground<SubmitResult>({ type: "SUBMIT_HARVEST", harvest });
       panel.log({ title: res.item.title, image: res.item.images?.[0], state: res.duplicated ? "dup" : "ok" });
       panel.toast(res.duplicated ? "已更新（重复采集）" : "采集成功，已进入采集箱");

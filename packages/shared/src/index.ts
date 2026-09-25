@@ -25,6 +25,8 @@ export interface CollectedOffer {
   priceText?: string;
   skus: OfferSku[];
   images: string[];
+  /** 详情区长图（1688 详情 tab 的描述图，进发布后的 descriptionHtml）。 */
+  descImages?: string[];
   attributes: Record<string, string>;
   /** 来源平台叶子类目 ID（1688 leafCategoryId）。 */
   categoryId?: string;
@@ -86,6 +88,7 @@ export interface SourceItem {
   priceText: string | null;
   skus: OfferSku[];
   images: string[];
+  descImages: string[];
   attributes: Record<string, string>;
   sellerName: string | null;
   /** 来源平台叶子类目（1688 leafCategoryId / leafCategoryName）。 */
@@ -193,6 +196,8 @@ export interface Listing {
   title: string;
   descriptionHtml: string;
   images: string[];
+  /** 详情图：发布时上传并追加到 descriptionHtml 末尾。 */
+  descImages: string[];
   options: ListingOption[];
   variants: ListingVariant[];
   tags: string[];
