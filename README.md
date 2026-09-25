@@ -2,6 +2,8 @@
 
 跨境铺货 SaaS：插件采集货源 → 采集箱 → 认领到店铺 → 编辑/（AI 优化）→ 发布到平台 → 托管在线商品。
 
+产品方向与路线图见 [docs/product-plan.md](docs/product-plan.md)；在本仓库工作的约定与踩坑记录见 [AGENTS.md](AGENTS.md)。
+
 ```
 apps/extension   Chrome MV3 插件：1688 详情页/整店/搜索页采集，提交原始页面给服务端解析
 apps/server      Hono + Drizzle(Postgres) API：账号/团队、采集箱、店铺授权、刊登、任务队列
