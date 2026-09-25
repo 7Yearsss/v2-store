@@ -8,6 +8,10 @@ import { audit } from "../services/audit.js";
 import { ensureDraft, getProduct, patchDraft, toDraft } from "../services/draft.js";
 import { runFieldAi } from "../services/ai.js";
 
+// 挂载点是 /products/:id/draft，id 必存在（Hono 类型不穿挂载路径参数）
+const productId = (c: { req: { param(n: string): string | undefined } }) =>
+  c.req.param("id")!;
+
 const patchSchema = z.object({
   title: z.string().optional(),
   bullets: z.array(z.string()).optional(),
@@ -35,12 +39,12 @@ const aiSchema = z.object({
 export const draftRoutes = new Hono<AppEnv>()
   .get("/", async (c) => {
     const deps = c.get("deps");
-    const d = await ensureDraft(deps.db, c.req.param("id"));
+    const d = await ensureDraft(deps.db, productId(c));
     return c.json(toDraft(d));
   })
   .patch("/", zValidator("json", patchSchema), async (c) => {
     const deps = c.get("deps");
-    const d = await patchDraft(deps.db, c.req.param("id"), c.req.valid("json"));
+    const d = await patchDraft(deps.db, productId(c), c.req.valid("json"));
     await audit(deps.db, deps.actor, {
       action: "draft.edit",
       entityType: "draft",
@@ -52,14 +56,14 @@ export const draftRoutes = new Hono<AppEnv>()
   // 字段级 AI：只回生成值——写不写入由前端确认后 PATCH（禁止静默改稿）
   .post("/ai", zValidator("json", aiSchema), async (c) => {
     const deps = c.get("deps");
-    const productId = c.req.param("id");
+    const pid = productId(c);
     const { field, mode, channel } = c.req.valid("json");
     const [d, p] = await Promise.all([
-      ensureDraft(deps.db, productId),
-      getProduct(deps.db, productId),
+      ensureDraft(deps.db, pid),
+      getProduct(deps.db, pid),
     ]);
     const patch = await runFieldAi(deps, {
-      productId,
+      productId: pid,
       field,
       mode,
       channel,
