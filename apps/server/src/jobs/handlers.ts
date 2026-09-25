@@ -4,6 +4,7 @@ import { adapterFor } from "../channels/index.js";
 import type { Deps } from "../context.js";
 import type { Db } from "../db/client.js";
 import { jobs, listings, sourceItems, stores } from "../db/schema.js";
+import { findBannedWords } from "../lib/rules.js";
 import { fetchAndStore, resolveSources } from "../modules/media.js";
 import { enqueue, type JobHandler, PermanentJobError } from "./queue.js";
 
@@ -109,6 +110,11 @@ const publishListing: JobHandler = {
       .where(eq(listings.id, listingId));
     if (!row) throw new PermanentJobError("刊登记录已删除");
     if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
+    // 发布门禁（绕过端点的路径也要拦）
+    const banned = findBannedWords(row.listing, row.store.rules?.bannedWords);
+    if (banned.length) {
+      throw new PermanentJobError(`发布前检查未通过，含禁售词：${banned.join("、")}`);
+    }
     // deleted on the channel → publish as a new product
     const listing =
       row.listing.remoteStatus === "DELETED" ? { ...row.listing, remoteId: null } : row.listing;

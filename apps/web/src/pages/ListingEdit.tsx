@@ -72,13 +72,17 @@ export function ListingEditPage() {
     mutationFn: async (andPublish: boolean) => {
       let saved = listing!;
       if (dirty) saved = await api.updateListing(id, draft!);
-      if (andPublish) await api.publish([id]);
-      return { saved, andPublish };
+      const pub = andPublish ? await api.publish([id]) : null;
+      return { saved, andPublish, blocked: pub?.blocked?.[0] };
     },
-    onSuccess: ({ saved, andPublish }) => {
+    onSuccess: ({ saved, andPublish, blocked }) => {
       setDraft(pickEditable(saved));
       setBaseline(JSON.stringify(pickEditable(saved)));
-      message.success(andPublish ? "已提交发布" : "已保存");
+      if (blocked) {
+        message.warning(`已保存，但被发布前检查拦截：含禁售词 ${blocked.words.join("、")}`, 8);
+      } else {
+        message.success(andPublish ? "已提交发布" : "已保存");
+      }
       qc.invalidateQueries({ queryKey: ["listings"] });
     },
     onError: (e) => message.error(e.message),

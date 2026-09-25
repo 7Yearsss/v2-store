@@ -21,10 +21,16 @@ export function extractJson(text: string): unknown {
   }
 }
 
+export interface ChatUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export async function chatJson(
   deps: Deps,
   opts: { system: string; user: string; timeoutMs?: number },
-): Promise<unknown> {
+): Promise<{ data: unknown; usage: ChatUsage }> {
   const ai = deps.config.ai;
   if (!ai) throw new AiError("未配置 AI（AI_BASE_URL / AI_API_KEY）");
   const res = await deps.fetch(`${ai.baseUrl}/chat/completions`, {
@@ -49,8 +55,16 @@ export async function chatJson(
   }
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new AiError("AI 响应为空");
-  return extractJson(content);
+  return {
+    data: extractJson(content),
+    usage: {
+      promptTokens: data.usage?.prompt_tokens ?? 0,
+      completionTokens: data.usage?.completion_tokens ?? 0,
+      totalTokens: data.usage?.total_tokens ?? 0,
+    },
+  };
 }

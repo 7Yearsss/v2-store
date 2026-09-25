@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { PricingRule, Store } from "@caiji/shared";
+import type { PricingRule, Store, StoreRules } from "@caiji/shared";
 import { adapterFor } from "../channels/index.js";
 import {
   fetchClientCredentialsToken,
@@ -30,6 +30,7 @@ export function toStoreDto(r: StoreRow): Store {
     vendor: r.vendor,
     aiEnhance: r.aiEnhance === "on",
     language: r.language,
+    rules: r.rules ?? {},
     lastError: r.lastError,
     createdAt: r.createdAt.toISOString(),
   };
@@ -108,12 +109,26 @@ const pricingSchema = z.object({
   minPrice: z.number().min(0).max(1_000_000).nullable().default(null),
 }) satisfies z.ZodType<PricingRule>;
 
+const rulesSchema = z.object({
+  titlePrefix: z.string().trim().max(100).optional(),
+  titleSuffix: z.string().trim().max(100).optional(),
+  replacements: z
+    .array(z.object({ from: z.string().min(1).max(255), to: z.string().max(255) }))
+    .max(200)
+    .optional(),
+  priceMinCny: z.number().min(0).max(10_000_000).nullable().optional(),
+  priceMaxCny: z.number().min(0).max(10_000_000).nullable().optional(),
+  maxImages: z.number().int().min(1).max(20).nullable().optional(),
+  bannedWords: z.array(z.string().trim().min(1).max(100)).max(500).optional(),
+}) satisfies z.ZodType<StoreRules>;
+
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   pricing: pricingSchema.optional(),
   vendor: z.string().trim().max(255).optional(),
   aiEnhance: z.boolean().optional(),
   language: z.string().trim().min(2).max(32).optional(),
+  rules: rulesSchema.optional(),
 });
 
 export function storeRoutes() {

@@ -1,4 +1,4 @@
-import type { PricingRule, Store } from "@caiji/shared";
+import type { PricingRule, Store, StoreRules } from "@caiji/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -126,7 +126,23 @@ type SettingsForm = PricingRule & {
   vendor: string;
   aiEnhance: boolean;
   language: string;
+  titlePrefix?: string;
+  titleSuffix?: string;
+  replacementsText?: string;
+  priceMinCny?: number;
+  priceMaxCny?: number;
+  maxImages?: number;
+  bannedWords?: string[];
 };
+
+const rulesToText = (rules?: StoreRules["replacements"]) =>
+  (rules ?? []).map((r) => `${r.from} => ${r.to}`).join("\n");
+const textToRules = (text?: string) =>
+  (text ?? "")
+    .split("\n")
+    .map((line) => line.split("=>"))
+    .filter(([f]) => f?.trim())
+    .map(([f, to]) => ({ from: f!.trim(), to: (to ?? "").trim() }));
 
 function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () => void }) {
   const { message } = App.useApp();
@@ -140,12 +156,24 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         vendor: store.vendor,
         aiEnhance: store.aiEnhance,
         language: store.language,
+        titlePrefix: store.rules.titlePrefix,
+        titleSuffix: store.rules.titleSuffix,
+        replacementsText: rulesToText(store.rules.replacements),
+        priceMinCny: store.rules.priceMinCny ?? undefined,
+        priceMaxCny: store.rules.priceMaxCny ?? undefined,
+        maxImages: store.rules.maxImages ?? undefined,
+        bannedWords: store.rules.bannedWords ?? [],
       });
     }
   }, [store, form]);
   const save = useMutation({
-    mutationFn: (body: { pricing: PricingRule; vendor: string; aiEnhance: boolean; language: string }) =>
-      api.updateStore(store!.id, body),
+    mutationFn: (body: {
+      pricing: PricingRule;
+      vendor: string;
+      aiEnhance: boolean;
+      language: string;
+      rules: StoreRules;
+    }) => api.updateStore(store!.id, body),
     onSuccess: () => {
       message.success("已保存，对之后认领的商品生效");
       qc.invalidateQueries({ queryKey: ["stores"] });
@@ -167,6 +195,15 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
           vendor: v.vendor ?? "",
           aiEnhance: v.aiEnhance ?? true,
           language: v.language ?? "en",
+          rules: {
+            titlePrefix: v.titlePrefix?.trim() || undefined,
+            titleSuffix: v.titleSuffix?.trim() || undefined,
+            replacements: textToRules(v.replacementsText),
+            priceMinCny: v.priceMinCny ?? null,
+            priceMaxCny: v.priceMaxCny ?? null,
+            maxImages: v.maxImages ?? null,
+            bannedWords: v.bannedWords ?? [],
+          },
           pricing: {
             exchangeRate: v.exchangeRate,
             markup: v.markup,
@@ -253,6 +290,48 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             />
           </Form.Item>
         </Space>
+        <Typography.Title level={5}>采集预处理</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item name="titlePrefix" label="标题前缀">
+            <Input placeholder="如 [Hot]" style={{ width: 150 }} maxLength={100} />
+          </Form.Item>
+          <Form.Item name="titleSuffix" label="标题后缀">
+            <Input placeholder="如 Free Shipping" style={{ width: 150 }} maxLength={100} />
+          </Form.Item>
+          <Form.Item name="maxImages" label="图片数量上限">
+            <InputNumber min={1} max={20} placeholder="20" style={{ width: 110 }} />
+          </Form.Item>
+        </Space>
+        <Form.Item
+          name="replacementsText"
+          label="替换词（每行一条：旧词 => 新词；应用到标题与属性）"
+        >
+          <Input.TextArea
+            rows={3}
+            placeholder={"厂家直销 => \n【定制联系客服】 => "}
+            style={{ fontFamily: "monospace" }}
+          />
+        </Form.Item>
+        <Space size={12} style={{ display: "flex" }}>
+          <Form.Item name="priceMinCny" label="成本价下限 ¥">
+            <InputNumber min={0} step={1} placeholder="不限" style={{ width: 120 }} />
+          </Form.Item>
+          <Form.Item
+            name="priceMaxCny"
+            label="成本价上限 ¥"
+            extra="区间外的 SKU 不生成变体；全部在区间外则不建刊登"
+          >
+            <InputNumber min={0} step={1} placeholder="不限" style={{ width: 120 }} />
+          </Form.Item>
+        </Space>
+        <Typography.Title level={5}>发布前检查</Typography.Title>
+        <Form.Item
+          name="bannedWords"
+          label="禁售词（品牌词 / 敏感词 / 平台禁售词）"
+          extra="标题、描述、标签、选项命中任一词时拦截发布，回车添加"
+        >
+          <Select mode="tags" tokenSeparators={[",", "，"]} open={false} placeholder="输入词后回车" />
+        </Form.Item>
       </Form>
     </Modal>
   );
