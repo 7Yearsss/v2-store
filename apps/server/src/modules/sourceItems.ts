@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { SourceItem, SourcePlatform } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
 import { categoryMappings, listings, sourceItems, stores } from "../db/schema.js";
+import { applyAttrMappings, loadAttrMappings } from "../lib/attributes.js";
 import { attributesToHtml, buildVariants } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import {
@@ -194,6 +195,14 @@ export function sourceItemRoutes() {
       return (s: string) => applyTerm(map, s);
     };
 
+    // 已确认的属性映射：按店铺平台加载一次，认领时自动套用
+    const attrMaps = new Map<string, Awaited<ReturnType<typeof loadAttrMappings>>>();
+    for (const store of targetStores) {
+      if (!attrMaps.has(store.platform)) {
+        attrMaps.set(store.platform, await loadAttrMappings(db, workspaceId, store.platform));
+      }
+    }
+
     const values = targetStores.flatMap((store) =>
       items.flatMap((item) => {
         const rules = store.rules ?? {};
@@ -235,6 +244,10 @@ export function sourceItemRoutes() {
             vendor: store.vendor,
             channelCategoryId: mapping?.channelCategoryId ?? null,
             channelCategoryName: mapping?.channelCategoryName ?? null,
+            channelAttributes: applyAttrMappings(
+              attrMaps.get(store.platform) ?? new Map(),
+              item.attributes,
+            ),
           },
         ];
       }),

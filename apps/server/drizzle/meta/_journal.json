@@ -64,6 +64,13 @@
       "when": 1790340376011,
       "tag": "0008_striped_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790340624137,
+      "tag": "0009_first_lilandra",
+      "breakpoints": true
     }
   ]
 }

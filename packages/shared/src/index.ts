@@ -234,6 +234,8 @@ export interface Listing {
   /** 已确认的目标平台类目（Shopify taxonomy gid）；未映射为 null。 */
   channelCategoryId: string | null;
   channelCategoryName: string | null;
+  /** 已映射的平台标准属性（发布时写入 metafields）。 */
+  channelAttributes: ListingChannelAttribute[];
   remoteId: string | null;
   remoteUrl: string | null;
   remoteStatus: RemoteStatus | null;
@@ -258,7 +260,8 @@ export type SuggestionField =
   | "productType"
   | "tags"
   | "options"
-  | "category";
+  | "category"
+  | "attributes";
 
 /** Composite value for the `options` field: translated options plus every
  *  variant's optionValues (index-aligned with listing.variants). */
@@ -299,6 +302,51 @@ export interface CategoryMapping {
   channelCategoryName: string;
   version: string;
   confirmedBy: "user" | "ai";
+  createdAt: string;
+}
+
+// --- 平台属性映射（来源属性 → 类目标准属性） ---------------------------------
+
+/** 平台类目下的标准属性（如 Shopify taxonomy attribute）。 */
+export interface ChannelAttribute {
+  /** channel-native attr id（Shopify: TaxonomyAttribute/ChoiceList gid）。 */
+  id: string;
+  name: string;
+  /** choice = 下拉值列表；text = 自由文本；measurement = 数值+单位。 */
+  kind: "choice" | "text" | "measurement";
+  /** choice 属性的候选值（截断缓存）。 */
+  values?: { id: string; name: string }[];
+}
+
+/** 确认后落在刊登上的平台属性值。 */
+export interface ListingChannelAttribute {
+  attrId: string;
+  name: string;
+  value: string;
+}
+
+/** AI 属性提案条目：来源属性 → 平台属性 + 取值。 */
+export interface ChannelAttributeProposal {
+  /** 来源属性名；空 = AI 新造的属性（不写入映射表）。 */
+  sourceName: string;
+  sourceValue: string;
+  attrId: string;
+  attrName: string;
+  value: string;
+}
+
+/** Composite value for the `attributes` field. */
+export interface AttributesSuggestionValue {
+  attributes: ChannelAttributeProposal[];
+}
+
+/** 已确认的来源属性名 → 平台属性映射（同来源属性名下次自动套用）。 */
+export interface AttributeMapping {
+  id: string;
+  channel: ChannelPlatform;
+  sourceName: string;
+  channelAttrId: string;
+  channelAttrName: string;
   createdAt: string;
 }
 

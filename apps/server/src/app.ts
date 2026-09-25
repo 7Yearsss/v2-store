@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import { shopifyAppRoutes } from "./channels/shopify/oauth.js";
 import type { AppEnv, Deps } from "./context.js";
 import { HttpError } from "./lib/errors.js";
+import { attributeMappingRoutes } from "./modules/attributeMappings.js";
 import { authRoutes } from "./modules/auth.js";
 import { categoryMappingRoutes } from "./modules/categoryMappings.js";
 import { termMappingRoutes } from "./modules/termMappings.js";
@@ -32,6 +33,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
   app.route("/api/templates", templateRoutes());
+  app.route("/api/attribute-mappings", attributeMappingRoutes());
   app.route("/api/media", mediaRoutes());
   app.route("/api/shopify", shopifyAppRoutes());
 

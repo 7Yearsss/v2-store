@@ -1,4 +1,8 @@
-import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
+import type {
+  CategoryCandidate,
+  ChannelAttribute,
+  RemoteStatus,
+} from "@caiji/shared";
 import { cacheCategoryNodes, TAXONOMY_VERSION } from "../../lib/category.js";
 import type { Deps } from "../../context.js";
 import {
@@ -398,6 +402,27 @@ export const shopifyAdapter: ChannelAdapter = {
     return data.taxonomy.categories.nodes;
   },
 
+  /** 类目下的标准属性（taxonomy attributes；choice 属性带候选值）。 */
+  async categoryAttributes(deps, store, categoryId): Promise<ChannelAttribute[]> {
+    const data = await shopifyGraphql<CategoryAttributesData>(
+      deps,
+      store,
+      CATEGORY_ATTRIBUTES,
+      { id: categoryId },
+    );
+    return (data.taxonomyCategory?.attributes.nodes ?? []).map((n) => ({
+      id: n.id,
+      name: n.name,
+      kind:
+        n.__typename === "TaxonomyChoiceListAttribute"
+          ? "choice"
+          : n.__typename === "TaxonomyMeasurementAttribute"
+            ? "measurement"
+            : "text",
+      values: n.values?.nodes,
+    }));
+  },
+
   /** 全量同步 Shopify taxonomy 叶子类目进缓存（约 1 万节点，分页拉取）。 */
   async syncCategoryTree(deps, store): Promise<{ count: number }> {
     let after: string | null = null;
@@ -450,6 +475,38 @@ const TAXONOMY_SEARCH = /* GraphQL */ `
     taxonomy {
       categories(first: 8, search: $query) {
         nodes { id name fullName }
+      }
+    }
+  }
+`;
+
+interface CategoryAttributesData {
+  taxonomyCategory: {
+    attributes: {
+      nodes: Array<{
+        __typename: string;
+        id: string;
+        name: string;
+        values?: { nodes: Array<{ id: string; name: string }> };
+      }>;
+    };
+  } | null;
+}
+
+const CATEGORY_ATTRIBUTES = /* GraphQL */ `
+  query CategoryAttributes($id: ID!) {
+    taxonomyCategory(id: $id) {
+      attributes(first: 50) {
+        nodes {
+          __typename
+          ... on TaxonomyAttribute { id name }
+          ... on TaxonomyMeasurementAttribute { id name }
+          ... on TaxonomyChoiceListAttribute {
+            id
+            name
+            values(first: 100) { nodes { id name } }
+          }
+        }
       }
     }
   }

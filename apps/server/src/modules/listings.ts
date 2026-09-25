@@ -3,6 +3,7 @@ import { and, count, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
+  AttributesSuggestionValue,
   CategorySuggestionValue,
   Listing,
   ListingSuggestion,
@@ -12,6 +13,7 @@ import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
 import { jobs, listings, listingSuggestions, sourceItems, stores } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { upsertAttrMappings } from "../lib/attributes.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
 import { upsertTermPairs } from "../lib/terms.js";
@@ -47,6 +49,7 @@ export function toListingDto(
     vendor: r.vendor,
     channelCategoryId: r.channelCategoryId,
     channelCategoryName: r.channelCategoryName,
+    channelAttributes: r.channelAttributes,
     remoteId: r.remoteId,
     remoteUrl: r.remoteUrl,
     remoteStatus: r.remoteStatus,
@@ -149,6 +152,16 @@ function applySuggestion(
         optionValues: v.variantOptionValues[i] ?? vr.optionValues,
       }));
       return { options: v.options, variants };
+    }
+    case "attributes": {
+      const v = s.value as AttributesSuggestionValue;
+      return {
+        channelAttributes: v.attributes.map((a) => ({
+          attrId: a.attrId,
+          name: a.attrName,
+          value: a.value,
+        })),
+      };
     }
     default:
       return {};
@@ -437,6 +450,20 @@ export function listingRoutes() {
                 });
               });
               await upsertTermPairs(tx, workspaceId, row.storeLanguage, pairs);
+            }
+            // 接受属性提案即记住 源属性名→平台属性 映射
+            if (s.field === "attributes") {
+              const v = s.value as AttributesSuggestionValue;
+              await upsertAttrMappings(
+                tx,
+                workspaceId,
+                row.storePlatform,
+                v.attributes.map((a) => ({
+                  sourceName: a.sourceName,
+                  attrId: a.attrId,
+                  attrName: a.attrName,
+                })),
+              );
             }
           }
           accepted++;

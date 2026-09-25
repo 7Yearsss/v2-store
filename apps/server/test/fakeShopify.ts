@@ -13,6 +13,13 @@ export function fakeShopify(
     noPublicationScope?: boolean;
     /** taxonomy search results keyed by the search query substring, else a default set */
     taxonomy?: Record<string, Array<{ id: string; name: string; fullName: string }>>;
+    /** taxonomyCategory(id) → attributes list for the CategoryAttributes query */
+    categoryAttributes?: Array<{
+      __typename: string;
+      id: string;
+      name: string;
+      values?: { nodes: Array<{ id: string; name: string }> };
+    }>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -30,6 +37,34 @@ export function fakeShopify(
       const headers = init.headers as Record<string, string>;
       if (!headers["X-Shopify-Access-Token"]?.startsWith("shpat_")) return json({}, 401);
       const { query, variables } = JSON.parse(String(init.body));
+      if (query.includes("CategoryAttributes")) {
+        return json({
+          data: {
+            taxonomyCategory: {
+              attributes: {
+                nodes: opts.categoryAttributes ?? [
+                  {
+                    __typename: "TaxonomyChoiceListAttribute",
+                    id: "gid://shopify/TaxonomyChoiceListAttribute/material",
+                    name: "Material",
+                    values: {
+                      nodes: [
+                        { id: "gid://shopify/TaxonomyValue/1", name: "Cotton" },
+                        { id: "gid://shopify/TaxonomyValue/2", name: "Polyester" },
+                      ],
+                    },
+                  },
+                  {
+                    __typename: "TaxonomyAttribute",
+                    id: "gid://shopify/TaxonomyAttribute/pattern",
+                    name: "Pattern",
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
       if (query.includes("TaxonomyTree")) {
         const nodes = (
           opts.taxonomy?.["*"] ?? [

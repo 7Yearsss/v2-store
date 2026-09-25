@@ -1,4 +1,6 @@
 import type {
+  ChannelAttribute,
+  ListingChannelAttribute,
   ListingOption,
   ListingVariant,
   OfferSku,
@@ -236,6 +238,11 @@ export const listings = pgTable(
     /** 已确认的平台类目（Shopify taxonomy gid）；发布时写入 productSet.category。 */
     channelCategoryId: text("channel_category_id"),
     channelCategoryName: text("channel_category_name"),
+    /** 已映射的平台标准属性（发布时写入 metafields）。 */
+    channelAttributes: jsonb("channel_attributes")
+      .$type<ListingChannelAttribute[]>()
+      .notNull()
+      .default([]),
     remoteId: text("remote_id"),
     remoteUrl: text("remote_url"),
     /** channel-side status (ACTIVE/DRAFT/ARCHIVED/DELETED…), synced back */
@@ -266,7 +273,15 @@ export const listingSuggestions = pgTable(
       .notNull()
       .references(() => listings.id, { onDelete: "cascade" }),
     field: text("field", {
-      enum: ["title", "descriptionHtml", "productType", "tags", "options", "category"],
+      enum: [
+        "title",
+        "descriptionHtml",
+        "productType",
+        "tags",
+        "options",
+        "category",
+        "attributes",
+      ],
     }).notNull(),
     /** proposed value; for `options` it's {options, variantOptionValues}. */
     value: jsonb("value").notNull(),
@@ -319,9 +334,9 @@ export const channelCategories = pgTable(
     /** 完整路径数组（["Apparel","Tops"]）。 */
     path: jsonb("path").$type<string[]>().notNull().default([]),
     attributesSchema: jsonb("attributes_schema")
-      .$type<Record<string, unknown>>()
+      .$type<{ attributes: ChannelAttribute[] }>()
       .notNull()
-      .default({}),
+      .default({ attributes: [] }),
     createdAt: createdAt(),
   },
   (t) => [
@@ -329,6 +344,31 @@ export const channelCategories = pgTable(
       t.platform,
       t.version,
       t.categoryId,
+    ),
+  ],
+);
+
+/** 来源属性名 → 平台标准属性：确认一次，同属性名以后自动套用。 */
+export const attributeMappings = pgTable(
+  "attribute_mappings",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    /** 来源属性名（按原样匹配；未来可加语言/来源平台维度）。 */
+    sourceName: text("source_name").notNull(),
+    channelAttrId: text("channel_attr_id").notNull(),
+    channelAttrName: text("channel_attr_name").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("attribute_mappings_ws_channel_source_uq").on(
+      t.workspaceId,
+      t.channel,
+      t.sourceName,
     ),
   ],
 );

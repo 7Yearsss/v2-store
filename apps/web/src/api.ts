@@ -1,4 +1,6 @@
 import type {
+  AttributeMapping,
+  ChannelAttribute,
   CategoryCandidate,
   CategoryMapping,
   Listing,
@@ -138,4 +140,23 @@ export const api = {
   saveTemplate: (body: { name: string; payload: StoreSettingsPayload }) =>
     request<{ item: ListingTemplate }>("POST", "/templates", body),
   deleteTemplate: (id: string) => request<{ ok: boolean }>("DELETE", `/templates/${id}`),
+
+  categoryAttributes: (storeId: string, categoryId: string) =>
+    request<{ items: ChannelAttribute[] }>(
+      "GET",
+      `/stores/${storeId}/categories/${encodeURIComponent(categoryId)}/attributes`,
+    ),
+  attributeMappings: (channel?: string) =>
+    request<{ items: AttributeMapping[] }>(
+      "GET",
+      `/attribute-mappings${channel ? `?channel=${encodeURIComponent(channel)}` : ""}`,
+    ),
+  upsertAttributeMapping: (body: {
+    channel: string;
+    sourceName: string;
+    channelAttrId: string;
+    channelAttrName: string;
+  }) => request<AttributeMapping>("PUT", "/attribute-mappings", body),
+  deleteAttributeMapping: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/attribute-mappings/${id}`),
 };
