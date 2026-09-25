@@ -170,6 +170,30 @@ describe("重量", () => {
   });
 });
 
+describe("回扫队列", () => {
+  it("只返回有刊登的来源条目 offerId，未认领的采集箱条目不进队列", async () => {
+    ctx = await setup(fakeAll());
+    const t = await ctx.register();
+    const store = await connectStore(ctx, t);
+
+    // 未认领 → 不进队列
+    await ctx.api("POST", "/api/collect", harvest("q1", "未认领"), t);
+    let res = await ctx.api("POST", "/api/collect/rescan-queue", {}, t);
+    expect(res.body.items).toHaveLength(0);
+
+    // 认领后 → 进队列
+    const item2 = await ctx.api("POST", "/api/collect", harvest("q2", "已认领"), t);
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item2.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    res = await ctx.api("POST", "/api/collect/rescan-queue", {}, t);
+    expect(res.body.items).toEqual([{ offerId: "q2" }]);
+  });
+});
+
 describe("发布前检查", () => {
   it("命中禁售词的刊登不排队，逐条返回原因", async () => {
     ctx = await setup(fakeAll());
