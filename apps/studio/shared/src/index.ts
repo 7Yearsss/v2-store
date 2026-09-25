@@ -49,6 +49,8 @@ export interface Product {
 export type DraftStatus = "draft" | "ready";
 
 export interface DraftFields {
+  /** 主图/商品图（从货源初始化，主稿可编辑；校验与发布以此为准） */
+  images: string[];
   title: string;
   /** 卖点（bullet points） */
   bullets: string[];

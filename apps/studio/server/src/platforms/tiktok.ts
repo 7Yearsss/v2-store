@@ -74,7 +74,7 @@ export const tiktokAdapter: PlatformAdapter = {
       });
     }
 
-    const images = product.images.length;
+    const images = (fields.images ?? product.images).length;
     if (images < IMAGE_MIN) {
       issues.push({
         code: "missing_field",

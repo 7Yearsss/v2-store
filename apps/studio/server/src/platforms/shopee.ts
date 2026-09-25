@@ -73,7 +73,7 @@ export const shopeeAdapter: PlatformAdapter = {
       });
     }
 
-    const images = product.images.length;
+    const images = (fields.images ?? product.images).length;
     if (images < 1) {
       issues.push({
         code: "missing_field",

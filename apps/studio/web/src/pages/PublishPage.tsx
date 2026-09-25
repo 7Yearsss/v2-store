@@ -146,7 +146,7 @@ export function PublishPage() {
     if (loadedRef.current !== d.productId) {
       loadedRef.current = d.productId;
       pendingRef.current = { productId: d.productId, patch: {} };
-      setFields(d.fields);
+      setFields({ ...d.fields, images: d.fields.images ?? [] });
       setSaveState("saved");
       setAiCards({});
       setUnchecked(new Set());
@@ -414,17 +414,42 @@ export function PublishPage() {
             <Err error={draftQ.error} onRetry={() => draftQ.refetch()} />
           ) : (
             <>
-              {/* 主图（货源图，只读） */}
-              {product && product.images.length > 0 && (
-                <div className="fld">
-                  <div className="fld-label">主图</div>
-                  <div className="imgstrip">
-                    {product.images.map((src) => (
-                      <Thumb key={src} src={src} lg />
-                    ))}
-                  </div>
+              {/* 主图（主稿字段，可增删——TikTok ≥5 张等校验走这里） */}
+              <div className="fld">
+                <div className="fld-label">
+                  主图
+                  <span className="fld-count">{(fields.images ?? []).length} 张</span>
                 </div>
-              )}
+                <div className="imgstrip">
+                  {(fields.images ?? []).map((src, i) => (
+                    <span key={`${src}-${i}`} style={{ position: "relative" }}>
+                      <Thumb src={src} lg />
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="删除此图"
+                        style={{ position: "absolute", top: 2, right: 2 }}
+                        onClick={() =>
+                          edit("images", (fields.images ?? []).filter((_, j) => j !== i))
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <input
+                  className="inp sm"
+                  placeholder="粘贴图片 URL，回车加入主稿"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && e.currentTarget.value.trim()) {
+                      edit("images", [...(fields.images ?? []), e.currentTarget.value.trim()]);
+                      e.currentTarget.value = "";
+                      void sendPatch();
+                    }
+                  }}
+                />
+              </div>
 
               {/* 标题 */}
               <div className="fld">

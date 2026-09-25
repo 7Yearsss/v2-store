@@ -32,6 +32,7 @@ export function toDraft(r: DraftRow): ListingDraft {
 function defaultFields(p: ProductRow): DraftFields {
   const v = p.variants[0];
   return {
+    images: p.images,
     title: p.title,
     bullets: [],
     description: "",

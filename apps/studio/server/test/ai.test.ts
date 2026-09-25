@@ -4,6 +4,7 @@ import { runFieldAi } from "../src/services/ai.js";
 import { setup } from "./helpers.js";
 
 const fields: DraftFields = {
+  images: ["https://img/1.png"],
   title: "2025夏季新款法式碎花连衣裙 收腰显瘦",
   bullets: [],
   description: "",

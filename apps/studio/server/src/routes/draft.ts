@@ -13,6 +13,7 @@ const productId = (c: { req: { param(n: string): string | undefined } }) =>
   c.req.param("id")!;
 
 const patchSchema = z.object({
+  images: z.array(z.string()).optional(),
   title: z.string().optional(),
   bullets: z.array(z.string()).optional(),
   description: z.string().optional(),
