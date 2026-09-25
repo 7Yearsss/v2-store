@@ -38,7 +38,7 @@ export function toProductSetInput(
   /** status is set only when creating — later syncs must not override what
    *  the merchant chose in Shopify (e.g. switched back to draft) */
   isCreate = !listing.remoteId,
-  opts: { publishStatus?: "active" | "draft" } = {},
+  opts: { publishStatus?: "active" | "draft"; trackStock?: boolean } = {},
 ) {
   const hasOptions = listing.options.length > 0;
   const productOptions = hasOptions
@@ -58,9 +58,11 @@ export function toProductSetInput(
       optionValues: hasOptions
         ? listing.options.map((o, idx) => ({ optionName: o.name, name: v.optionValues[idx] }))
         : [{ optionName: DEFAULT_OPTION.name, name: DEFAULT_OPTION.value }],
-      // dropshipping: source stock isn't ours to promise; don't track inventory.
+      // dropshipping default: source stock isn't ours to promise → untracked
+      // (unlimited). trackStock on: track inventory; quantities are written
+      // post-publish via inventorySetQuantities (variants get item ids only then).
       inventoryItem: {
-        tracked: false,
+        tracked: !!opts.trackStock,
         cost:
           v.costCny && costRate ? (v.costCny * costRate).toFixed(2) : undefined,
       },
@@ -179,6 +181,94 @@ const VARIANTS_BIND = /* GraphQL */ `
   }
 `;
 
+const STOCK_DATA = /* GraphQL */ `
+  query StockData($id: ID!) {
+    product(id: $id) {
+      variants(first: 250) {
+        nodes {
+          inventoryItem {
+            id
+            inventoryLevels(first: 10) {
+              nodes { location { id } quantities(names: ["available"]) { quantity } }
+            }
+          }
+        }
+      }
+    }
+    locations(first: 10) { nodes { id isActive } }
+  }
+`;
+
+const SET_STOCK = /* GraphQL */ `
+  mutation SetStock($input: InventorySetQuantitiesInput!, $key: String!) {
+    inventorySetQuantities(input: $input) @idempotent(key: $key) {
+      inventoryAdjustmentGroup { reason }
+      userErrors { field message }
+    }
+  }
+`;
+
+/** 货源库存 → Shopify 变体库存：inventoryQuantities 只能对已建好的
+ *  inventoryItem 生效，所以发布后按变体顺序精确写入主地点。失败只警告。 */
+async function setVariantStock(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+  listing: ListingRow,
+): Promise<string | null> {
+  const sent = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
+  try {
+    const data = await shopifyGraphql<{
+      product: {
+        variants: {
+          nodes: Array<{
+            inventoryItem: {
+              id: string;
+              inventoryLevels: {
+                nodes: Array<{ location: { id: string }; quantities: Array<{ quantity: number }> }>;
+              };
+            };
+          }>;
+        };
+      } | null;
+      locations: { nodes: Array<{ id: string; isActive: boolean }> };
+    }>(deps, store, STOCK_DATA, { id: productId });
+    const location = data.locations.nodes.find((l) => l.isActive) ?? data.locations.nodes[0];
+    if (!location) return "未能写入库存：店铺没有可用仓库地点";
+    // changeFromQuantity 是必填的库存基线：取该地点当前 available，首次发布为 0
+    const quantities = sent
+      .map((v, i) => {
+        const item = data.product?.variants.nodes[i]?.inventoryItem;
+        const level = item?.inventoryLevels.nodes.find((l) => l.location.id === location.id);
+        return {
+          inventoryItemId: item?.id,
+          locationId: location.id,
+          quantity: Math.max(0, Math.min(Math.floor(v.stock ?? 0), 99999)),
+          changeFromQuantity: level?.quantities[0]?.quantity ?? 0,
+        };
+      })
+      .filter(
+        (q): q is {
+          inventoryItemId: string;
+          locationId: string;
+          quantity: number;
+          changeFromQuantity: number;
+        } => !!q.inventoryItemId,
+      );
+    if (!quantities.length) return "未能写入库存：变体库存项未就绪";
+    const res = await shopifyGraphql<{
+      inventorySetQuantities: { userErrors: Array<{ message: string }> };
+    }>(deps, store, SET_STOCK, {
+      input: { reason: "correction", name: "available", quantities },
+      key: `stock-${productId}-${Date.now()}`,
+    });
+    const errs = res.inventorySetQuantities.userErrors;
+    return errs.length ? `库存写入失败：${errs.map((e) => e.message).join("；")}` : null;
+  } catch (e) {
+    return `库存写入失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 /** 变体图绑定：规格图已随 files 进 product media，按文件顺序取 mediaId 写回变体。
  *  绑定失败不阻塞发布——商品本体已建好，退化为只有主图。 */
 async function bindVariantImages(
@@ -251,6 +341,7 @@ export const shopifyAdapter: ChannelAdapter = {
       .map((src) => `<p><img src="${src}"/></p>`)
       .join("");
     const publishStatus = store.rules?.publishStatus ?? "active";
+    const trackStock = !!store.rules?.trackStock;
     const inputListing: ListingRow = descHtml
       ? { ...listing, descriptionHtml: `${listing.descriptionHtml}${descHtml}` }
       : listing;
@@ -262,6 +353,7 @@ export const shopifyAdapter: ChannelAdapter = {
     }>(deps, store, PRODUCT_SET, {
       input: toProductSetInput(inputListing, store.pricing.exchangeRate, fileSources, !listing.remoteId, {
         publishStatus,
+        trackStock,
       }),
       identifier: listing.remoteId ? { id: listing.remoteId } : undefined,
     });
@@ -277,6 +369,10 @@ export const shopifyAdapter: ChannelAdapter = {
     const warnings = await checkShopifyMedia(deps, store, product.id);
     const bindWarning = await bindVariantImages(deps, store, product.id, listing, allImages);
     if (bindWarning) warnings.push(bindWarning);
+    if (trackStock) {
+      const stockWarning = await setVariantStock(deps, store, product.id, listing);
+      if (stockWarning) warnings.push(stockWarning);
+    }
     if (!listing.remoteId && publishStatus !== "draft") {
       const channelWarning = await publishToOnlineStore(deps, store, product.id);
       if (channelWarning) warnings.push(channelWarning);

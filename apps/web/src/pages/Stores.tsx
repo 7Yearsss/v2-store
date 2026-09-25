@@ -134,6 +134,7 @@ type SettingsForm = PricingRule & {
   maxImages?: number;
   bannedWords?: string[];
   publishStatus?: "active" | "draft";
+  trackStock?: boolean;
   defaultTags?: string[];
   defaultProductType?: string;
 };
@@ -167,6 +168,7 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         maxImages: store.rules.maxImages ?? undefined,
         bannedWords: store.rules.bannedWords ?? [],
         publishStatus: store.rules.publishStatus ?? "active",
+        trackStock: store.rules.trackStock ?? false,
         defaultTags: store.rules.defaultTags ?? [],
         defaultProductType: store.rules.defaultProductType,
       });
@@ -210,6 +212,7 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             maxImages: v.maxImages ?? null,
             bannedWords: v.bannedWords ?? [],
             publishStatus: v.publishStatus ?? "active",
+            trackStock: v.trackStock ?? false,
             defaultTags: v.defaultTags ?? [],
             defaultProductType: v.defaultProductType?.trim() || undefined,
           },
@@ -283,6 +286,14 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
                 { value: "draft", label: "发布为草稿" },
               ]}
             />
+          </Form.Item>
+          <Form.Item
+            name="trackStock"
+            label="库存"
+            valuePropName="checked"
+            extra="打开后按 1688 库存发布并追踪，售罄自动停售；关闭则不限量可售"
+          >
+            <Switch />
           </Form.Item>
           <Form.Item name="defaultProductType" label="默认商品类型">
             <Input placeholder="如 Women's Clothing" style={{ width: 200 }} maxLength={255} />

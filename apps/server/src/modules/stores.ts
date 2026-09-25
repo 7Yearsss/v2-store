@@ -124,6 +124,7 @@ const rulesSchema = z.object({
   maxImages: z.number().int().min(1).max(20).nullable().optional(),
   bannedWords: z.array(z.string().trim().min(1).max(100)).max(500).optional(),
   publishStatus: z.enum(["active", "draft"]).optional(),
+  trackStock: z.boolean().optional(),
   defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   defaultProductType: z.string().trim().max(255).optional(),
 }) satisfies z.ZodType<StoreRules>;

@@ -289,6 +289,71 @@ describe("claim → publish", () => {
     ).toBe(false);
   });
 
+  it("trackStock 开启后写入货源库存", async () => {
+    ctx = await setup(fakeShopify());
+    const t = await ctx.register();
+    const store = (
+      await ctx.api(
+        "POST",
+        "/api/stores/shopify",
+        { authType: "access_token", shopDomain: "demo", accessToken: "shpat_abcdefghij" },
+        t,
+      )
+    ).body;
+    await ctx.api("PATCH", `/api/stores/${store.id}`, { rules: { trackStock: true } }, t);
+    const item = await ctx.api(
+      "POST",
+      "/api/collect",
+      {
+        sourceInfo: { itemUrl: "https://detail.1688.com/offer/st1.html", itemId: "st1", source: "1688" },
+        productExtInfo: {
+          offer: {
+            sourcePlatform: "1688",
+            sourceUrl: "https://detail.1688.com/offer/st1.html",
+            offerId: "st1",
+            title: "库存杯",
+            priceText: "¥10",
+            skus: [
+              { spec: "颜色:红色", priceCny: 10, stock: 5 },
+              { spec: "颜色:蓝色", priceCny: 12, stock: 999999 },
+            ],
+            images: [],
+            attributes: {},
+            collectedAt: new Date().toISOString(),
+          },
+        },
+      },
+      t,
+    );
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    const list = await ctx.api("GET", "/api/listings", undefined, t);
+    const listing = list.body.items[0];
+    await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
+    while (await runOnce(ctx.deps, jobHandlers)) {
+      /* drain */
+    }
+    const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(done.body.status).toBe("published");
+
+    const setCall = ctx.calls.find((c) => String(c.body?.query ?? "").includes("productSet"));
+    expect(setCall!.body.variables.input.variants[0].inventoryItem.tracked).toBe(true);
+    const stock = ctx.calls.find((c) =>
+      String(c.body?.query ?? "").includes("inventorySetQuantities"),
+    );
+    expect(stock).toBeTruthy();
+    expect(stock!.body.variables.input).toMatchObject({ name: "available" });
+    expect(stock!.body.variables.input.quantities).toEqual([
+      { inventoryItemId: "gid://shopify/InventoryItem/i0", locationId: "gid://shopify/Location/l1", quantity: 5, changeFromQuantity: 0 },
+      // 库存封顶 99999
+      { inventoryItemId: "gid://shopify/InventoryItem/i1", locationId: "gid://shopify/Location/l1", quantity: 99999, changeFromQuantity: 0 },
+    ]);
+  });
+
   it("rejects zero-priced variants before calling Shopify", async () => {
     ctx = await setup(fakeShopify());
     const t = await ctx.register();
