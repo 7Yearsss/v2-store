@@ -1,0 +1,17 @@
+# Local Postgres for production-like runs:
+#   docker compose up -d
+#   DATABASE_URL=postgres://caiji:caiji@localhost:5432/caiji npm run dev:server
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: caiji
+      POSTGRES_PASSWORD: caiji
+      POSTGRES_DB: caiji
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

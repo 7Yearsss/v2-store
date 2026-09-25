@@ -1,18 +1,25 @@
 {
   "manifest_version": 3,
   "name": "V2Store Collector",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "采集 1688 商品到 V2Store 工作台",
-  "permissions": ["storage", "contextMenus"],
+  "permissions": [
+    "storage",
+    "contextMenus"
+  ],
   "host_permissions": [
-    "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*",
-    "*://*.1688.com/*"
+    "*://*.1688.com/*",
+    "*://*.alicdn.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["*://*.1688.com/*", "*://1688.com/*"],
-      "js": ["collect1688-main.js"],
+      "matches": [
+        "*://*.1688.com/*",
+        "*://1688.com/*"
+      ],
+      "js": [
+        "collect1688-main.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
@@ -24,17 +31,26 @@
         "*://detail.m.1688.com/*",
         "*://detailp4p.1688.com/buyer/offerdetail/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["*://s.1688.com/*"],
-      "js": ["search.js"],
+      "matches": [
+        "*://s.1688.com/*",
+        "*://*.1688.com/page/offerlist*"
+      ],
+      "js": [
+        "list.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
-      "js": ["site-bridge.js"],
+      "matches": [],
+      "js": [
+        "site-bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],

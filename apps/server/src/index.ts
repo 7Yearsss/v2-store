@@ -1,101 +1,73 @@
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
-import { cors } from "hono/cors";
-import type {
-  CollectedOffer,
-  CollectHarvest,
-} from "@caiji/shared";
-import { findInitData, normalizeOffer } from "@caiji/shared";
-import { ProductStore } from "./store.js";
+import { createApp } from "./app.js";
+import { openDb } from "./db/client.js";
+import { env } from "./env.js";
+import { jobHandlers } from "./jobs/handlers.js";
+import { startWorker } from "./jobs/queue.js";
+import { enqueueStoreSync } from "./jobs/handlers.js";
+import { stores } from "./db/schema.js";
+import { eq } from "drizzle-orm";
+import { type BlobStore, LocalDiskStore, R2Store } from "./lib/blobStore.js";
+import { SecretBox } from "./lib/crypto.js";
+import type { Deps } from "./context.js";
 
-const app = new Hono();
-const store = new ProductStore();
+const handle = await openDb({ url: env.DATABASE_URL, pgliteDir: env.PGLITE_DIR });
 
-app.use("/api/*", cors());
+const blobs: BlobStore =
+  env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
+    ? new R2Store({
+        accountId: env.R2_ACCOUNT_ID,
+        accessKeyId: env.R2_ACCESS_KEY_ID,
+        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+        bucket: env.R2_BUCKET,
+      })
+    : new LocalDiskStore(env.MEDIA_DIR);
 
-app.get("/api/health", (c) => c.json({ ok: true }));
+const deps: Deps = {
+  db: handle.db,
+  secrets: new SecretBox(env.ENCRYPTION_KEY),
+  blobs,
+  fetch: globalThis.fetch,
+  config: {
+    appUrl: env.APP_URL,
+    sessionTtlDays: env.SESSION_TTL_DAYS,
+    secureCookies: env.APP_URL.startsWith("https://"),
+    shopify: {
+      apiKey: env.SHOPIFY_API_KEY,
+      apiSecret: env.SHOPIFY_API_SECRET,
+      scopes: env.SHOPIFY_SCOPES,
+      apiVersion: env.SHOPIFY_API_VERSION,
+    },
+  },
+};
 
-/** Harvest contract: extension ships pageContent + URL tokens; all field
- * extraction happens here so site adaptors hot-update without releases.
- * Falls back to productExtInfo.offer when the page side already parsed
- * (sniffed API payloads / DOM fallback), then to legacy CollectedOffer. */
-function harvestToOffer(body: CollectHarvest): CollectedOffer | null {
-  const { sourceInfo, pageContent, productExtInfo, afterUrl } = body ?? {};
-  if (!sourceInfo?.itemUrl) return null;
+const app = createApp(deps, { log: env.NODE_ENV !== "test" });
+const stopWorker = env.RUN_WORKER ? startWorker(deps, jobHandlers) : () => {};
 
-  const initData =
-    productExtInfo?.initData ?? (pageContent ? findInitData(pageContent) : null);
-  if (initData) {
-    return {
-      ...normalizeOffer(initData, sourceInfo.itemId, sourceInfo.itemUrl),
-      sourceUrl: sourceInfo.itemUrl,
-      collectedAt: body.collectedAt ?? new Date().toISOString(),
-    };
-  }
-
-  const offer = productExtInfo?.offer as CollectedOffer | undefined;
-  if (offer?.title) {
-    return {
-      ...offer,
-      sourceUrl: offer.sourceUrl || sourceInfo.itemUrl,
-      collectedAt: body.collectedAt ?? offer.collectedAt,
-    };
-  }
-
-  if (afterUrl && afterUrl !== sourceInfo.itemUrl) {
-    return null; // redirected (login wall) — nothing parseable
-  }
-  return null;
+/** Pull channel-side product status for every active store periodically. */
+async function scheduleStoreSyncs() {
+  const rows = await deps.db
+    .select({ id: stores.id, workspaceId: stores.workspaceId })
+    .from(stores)
+    .where(eq(stores.status, "active"));
+  for (const s of rows) await enqueueStoreSync(deps.db, s.id, s.workspaceId);
 }
+const syncTimer = env.RUN_WORKER
+  ? setInterval(() => scheduleStoreSyncs().catch((e) => console.error("[sync]", e)), env.SYNC_INTERVAL_MINUTES * 60_000)
+  : undefined;
 
-app.post("/api/collect", async (c) => {
-  const body = await c.req.json();
-
-  // harvest contract path
-  if (body?.sourceInfo?.itemUrl) {
-    const offer = harvestToOffer(body as CollectHarvest);
-    if (!offer?.title) {
-      return c.json(
-        { ok: false, error: "pageContent 未解析出商品数据", antiCode: "rowDataInvalid" },
-        422,
-      );
-    }
-    const { product, duplicated } = store.ingest(offer);
-    return c.json({ ok: true, product, duplicated }, duplicated ? 200 : 201);
-  }
-
-  // legacy path: already-normalized offer (web paste-link import, tests)
-  const offer = body as CollectedOffer;
-  if (!offer?.sourceUrl || !offer?.title) {
-    return c.json({ ok: false, error: "sourceUrl and title required" }, 400);
-  }
-  const { product, duplicated } = store.ingest(offer);
-  return c.json({ ok: true, product, duplicated }, duplicated ? 200 : 201);
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
+  console.log(
+    `caiji api on http://localhost:${info.port} (db: ${env.DATABASE_URL ? "postgres" : `pglite ${env.PGLITE_DIR}`}, media: ${blobs instanceof R2Store ? `r2 ${env.R2_BUCKET}` : `disk ${env.MEDIA_DIR}`})`,
+  );
 });
 
-/** Dedup marking — list pages batch-check which items are already collected. */
-app.post("/api/collect/check", async (c) => {
-  const body = await c.req.json();
-  const items: Array<{ itemUrl?: string; itemId?: string }> = body?.items ?? [];
-  const collected = items
-    .filter((i) => store.hasCollected(i.itemUrl, i.itemId))
-    .map((i) => i.itemUrl)
-    .filter(Boolean);
-  return c.json({ ok: true, collected });
-});
-
-app.get("/api/products", (c) => c.json(store.list()));
-
-app.get("/api/products/:id", (c) => {
-  const p = store.get(c.req.param("id"));
-  return p ? c.json(p) : c.notFound();
-});
-
-app.patch("/api/products/:id", async (c) => {
-  const updated = store.update(c.req.param("id"), await c.req.json());
-  return updated ? c.json(updated) : c.notFound();
-});
-
-const port = Number(process.env.PORT ?? 3000);
-serve({ fetch: app.fetch, port });
-console.log(`caiji api listening on http://localhost:${port}`);
+async function shutdown() {
+  stopWorker();
+  clearInterval(syncTimer);
+  server.close();
+  await handle.close();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
