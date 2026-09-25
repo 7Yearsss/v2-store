@@ -1,4 +1,8 @@
-import type { CategoryCandidate, RemoteStatus } from "@caiji/shared";
+import type {
+  CategoryCandidate,
+  ChannelAttribute,
+  RemoteStatus,
+} from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
 
@@ -62,4 +66,14 @@ export interface ChannelAdapter {
    * Returns the number of nodes cached. Absent = no full-tree support.
    */
   syncCategoryTree?(deps: Deps, store: StoreRow): Promise<{ count: number }>;
+  /**
+   * Standard attributes of one platform category (Shopify taxonomy attribute
+   * list: name/kind/choice values). Lazily fetched and cached in
+   * channel_categories.attributesSchema — absent = no attribute support.
+   */
+  categoryAttributes?(
+    deps: Deps,
+    store: StoreRow,
+    categoryId: string,
+  ): Promise<ChannelAttribute[]>;
 }

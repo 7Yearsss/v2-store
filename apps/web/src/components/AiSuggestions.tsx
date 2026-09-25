@@ -1,6 +1,8 @@
 import type {
+  AttributesSuggestionValue,
   CategorySuggestionValue,
   Listing,
+  ListingChannelAttribute,
   ListingSuggestion,
   ListingVariant,
   OptionsSuggestionValue,
@@ -11,7 +13,16 @@ import { App, Button, Card, Col, Row, Space, Spin, Table, Tag, Typography } from
 import { api } from "../api";
 
 type DraftPatch = Partial<
-  Pick<Listing, "title" | "descriptionHtml" | "productType" | "tags" | "options" | "variants">
+  Pick<
+    Listing,
+    | "title"
+    | "descriptionHtml"
+    | "productType"
+    | "tags"
+    | "options"
+    | "variants"
+    | "channelAttributes"
+  >
 >;
 
 const FIELD_LABEL: Record<SuggestionField, string> = {
@@ -21,6 +32,7 @@ const FIELD_LABEL: Record<SuggestionField, string> = {
   tags: "标签",
   options: "变体选项",
   category: "类目",
+  attributes: "平台属性",
 };
 
 const cellStyle: React.CSSProperties = {
@@ -50,6 +62,43 @@ function OptionsView({ options }: { options: { name: string; values: string[] }[
   );
 }
 
+/** 平台属性：提案为 {sourceName,sourceValue} → attrName=value 映射行。 */
+function AttributesView({ value }: { value: AttributesSuggestionValue }) {
+  return (
+    <Table
+      size="small"
+      rowKey={(r) => `${r.attrId}:${r.sourceName}`}
+      dataSource={value.attributes}
+      pagination={false}
+      columns={[
+        {
+          title: "来源",
+          width: 130,
+          render: (_, a) =>
+            a.sourceName ? `${a.sourceName}：${a.sourceValue}` : "（新增）",
+        },
+        { title: "平台属性", dataIndex: "attrName", width: 120 },
+        { title: "值", dataIndex: "value" },
+      ]}
+    />
+  );
+}
+
+function ChannelAttrsTable({ items }: { items: ListingChannelAttribute[] }) {
+  return (
+    <Table
+      size="small"
+      rowKey="attrId"
+      dataSource={items}
+      pagination={false}
+      columns={[
+        { title: "平台属性", dataIndex: "name", width: 120 },
+        { title: "值", dataIndex: "value" },
+      ]}
+    />
+  );
+}
+
 function ValueView({ field, value }: { field: SuggestionField; value: unknown }) {
   if (field === "descriptionHtml") {
     return <div dangerouslySetInnerHTML={{ __html: String(value) }} />;
@@ -66,6 +115,9 @@ function ValueView({ field, value }: { field: SuggestionField; value: unknown })
   if (field === "options") {
     return <OptionsView options={(value as OptionsSuggestionValue).options} />;
   }
+  if (field === "attributes") {
+    return <AttributesView value={value as AttributesSuggestionValue} />;
+  }
   return <Typography.Text>{String(value)}</Typography.Text>;
 }
 
@@ -75,7 +127,10 @@ function CurrentView({ field, listing }: { field: SuggestionField; listing: List
       ? ({ options: listing.options, variantOptionValues: [] } as OptionsSuggestionValue)
       : field === "category"
         ? listing.channelCategoryName
-        : listing[field];
+        : field === "attributes"
+          ? listing.channelAttributes
+          : listing[field];
+  if (field === "attributes") return <ChannelAttrsTable items={value as ListingChannelAttribute[]} />;
   return <ValueView field={field} value={value} />;
 }
 
@@ -97,6 +152,16 @@ export function acceptedPatch(s: ListingSuggestion, variants: ListingVariant[]):
         variants: variants.map((vr, i) => ({
           ...vr,
           optionValues: v.variantOptionValues[i] ?? vr.optionValues,
+        })),
+      };
+    }
+    case "attributes": {
+      const v = s.value as AttributesSuggestionValue;
+      return {
+        channelAttributes: v.attributes.map((a) => ({
+          attrId: a.attrId,
+          name: a.attrName,
+          value: a.value,
         })),
       };
     }

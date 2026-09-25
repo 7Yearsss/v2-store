@@ -15,6 +15,7 @@ import { stores } from "../db/schema.js";
 import { DEFAULT_PRICING } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { enqueueCategorySync, enqueueStoreSync } from "../jobs/handlers.js";
+import { cachedCategoryAttributes } from "../lib/attributes.js";
 import { searchCachedCategories } from "../lib/category.js";
 import { requireAuth } from "./auth.js";
 
@@ -267,6 +268,21 @@ export function storeRoutes() {
     const items = adapter.searchCategories
       ? await adapter.searchCategories(deps, store, q)
       : [];
+    return c.json({ items });
+  });
+
+  /** 类目标准属性（懒拉取并缓存进 channel_categories.attributesSchema）。 */
+  r.get("/:id/categories/:categoryId/attributes", async (c) => {
+    const deps = c.var.deps;
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!store) throw notFound("店铺");
+    const categoryId = decodeURIComponent(c.req.param("categoryId"));
+    const items = await cachedCategoryAttributes(deps.db, deps, store, categoryId);
     return c.json({ items });
   });
 
