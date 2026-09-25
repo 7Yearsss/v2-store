@@ -10,8 +10,10 @@ import { HttpError, notFound } from "../lib/errors.js";
 import { PUBLISH_LISTING } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
+import { displayUrls } from "./media.js";
 
-export function toListingDto(r: ListingRow): Listing {
+/** `images` defaults to stored refs; pass display URLs (our copies) when resolved. */
+export function toListingDto(r: ListingRow, images: string[] = r.images): Listing {
   return {
     id: r.id,
     storeId: r.storeId,
@@ -19,7 +21,7 @@ export function toListingDto(r: ListingRow): Listing {
     status: r.status,
     title: r.title,
     descriptionHtml: r.descriptionHtml,
-    images: r.images,
+    images,
     options: r.options,
     variants: r.variants,
     tags: r.tags,
@@ -56,7 +58,10 @@ const patchSchema = z
   .object({
     title: z.string().trim().min(1).max(255),
     descriptionHtml: z.string().max(200_000),
-    images: z.array(z.string().url()).max(250),
+    // source URLs or our own /api/media/<id> refs
+    images: z
+      .array(z.string().refine((u) => /^https?:\/\//.test(u) || /^\/api\/media\/[0-9a-f-]{36}$/.test(u)))
+      .max(250),
     options: z
       .array(z.object({ name: z.string().min(1).max(255), values: z.array(z.string()) }))
       .max(3),
@@ -99,7 +104,8 @@ export function listingRoutes() {
         .offset((page - 1) * pageSize),
       db.select({ n: count() }).from(listings).where(where),
     ]);
-    return c.json({ items: rows.map(toListingDto), total: total?.n ?? 0 });
+    const show = await displayUrls(db, c.var.auth.workspaceId, rows.map((r) => r.images));
+    return c.json({ items: rows.map((r) => toListingDto(r, show(r.images))), total: total?.n ?? 0 });
   });
 
   r.get("/counts", async (c) => {
@@ -122,7 +128,8 @@ export function listingRoutes() {
         ),
       );
     if (!row) throw notFound("刊登");
-    return c.json(toListingDto(row));
+    const show = await displayUrls(c.var.deps.db, c.var.auth.workspaceId, [row.images]);
+    return c.json(toListingDto(row, show(row.images)));
   });
 
   r.patch("/:id", zValidator("json", patchSchema), async (c) => {
@@ -139,7 +146,8 @@ export function listingRoutes() {
       )
       .returning();
     if (!row) throw new HttpError(409, "刊登不存在或正在发布中");
-    return c.json(toListingDto(row));
+    const show = await displayUrls(db, c.var.auth.workspaceId, [row.images]);
+    return c.json(toListingDto(row, show(row.images)));
   });
 
   /** Queue publish (first publish or re-sync of an already published product). */

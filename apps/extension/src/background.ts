@@ -50,7 +50,44 @@ async function api<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-const submitHarvest = (harvest: CollectHarvest) => api<SubmitResult>("/collect", harvest);
+/**
+ * Copy a collected item's images into our storage: download in the user's
+ * browser (reliable access to the source CDN from their network), upload
+ * the bytes to our API. Best-effort — the server fetches anything missed.
+ */
+async function uploadImages(urls: string[]) {
+  const auth = await getAuth();
+  if (!auth || !urls.length) return;
+  const { missing } = await api<{ missing: string[] }>("/media/missing", { urls });
+  const queue = [...missing];
+  const worker = async () => {
+    for (let url = queue.shift(); url; url = queue.shift()) {
+      try {
+        const img = await fetch(url, { credentials: "omit" });
+        if (!img.ok) continue;
+        const body = await img.arrayBuffer();
+        await fetch(`${auth.apiBase}/api/media/upload?sourceUrl=${encodeURIComponent(url)}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${auth.token}`,
+            "Content-Type": img.headers.get("content-type") ?? "application/octet-stream",
+          },
+          body,
+        });
+      } catch {
+        /* left for the server-side fallback */
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+
+async function submitHarvest(harvest: CollectHarvest) {
+  const result = await api<SubmitResult>("/collect", harvest);
+  // don't make the user wait on image copies
+  uploadImages(result.item.images ?? []).catch(() => {});
+  return result;
+}
 
 /** Collect an offer by id: fetch detail HTML in the user's 1688 session, ship
  * it to the server which owns all field extraction (harvest contract). */

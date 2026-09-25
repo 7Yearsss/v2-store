@@ -8,10 +8,16 @@ import { listings, sourceItems, stores } from "../db/schema.js";
 import { attributesToHtml, buildVariants } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { requireAuth } from "./auth.js";
+import { displayUrls } from "./media.js";
 
 type Row = typeof sourceItems.$inferSelect;
 
-export function toSourceItemDto(r: Row, claimedStoreIds: string[]): SourceItem {
+/** `images` defaults to the source URLs; pass display URLs (our copies) when resolved. */
+export function toSourceItemDto(
+  r: Row,
+  claimedStoreIds: string[],
+  images: string[] = r.images,
+): SourceItem {
   return {
     id: r.id,
     sourcePlatform: r.sourcePlatform as SourcePlatform,
@@ -20,7 +26,7 @@ export function toSourceItemDto(r: Row, claimedStoreIds: string[]): SourceItem {
     title: r.title,
     priceText: r.priceText,
     skus: r.skus,
-    images: r.images,
+    images,
     attributes: r.attributes,
     sellerName: r.sellerName,
     collectedAt: r.collectedAt.toISOString(),
@@ -74,8 +80,9 @@ export function sourceItemRoutes() {
     for (const cl of claims) {
       byItem.set(cl.sid, [...(byItem.get(cl.sid) ?? []), cl.storeId]);
     }
+    const show = await displayUrls(db, workspaceId, rows.map((r) => r.images));
     return c.json({
-      items: rows.map((r) => toSourceItemDto(r, byItem.get(r.id) ?? [])),
+      items: rows.map((r) => toSourceItemDto(r, byItem.get(r.id) ?? [], show(r.images))),
       total: total?.n ?? 0,
     });
   });
@@ -96,7 +103,8 @@ export function sourceItemRoutes() {
       .select({ storeId: listings.storeId })
       .from(listings)
       .where(eq(listings.sourceItemId, row.id));
-    return c.json(toSourceItemDto(row, claims.map((x) => x.storeId)));
+    const show = await displayUrls(db, c.var.auth.workspaceId, [row.images]);
+    return c.json(toSourceItemDto(row, claims.map((x) => x.storeId), show(row.images)));
   });
 
   r.post("/delete", zValidator("json", idsSchema), async (c) => {

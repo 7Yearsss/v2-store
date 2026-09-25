@@ -117,6 +117,41 @@ export const sourceItems = pgTable(
   ],
 );
 
+// --- media ------------------------------------------------------------------
+
+/** 我们自己保存的图片（按内容哈希去重）。bytes live in the BlobStore. */
+export const mediaAssets = pgTable(
+  "media_assets",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sha256: text("sha256").notNull(),
+    contentType: text("content_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    storageKey: text("storage_key").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("media_assets_ws_sha_uq").on(t.workspaceId, t.sha256)],
+);
+
+/** Source image URL → our copy. Source URLs stay the identity in item data. */
+export const mediaSources = pgTable(
+  "media_sources",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourceUrl: text("source_url").notNull(),
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => mediaAssets.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.sourceUrl] })],
+);
+
 // --- channels ---------------------------------------------------------------
 
 /** 授权店铺。credentials is AES-GCM ciphertext (see lib/crypto). */

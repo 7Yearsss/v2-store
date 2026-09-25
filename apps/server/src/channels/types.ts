@@ -24,6 +24,8 @@ export interface ShopInfo {
 export interface PublishResult {
   remoteId: string;
   remoteUrl: string | null;
+  /** published, but something needs attention (e.g. images failed) */
+  warnings?: string[];
 }
 
 /**

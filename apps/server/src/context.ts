@@ -1,4 +1,5 @@
 import type { Db } from "./db/client.js";
+import type { BlobStore } from "./lib/blobStore.js";
 import type { SecretBox } from "./lib/crypto.js";
 
 export interface AppConfig {
@@ -17,6 +18,8 @@ export interface AppConfig {
 export interface Deps {
   db: Db;
   secrets: SecretBox;
+  /** media bytes (local disk in dev, R2/OSS in production) */
+  blobs: BlobStore;
   config: AppConfig;
   /** outbound HTTP (Shopify etc.) — swapped for a fake in tests. */
   fetch: typeof fetch;

@@ -7,6 +7,13 @@ const schema = z.object({
   DATABASE_URL: z.string().optional(),
   /** PGlite data dir when DATABASE_URL is unset; "memory://" for tests. */
   PGLITE_DIR: z.string().default("./data/pglite"),
+  /** Local media storage root (dev). Swap for R2/OSS in production. */
+  MEDIA_DIR: z.string().default("./data/media"),
+  /** Cloudflare R2 (S3 API). When all four are set, media goes to R2. */
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET: z.string().default("v2-store"),
   /** Public origin of the web app (cookies, OAuth redirects). */
   APP_URL: z.string().url().default("http://localhost:5173"),
   /** 32-byte key (hex or base64) for encrypting store credentials at rest. */

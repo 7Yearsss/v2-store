@@ -4,14 +4,26 @@ import { openDb } from "./db/client.js";
 import { env } from "./env.js";
 import { jobHandlers } from "./jobs/handlers.js";
 import { startWorker } from "./jobs/queue.js";
+import { type BlobStore, LocalDiskStore, R2Store } from "./lib/blobStore.js";
 import { SecretBox } from "./lib/crypto.js";
 import type { Deps } from "./context.js";
 
 const handle = await openDb({ url: env.DATABASE_URL, pgliteDir: env.PGLITE_DIR });
 
+const blobs: BlobStore =
+  env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
+    ? new R2Store({
+        accountId: env.R2_ACCOUNT_ID,
+        accessKeyId: env.R2_ACCESS_KEY_ID,
+        secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+        bucket: env.R2_BUCKET,
+      })
+    : new LocalDiskStore(env.MEDIA_DIR);
+
 const deps: Deps = {
   db: handle.db,
   secrets: new SecretBox(env.ENCRYPTION_KEY),
+  blobs,
   fetch: globalThis.fetch,
   config: {
     appUrl: env.APP_URL,
@@ -31,7 +43,7 @@ const stopWorker = env.RUN_WORKER ? startWorker(deps, jobHandlers) : () => {};
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   console.log(
-    `caiji api on http://localhost:${info.port} (db: ${env.DATABASE_URL ? "postgres" : `pglite ${env.PGLITE_DIR}`})`,
+    `caiji api on http://localhost:${info.port} (db: ${env.DATABASE_URL ? "postgres" : `pglite ${env.PGLITE_DIR}`}, media: ${blobs instanceof R2Store ? `r2 ${env.R2_BUCKET}` : `disk ${env.MEDIA_DIR}`})`,
   );
 });
 

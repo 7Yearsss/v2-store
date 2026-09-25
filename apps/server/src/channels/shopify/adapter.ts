@@ -8,6 +8,7 @@ import {
   type StoreRow,
 } from "../types.js";
 import { shopifyGraphql } from "./client.js";
+import { checkShopifyMedia, prepareShopifyMedia } from "./media.js";
 
 const SHOP_QUERY = /* GraphQL */ `
   query ShopInfo {
@@ -27,7 +28,12 @@ const PRODUCT_SET = /* GraphQL */ `
 const DEFAULT_OPTION = { name: "Title", value: "Default Title" };
 
 /** Pure mapping listing → ProductSetInput (unit-tested). */
-export function toProductSetInput(listing: ListingRow, costRate?: number) {
+export function toProductSetInput(
+  listing: ListingRow,
+  costRate?: number,
+  /** originalSource per image (staged-upload URLs); defaults to listing.images */
+  fileSources: string[] = listing.images,
+) {
   const hasOptions = listing.options.length > 0;
   const productOptions = hasOptions
     ? listing.options.map((o, i) => ({
@@ -64,7 +70,7 @@ export function toProductSetInput(listing: ListingRow, costRate?: number) {
     status: "ACTIVE",
     productOptions,
     variants,
-    files: listing.images.map((src) => ({
+    files: fileSources.map((src) => ({
       originalSource: src,
       contentType: "IMAGE",
     })),
@@ -96,13 +102,14 @@ export const shopifyAdapter: ChannelAdapter = {
   async publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult> {
     const invalid = validateForShopify(listing);
     if (invalid) throw new ChannelError(invalid);
+    const media = await prepareShopifyMedia(deps, store, listing.workspaceId, listing.images);
     const data = await shopifyGraphql<{
       productSet: {
         product: { id: string; handle: string; onlineStoreUrl: string | null } | null;
         userErrors: Array<{ field?: string[]; message: string }>;
       };
     }>(deps, store, PRODUCT_SET, {
-      input: toProductSetInput(listing, store.pricing.exchangeRate),
+      input: toProductSetInput(listing, store.pricing.exchangeRate, media.sources),
       identifier: listing.remoteId ? { id: listing.remoteId } : undefined,
     });
     const { product, userErrors } = data.productSet;
@@ -115,9 +122,12 @@ export const shopifyAdapter: ChannelAdapter = {
     }
     if (!product) throw new ChannelError("Shopify 未返回商品", false);
     const numericId = product.id.split("/").pop();
+    const warnings = await checkShopifyMedia(deps, store, product.id);
+    if (media.fallbacks) warnings.unshift(`${media.fallbacks} 张图片未能转存，使用了货源原图链接`);
     return {
       remoteId: product.id,
       remoteUrl: `https://${store.shopDomain}/admin/products/${numericId}`,
+      warnings,
     };
   },
 };

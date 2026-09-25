@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "V2Store Collector",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "采集 1688 商品到 V2Store 工作台",
   "permissions": [
     "storage",
     "contextMenus"
   ],
   "host_permissions": [
-    "*://*.1688.com/*"
+    "*://*.1688.com/*",
+    "*://*.alicdn.com/*"
   ],
   "content_scripts": [
     {

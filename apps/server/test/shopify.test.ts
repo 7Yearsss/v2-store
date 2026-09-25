@@ -3,45 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { verifyQueryHmac } from "../src/channels/shopify/oauth.js";
 import { jobHandlers } from "../src/jobs/handlers.js";
 import { runOnce } from "../src/jobs/queue.js";
-import { type FakeFetch, harvest, json, setup } from "./helpers.js";
+import { fakeShopify } from "./fakeShopify.js";
+import { harvest, setup } from "./helpers.js";
 
 let ctx: Awaited<ReturnType<typeof setup>> | undefined;
 afterEach(async () => {
   await ctx?.close();
   ctx = undefined;
 });
-
-/** Minimal fake Shopify Admin API. */
-function fakeShopify(opts: { productSetErrors?: Array<{ field?: string[]; message: string }> } = {}): FakeFetch {
-  return (url, init) => {
-    if (url.endsWith("/admin/oauth/access_token")) {
-      return json({ access_token: "shpat_cc", expires_in: 86399 });
-    }
-    if (url.includes("/graphql.json")) {
-      const headers = init.headers as Record<string, string>;
-      if (!headers["X-Shopify-Access-Token"]?.startsWith("shpat_")) return json({}, 401);
-      const { query } = JSON.parse(String(init.body));
-      if (query.includes("ShopInfo")) {
-        return json({
-          data: { shop: { name: "Demo", currencyCode: "USD", myshopifyDomain: "demo.myshopify.com" } },
-        });
-      }
-      if (query.includes("productSet")) {
-        return json({
-          data: {
-            productSet: opts.productSetErrors?.length
-              ? { product: null, userErrors: opts.productSetErrors }
-              : {
-                  product: { id: "gid://shopify/Product/42", handle: "t", onlineStoreUrl: null },
-                  userErrors: [],
-                },
-          },
-        });
-      }
-    }
-    return json({ errors: [{ message: `unhandled ${url}` }] }, 404);
-  };
-}
 
 async function claimOne(ctx: Awaited<ReturnType<typeof setup>>, t: string) {
   const store = await ctx.api(

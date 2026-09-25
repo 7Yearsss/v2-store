@@ -17,7 +17,7 @@ export async function enqueue(
   db: Pick<Db, "insert">,
   type: string,
   payload: Record<string, unknown>,
-  opts: { workspaceId?: string; maxAttempts?: number } = {},
+  opts: { workspaceId?: string; maxAttempts?: number; runAt?: Date } = {},
 ) {
   const [row] = await db
     .insert(jobs)
@@ -26,6 +26,7 @@ export async function enqueue(
       payload,
       workspaceId: opts.workspaceId,
       maxAttempts: opts.maxAttempts ?? 3,
+      runAt: opts.runAt,
     })
     .returning({ id: jobs.id });
   return row!.id;

@@ -8,6 +8,8 @@ import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
 import { sourceItems } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
+import { FETCH_MISSING_MEDIA } from "../jobs/handlers.js";
+import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { toSourceItemDto } from "./sourceItems.js";
 
@@ -132,6 +134,15 @@ export function collectRoutes() {
       throw new HttpError(422, "页面未解析出商品数据", "rowDataInvalid");
     }
     const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer);
+    // the extension uploads images right after this; the server fills gaps later
+    if (item.images.length) {
+      await enqueue(
+        db,
+        FETCH_MISSING_MEDIA,
+        { sourceItemId: item.id },
+        { workspaceId, runAt: new Date(Date.now() + 90_000) },
+      );
+    }
     return c.json(
       { ok: true, item: toSourceItemDto(item, []), duplicated },
       duplicated ? 200 : 201,

@@ -1,6 +1,7 @@
 import { createApp } from "../src/app.js";
 import type { Deps } from "../src/context.js";
 import { openDb } from "../src/db/client.js";
+import { MemoryStore } from "../src/lib/blobStore.js";
 import { SecretBox } from "../src/lib/crypto.js";
 
 export type FakeFetch = (url: string, init: RequestInit) => Promise<Response> | Response;
@@ -11,6 +12,7 @@ export async function setup(fakeFetch?: FakeFetch) {
   const deps: Deps = {
     db: handle.db,
     secrets: new SecretBox(),
+    blobs: new MemoryStore(),
     config: {
       appUrl: "http://localhost:5173",
       sessionTtlDays: 30,
