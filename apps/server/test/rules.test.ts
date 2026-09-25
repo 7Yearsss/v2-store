@@ -194,6 +194,60 @@ describe("回扫队列", () => {
   });
 });
 
+describe("库存地点", () => {
+  it("配置了库存地点时库存写到该地点；失效地点回退并告警", async () => {
+    const stock: Array<Array<Record<string, any>>> = [];
+    const locations = [
+      { id: "gid://shopify/Location/l1", name: "主仓", isActive: true },
+      { id: "gid://shopify/Location/l2", name: "海外仓", isActive: true },
+    ];
+    ctx = await setup(fakeShopify({ locations, capturedStock: stock }));
+    const t = await ctx.register();
+    const store = await connectStore(ctx, t);
+    await ctx.api(
+      "PATCH",
+      `/api/stores/${store.id}`,
+      { rules: { trackStock: true, inventoryLocationId: locations[1].id } },
+      t,
+    );
+    const item = await collect(ctx, t);
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item.id], storeIds: [store.id] },
+      t,
+    );
+    const list = await ctx.api("GET", "/api/listings", undefined, t);
+    await ctx.api("POST", "/api/listings/publish", { ids: [list.body.items[0].id] }, t);
+    await drain(ctx);
+    expect(stock.at(-1)!.every((q) => q.locationId === locations[1].id)).toBe(true);
+    const locRes = await ctx.api("GET", `/api/stores/${store.id}/locations`, undefined, t);
+    expect(locRes.body.items).toHaveLength(2);
+
+    // 地点失效 → 回退第一个可用地点并在 lastError 里告警
+    await ctx.api(
+      "PATCH",
+      `/api/stores/${store.id}`,
+      { rules: { trackStock: true, inventoryLocationId: "gid://shopify/Location/gone" } },
+      t,
+    );
+    const item2 = await ctx.api("POST", "/api/collect", harvest("loc2", "测试"), t);
+    await ctx.api(
+      "POST",
+      "/api/source-items/claim",
+      { ids: [item2.body.item.id], storeIds: [store.id] },
+      t,
+    );
+    const list2 = await ctx.api("GET", "/api/listings", undefined, t);
+    const l2 = list2.body.items.find((l: any) => l.sourceItemId === item2.body.item.id);
+    await ctx.api("POST", "/api/listings/publish", { ids: [l2.id] }, t);
+    await drain(ctx);
+    expect(stock.at(-1)!.every((q) => q.locationId === locations[0].id)).toBe(true);
+    const after = await ctx.api("GET", `/api/listings/${l2.id}`, undefined, t);
+    expect(after.body.lastError).toContain("库存地点已失效");
+  });
+});
+
 describe("发布前检查", () => {
   it("命中禁售词的刊登不排队，逐条返回原因", async () => {
     ctx = await setup(fakeAll());

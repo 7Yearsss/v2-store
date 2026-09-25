@@ -26,6 +26,10 @@ export function fakeShopify(
     metaobjectsByTaxref?: Record<string, string>;
     /** records the last productSet input (variants/files/….) for assertions */
     capturedProductSet?: Array<Record<string, unknown>>;
+    /** override the locations returned by the StockData/Locations queries */
+    locations?: Array<{ id: string; name?: string; isActive: boolean }>;
+    /** records inventorySetQuantities input.quantities for assertions */
+    capturedStock?: Array<Array<Record<string, unknown>>>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -201,12 +205,22 @@ export function fakeShopify(
               },
             },
             locations: {
-              nodes: [{ id: "gid://shopify/Location/l1", isActive: true }],
+              nodes: opts.locations ?? [{ id: "gid://shopify/Location/l1", isActive: true }],
+            },
+          },
+        });
+      }
+      if (query.includes("Locations")) {
+        return json({
+          data: {
+            locations: {
+              nodes: opts.locations ?? [{ id: "gid://shopify/Location/l1", name: "主地点", isActive: true }],
             },
           },
         });
       }
       if (query.includes("inventorySetQuantities")) {
+        if (opts.capturedStock) opts.capturedStock.push(variables.input?.quantities ?? []);
         return json({
           data: {
             inventorySetQuantities: {
