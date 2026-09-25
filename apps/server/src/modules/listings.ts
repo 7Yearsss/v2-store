@@ -24,6 +24,7 @@ import {
   enqueueAiEnhance,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
+import { toProductSetInput, validateForShopify } from "../channels/shopify/adapter.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
@@ -285,6 +286,65 @@ export function listingRoutes() {
       return { queued: okIds.length, blocked };
     });
     return c.json({ queued, skipped: ids.length - queued - blocked.length, blocked });
+  });
+
+  /** 发布预览：不触碰远端，把这次发布会写出去的字段汇总返回
+   *  （校验/禁售词检查同时跑，让「发布前检查」在点发布前就可见）。 */
+  r.get("/:id/publish-preview", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const [row] = await db
+      .select({ listing: listings, store: stores })
+      .from(listings)
+      .innerJoin(stores, eq(stores.id, listings.storeId))
+      .where(and(eq(listings.id, c.req.param("id")), eq(listings.workspaceId, workspaceId)));
+    if (!row) throw notFound("刊登");
+    const { listing, store } = row;
+
+    const warnings: string[] = [];
+    const validation = store.platform === "shopify" ? validateForShopify(listing) : null;
+    if (validation) warnings.push(validation);
+    const banned = findBannedWords(listing, store.rules?.bannedWords);
+    if (banned.length) warnings.push(`发布前检查拦截：含禁售词 ${banned.join("、")}`);
+    if (!listing.channelCategoryId) warnings.push("类目未映射，发布后需要在店铺后台手动选类目");
+
+    const publishStatus = store.rules?.publishStatus ?? "active";
+    const trackStock = !!store.rules?.trackStock;
+    const input =
+      store.platform === "shopify"
+        ? toProductSetInput(listing, store.pricing.exchangeRate, listing.images, !listing.remoteId, {
+            publishStatus,
+            trackStock,
+          })
+        : null;
+
+    return c.json({
+      ok: warnings.length === 0,
+      warnings,
+      product: input
+        ? {
+            title: input.title,
+            vendor: input.vendor ?? "",
+            productType: input.productType ?? "",
+            tags: input.tags,
+            status: input.status ?? "(沿用店铺当前状态)",
+            seo: input.seo,
+            categoryId: input.category ?? "",
+            categoryName: listing.channelCategoryName ?? "",
+            imageCount: input.files.length + listing.descImages.length,
+            options: (input.productOptions ?? []).map((o) => ({ name: o.name, values: o.values.map((v) => v.name) })),
+            variants: input.variants.map((v) => ({
+              sku: v.sku ?? "",
+              price: v.price,
+              compareAtPrice: v.compareAtPrice ?? "",
+              cost: v.inventoryItem?.cost ?? "",
+              optionValues: v.optionValues.map((o) => o.name),
+            })),
+            trackStock,
+            attributes: listing.channelAttributes.map((a) => ({ name: a.name, value: a.value })),
+          }
+        : null,
+    });
   });
 
   /** Queue delist: 已发布 + 有 remoteId 的刊登下架（远端 status→DRAFT，刊登记录保留）。 */
