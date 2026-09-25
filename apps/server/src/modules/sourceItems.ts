@@ -6,7 +6,7 @@ import type { SourceItem, SourcePlatform } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
 import { categoryMappings, listings, sourceItems, stores } from "../db/schema.js";
 import { applyAttrMappings, loadAttrMappings } from "../lib/attributes.js";
-import { attributesToHtml, buildVariants } from "../lib/draft.js";
+import { attributesToHtml, buildVariants, parseWeightKg } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import {
   applyAttrRules,
@@ -217,6 +217,10 @@ export function sourceItemRoutes() {
           termMap: term,
         });
         const mapping = mappingOf(item, store);
+        const weightKg =
+          parseWeightKg(applyAttrRules(item.attributes, rules)) ??
+          rules.defaultWeightKg ??
+          null;
         // 属性名译文撞名时保留原名消歧，避免两个属性合成一条丢值
         const attrSeen = new Map<string, number>();
         const attrs = Object.fromEntries(
@@ -240,6 +244,7 @@ export function sourceItemRoutes() {
             variants,
             tags: rules.defaultTags ?? [],
             productType: rules.defaultProductType ?? "",
+            weightKg,
             // never expose the supplier as the brand
             vendor: store.vendor,
             channelCategoryId: mapping?.channelCategoryId ?? null,

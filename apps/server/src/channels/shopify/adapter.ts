@@ -70,6 +70,10 @@ export function toProductSetInput(
         tracked: !!opts.trackStock,
         cost:
           v.costCny && costRate ? (v.costCny * costRate).toFixed(2) : undefined,
+        measurement:
+          listing.weightKg != null
+            ? { weight: { value: listing.weightKg, unit: "KILOGRAMS" } }
+            : undefined,
       },
     }),
   );

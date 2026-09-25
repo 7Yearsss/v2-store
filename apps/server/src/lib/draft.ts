@@ -143,6 +143,27 @@ const HTML_ESCAPES: Record<string, string> = {
 
 const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (ch) => HTML_ESCAPES[ch]!);
 
+const WEIGHT_KEY = /净重|毛重|重量|weight/i;
+// "0.5kg" "500g" "1.2千克" "0.3公斤" "800克" "0.4斤" "12oz"
+const WEIGHT_VALUE =
+  /(\d+(?:\.\d+)?)\s*(kg|kgs|千克|公斤|g|克|斤|oz|盎司|lb|磅)/i;
+const KG_PER: Record<string, number> = {
+  kg: 1, kgs: 1, 千克: 1, 公斤: 1, g: 0.001, 克: 0.001,
+  斤: 0.5, oz: 0.0283495, 盎司: 0.0283495, lb: 0.453592, 磅: 0.453592,
+};
+
+/** 从货源属性里找重量字段并换算成 kg；找不到/解析不出返回 null。 */
+export function parseWeightKg(attrs: Record<string, string>): number | null {
+  for (const [k, v] of Object.entries(attrs)) {
+    if (!WEIGHT_KEY.test(k)) continue;
+    const m = WEIGHT_VALUE.exec(v);
+    if (!m) continue;
+    const kg = parseFloat(m[1]!) * (KG_PER[m[2]!.toLowerCase()] ?? 0);
+    if (kg > 0) return Math.round(kg * 1000) / 1000;
+  }
+  return null;
+}
+
 export function attributesToHtml(attrs: Record<string, string>): string {
   const rows = Object.entries(attrs)
     .map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`)

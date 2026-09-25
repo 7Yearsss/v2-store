@@ -16,6 +16,7 @@ import {
   jsonb,
   pgTable,
   primaryKey,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -235,6 +236,8 @@ export const listings = pgTable(
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
     productType: text("product_type").notNull().default(""),
     vendor: text("vendor").notNull().default(""),
+    /** 单件重量（kg）；认领时从货源属性解析，发布写入变体 measurement。 */
+    weightKg: real("weight_kg"),
     /** 已确认的平台类目（Shopify taxonomy gid）；发布时写入 productSet.category。 */
     channelCategoryId: text("channel_category_id"),
     channelCategoryName: text("channel_category_name"),

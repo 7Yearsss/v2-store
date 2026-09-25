@@ -145,6 +145,8 @@ export interface StoreRules {
   defaultTags?: string[];
   /** 认领时默认商品类型（AI 建议仍可覆盖）。 */
   defaultProductType?: string;
+  /** 货源没有重量字段时的默认重量（kg），发布写入变体 measurement。 */
+  defaultWeightKg?: number;
 }
 
 /** 术语翻译映射：变体选项名/值、属性名/值的源词 → 目标语译文，按刊登语言分桶。 */
@@ -231,6 +233,8 @@ export interface Listing {
   tags: string[];
   productType: string;
   vendor: string;
+  /** 单件重量（kg），认领时从货源属性解析，可在编辑页改。 */
+  weightKg: number | null;
   /** 已确认的目标平台类目（Shopify taxonomy gid）；未映射为 null。 */
   channelCategoryId: string | null;
   channelCategoryName: string | null;

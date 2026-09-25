@@ -47,6 +47,7 @@ export function toListingDto(
     tags: r.tags,
     productType: r.productType,
     vendor: r.vendor,
+    weightKg: r.weightKg,
     channelCategoryId: r.channelCategoryId,
     channelCategoryName: r.channelCategoryName,
     channelAttributes: r.channelAttributes,
@@ -94,6 +95,7 @@ const patchSchema = z
     tags: z.array(z.string().trim().min(1).max(255)).max(250),
     productType: z.string().max(255),
     vendor: z.string().max(255),
+    weightKg: z.number().min(0).max(100_000).nullable(),
   })
   .partial()
   .refine(
