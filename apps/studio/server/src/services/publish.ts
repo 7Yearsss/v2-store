@@ -315,8 +315,8 @@ async function runAttempt(deps: Deps, attempt: AttemptRow) {
   }
 
   // 发布内容 = 本条 attempt 自己的快照：首跑是 job 冻结版，重试是补完字段的重试版。
-  // 排队/运行期间改主稿不影响在跑的 attempt。
-  const fields = attempt.fieldsSnapshot;
+  // 存量行（迁移前创建的）没有快照则回退 job 冻结版。
+  const fields = attempt.fieldsSnapshot ?? job.fieldsSnapshot;
   const adapter = adapterFor(shop.platform);
   // 校验与预览共用同一套规则（所见=所判）；warn 建议项不阻塞
   const issues = adapter.validateDraft({ product, fields, shop });

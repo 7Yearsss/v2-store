@@ -1,5 +1,5 @@
 {
-  "id": "cc8908d5-14fe-4f80-a84d-e0d3377031e6",
+  "id": "1d11367f-c570-4546-9771-134afbc94e6f",
   "prevId": "e5855c75-3cb8-4845-85a7-eb6e4506726d",
   "version": "7",
   "dialect": "postgresql",
@@ -323,7 +323,7 @@
           "name": "fields_snapshot",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

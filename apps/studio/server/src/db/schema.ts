@@ -100,8 +100,9 @@ export const publishAttempts = pgTable(
     externalId: text("external_id"),
     remoteUrl: text("remote_url"),
     retryOf: uuid("retry_of"),
-    /** 本条 attempt 实际用哪版文案（首跑=job 冻结快照；重试=修正后的新快照） */
-    fieldsSnapshot: jsonb("fields_snapshot").$type<DraftFields>().notNull(),
+    /** 本条 attempt 实际用哪版文案（首跑=job 冻结快照；重试=修正后的新快照）；
+     *  允许 null：存量行没有快照，运行时回退到 job.fieldsSnapshot */
+    fieldsSnapshot: jsonb("fields_snapshot").$type<DraftFields>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
