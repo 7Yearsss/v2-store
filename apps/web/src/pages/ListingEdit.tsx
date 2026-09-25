@@ -11,6 +11,7 @@ import {
   Image,
   Input,
   InputNumber,
+  Modal,
   Row,
   Select,
   Space,
@@ -63,6 +64,9 @@ export function ListingEditPage() {
   const stores = useQuery({ queryKey: ["stores"], queryFn: api.stores });
   const [draft, setDraft] = useState<Editable>();
   const [catOptions, setCatOptions] = useState<CategoryCandidate[]>([]);
+  const [vsel, setVsel] = useState<number[]>([]);
+  const [bulk, setBulk] = useState<{ field: "price" | "compareAtPrice"; op: "set" | "add" | "sub" | "mul" } | null>(null);
+  const [bulkValue, setBulkValue] = useState<number | null>(null);
 
   const listing = query.data;
   // (re)initialize the editor when the server copy changes and we have no local edits
@@ -115,6 +119,22 @@ export function ListingEditPage() {
   }
 
   const set = (patch: Partial<Editable>) => setDraft((d) => ({ ...d!, ...patch }));
+  const applyBulk = () => {
+    if (!bulk || bulkValue == null || !draft) return;
+    const calc = (cur: number | undefined) => {
+      const c = cur ?? 0;
+      const v =
+        bulk.op === "set" ? bulkValue : bulk.op === "add" ? c + bulkValue : bulk.op === "sub" ? c - bulkValue : c * bulkValue;
+      return Math.max(0, Math.round(v * 100) / 100);
+    };
+    setDraft({
+      ...draft,
+      variants: draft.variants.map((v, i) => (vsel.includes(i) ? { ...v, [bulk.field]: calc(v[bulk.field]) } : v)),
+    });
+    setBulk(null);
+    setBulkValue(null);
+  };
+
   const setVariant = (i: number, patch: Partial<ListingVariant>) =>
     set({ variants: draft.variants.map((v, j) => (j === i ? { ...v, ...patch } : v)) });
   const store = stores.data?.find((s) => s.id === listing.storeId);
@@ -262,21 +282,30 @@ export function ListingEditPage() {
       <Card
         title={`变体（${draft.variants.length}）`}
         extra={
-          draft.options.length ? (
-            <Space>
-              {draft.options.map((o) => (
-                <Tag key={o.name}>
-                  {o.name}：{o.values.length} 个值
-                </Tag>
-              ))}
-            </Space>
-          ) : null
+          <Space>
+            {draft.options.map((o) => (
+              <Tag key={o.name}>
+                {o.name}：{o.values.length} 个值
+              </Tag>
+            ))}
+            <Button
+              size="small"
+              disabled={locked || !vsel.length}
+              onClick={() => setBulk({ field: "price", op: "set" })}
+            >
+              批量修改{vsel.length ? `（${vsel.length}）` : ""}
+            </Button>
+          </Space>
         }
       >
         <Table<ListingVariant>
           size="small"
           rowKey={(_, i) => String(i)}
           dataSource={draft.variants}
+          rowSelection={{
+            selectedRowKeys: vsel.map(String),
+            onChange: (k) => setVsel(k.map(Number)),
+          }}
           pagination={draft.variants.length > 50 ? { pageSize: 50 } : false}
           columns={[
             {
@@ -365,6 +394,55 @@ export function ListingEditPage() {
           <Typography.Text type="secondary">来源：采集箱</Typography.Text>
         </Link>
       </div>
+
+      <Modal
+        title={`批量修改 ${vsel.length} 个变体`}
+        open={!!bulk}
+        onCancel={() => setBulk(null)}
+        onOk={applyBulk}
+        okText="应用"
+        okButtonProps={{ disabled: bulkValue == null }}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>字段</Typography.Text>
+            <Select
+              style={{ width: "100%" }}
+              value={bulk?.field}
+              onChange={(f) => bulk && setBulk({ ...bulk, field: f })}
+              options={[
+                { value: "price", label: "售价" },
+                { value: "compareAtPrice", label: "划线价" },
+              ]}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>方式</Typography.Text>
+            <Select
+              style={{ width: "100%" }}
+              value={bulk?.op}
+              onChange={(op) => bulk && setBulk({ ...bulk, op })}
+              options={[
+                { value: "set", label: "统一设为" },
+                { value: "add", label: "统一加上" },
+                { value: "sub", label: "统一减去" },
+                { value: "mul", label: "统一乘以" },
+              ]}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>数值</Typography.Text>
+            <InputNumber
+              style={{ width: "100%" }}
+              min={bulk?.op === "mul" ? 0.01 : undefined}
+              step={bulk?.op === "mul" ? 0.05 : 0.1}
+              value={bulkValue}
+              onChange={(v) => setBulkValue(v)}
+              placeholder={bulk?.op === "mul" ? "例如 1.1 表示整体上调 10%" : "例如 9.99"}
+            />
+          </div>
+        </Space>
+      </Modal>
     </Space>
   );
 }
