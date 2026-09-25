@@ -653,6 +653,18 @@ export const shopifyAdapter: ChannelAdapter = {
     return data.locations.nodes;
   },
 
+  async delistProduct(deps, store, remoteId) {
+    const data = await shopifyGraphql<{
+      productUpdate: {
+        product: { id: string; status: RemoteStatus } | null;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(deps, store, DELIST_PRODUCT, { id: remoteId });
+    if (data.productUpdate.userErrors.length) {
+      throw new ChannelError(data.productUpdate.userErrors[0].message);
+    }
+  },
+
   async fetchStatuses(deps, store, remoteIds) {
     const out = new Map<string, RemoteStatus>();
     for (let i = 0; i < remoteIds.length; i += 100) {
@@ -665,6 +677,15 @@ export const shopifyAdapter: ChannelAdapter = {
     return out;
   },
 };
+
+const DELIST_PRODUCT = /* GraphQL */ `
+  mutation DelistProduct($id: ID!) {
+    productUpdate(input: { id: $id, status: DRAFT }) {
+      product { id status }
+      userErrors { field message }
+    }
+  }
+`;
 
 const PUBLICATIONS = /* GraphQL */ `
   query Publications {

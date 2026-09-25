@@ -20,6 +20,7 @@ import { upsertTermPairs } from "../lib/terms.js";
 import {
   AI_ENHANCE_LISTING,
   CATEGORY_SUGGEST,
+  DELIST_LISTING,
   enqueueAiEnhance,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
@@ -284,6 +285,32 @@ export function listingRoutes() {
       return { queued: okIds.length, blocked };
     });
     return c.json({ queued, skipped: ids.length - queued - blocked.length, blocked });
+  });
+
+  /** Queue delist: 已发布 + 有 remoteId 的刊登下架（远端 status→DRAFT，刊登记录保留）。 */
+  r.post("/delist", zValidator("json", idsSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const { ids } = c.req.valid("json");
+    const rows = await db
+      .select({ id: listings.id })
+      .from(listings)
+      .where(
+        and(
+          eq(listings.workspaceId, workspaceId),
+          inArray(listings.id, ids),
+          eq(listings.status, "published"),
+        ),
+      );
+    const okIds = rows.map((r) => r.id);
+    if (okIds.length) {
+      await db.transaction(async (tx) => {
+        for (const id of okIds) {
+          await enqueue(tx, DELIST_LISTING, { listingId: id }, { workspaceId });
+        }
+      });
+    }
+    return c.json({ queued: okIds.length, skipped: ids.length - okIds.length });
   });
 
   /** AI 建议列表 + 是否还有 AI 任务在跑（用于轮询提示）。 */

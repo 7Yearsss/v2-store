@@ -30,6 +30,8 @@ export function fakeShopify(
     locations?: Array<{ id: string; name?: string; isActive: boolean }>;
     /** records inventorySetQuantities input.quantities for assertions */
     capturedStock?: Array<Array<Record<string, unknown>>>;
+    /** records product ids passed to DelistProduct */
+    capturedDelist?: string[];
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -149,6 +151,17 @@ export function fakeShopify(
       }
       if (query.includes("publishablePublish")) {
         return json({ data: { publishablePublish: { userErrors: [] } } });
+      }
+      if (query.includes("DelistProduct")) {
+        opts.capturedDelist?.push(variables.id);
+        if (opts.remoteStatuses && variables.id in opts.remoteStatuses && !opts.remoteStatuses[variables.id]) {
+          return json({
+            data: { productUpdate: { product: null, userErrors: [{ message: "Product not found" }] } },
+          });
+        }
+        return json({
+          data: { productUpdate: { product: { id: variables.id, status: "DRAFT" }, userErrors: [] } },
+        });
       }
       if (query.includes("ProductStatuses")) {
         return json({
