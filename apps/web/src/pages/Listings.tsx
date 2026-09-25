@@ -1,6 +1,6 @@
 import type { Listing, ListingStatus, RemoteStatus } from "@caiji/shared";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Card, Empty, Image, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Card, Empty, Image, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import dayjs from "dayjs";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
@@ -31,6 +31,8 @@ export function ListingsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [selected, setSelected] = useState<string[]>([]);
+  const [copyOf, setCopyOf] = useState<string | null>(null);
+  const [copyStore, setCopyStore] = useState<string>();
 
   // poll both queries while anything is being published
   const counts = useQuery({
@@ -87,6 +89,16 @@ export function ListingsPage() {
       setSelected([]);
       invalidate();
     },
+  });
+  const copyTo = useMutation({
+    mutationFn: () => api.copyListing(copyOf!, copyStore!),
+    onSuccess: (l) => {
+      message.success(`已复制到「${storeName(l.storeId)}」`);
+      setCopyOf(null);
+      setCopyStore(undefined);
+      invalidate();
+    },
+    onError: (e) => message.error(e.message),
   });
   const delist = useMutation({
     mutationFn: (ids: string[]) => api.delist(ids),
@@ -274,6 +286,7 @@ export function ListingsPage() {
                 {r.status === "published" && r.remoteStatus !== "DRAFT" && (
                   <Typography.Link onClick={() => delist.mutate([r.id])}>下架</Typography.Link>
                 )}
+                <Typography.Link onClick={() => { setCopyOf(r.id); setCopyStore(undefined); }}>复制到</Typography.Link>
                 {r.remoteUrl && (
                   <a href={r.remoteUrl} target="_blank" rel="noreferrer">
                     店铺后台
@@ -284,6 +297,27 @@ export function ListingsPage() {
           },
         ]}
       />
+      <Modal
+        title="复制刊登到另一个店铺"
+        open={!!copyOf}
+        onCancel={() => setCopyOf(null)}
+        onOk={() => copyTo.mutate()}
+        okText="复制"
+        okButtonProps={{ disabled: !copyStore, loading: copyTo.isPending }}
+      >
+        <Typography.Paragraph type="secondary">
+          标题/描述/图片/变体等编辑结果原样带走；远端商品状态不复制，复制出来的是全新草稿。变体价格沿用原值，目标店铺币种不同时请核对定价。
+        </Typography.Paragraph>
+        <Select
+          placeholder="选择目标店铺"
+          style={{ width: "100%" }}
+          value={copyStore}
+          onChange={setCopyStore}
+          options={(stores.data ?? [])
+            .filter((s) => s.status === "active" && s.id !== undefined)
+            .map((s) => ({ value: s.id, label: `${s.name}（${s.shopDomain}）` }))}
+        />
+      </Modal>
     </Card>
   );
 }
