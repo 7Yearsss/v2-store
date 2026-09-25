@@ -141,6 +141,8 @@ export interface StoreRules {
   /** 同步货源库存：on = 发布追踪库存并把 1688 SKU 库存写入 Shopify；
    *  off（默认）= 不追踪库存（无限可售）。 */
   trackStock?: boolean;
+  /** 库存写入的 Shopify 地点 gid（locations 里选）；不填用主地点 */
+  inventoryLocationId?: string;
   /** 认领时默认标签。 */
   defaultTags?: string[];
   /** 认领时默认商品类型（AI 建议仍可覆盖）。 */

@@ -127,6 +127,7 @@ export const rulesSchema = z.object({
   bannedWords: z.array(z.string().trim().min(1).max(100)).max(500).optional(),
   publishStatus: z.enum(["active", "draft"]).optional(),
   trackStock: z.boolean().optional(),
+  inventoryLocationId: z.string().max(100).optional(),
   defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   defaultProductType: z.string().trim().max(255).optional(),
   defaultWeightKg: z.number().min(0).max(100_000).optional(),
@@ -268,6 +269,23 @@ export function storeRoutes() {
     const adapter = adapterFor(store.platform);
     const items = adapter.searchCategories
       ? await adapter.searchCategories(deps, store, q)
+      : [];
+    return c.json({ items });
+  });
+
+  /** 店铺库存地点列表（库存写入地点选择的下拉数据源）。 */
+  r.get("/:id/locations", async (c) => {
+    const deps = c.var.deps;
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!store) throw notFound("店铺");
+    const adapter = adapterFor(store.platform);
+    const items = adapter.listLocations
+      ? await adapter.listLocations(deps, store)
       : [];
     return c.json({ items });
   });

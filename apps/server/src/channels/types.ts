@@ -76,4 +76,13 @@ export interface ChannelAdapter {
     store: StoreRow,
     categoryId: string,
   ): Promise<ChannelAttribute[]>;
+  /**
+   * Inventory locations the channel store fulfills from (Shopify locations,
+   * Ozon warehouses). Feeds the 库存地点 picker; absent = location choice
+   * unsupported — publish writes to the channel default.
+   */
+  listLocations?(
+    deps: Deps,
+    store: StoreRow,
+  ): Promise<Array<{ id: string; name: string; isActive: boolean }>>;
 }

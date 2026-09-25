@@ -205,6 +205,29 @@ export function collectRoutes() {
     );
   });
 
+  /** 回扫队列：有刊登的来源条目 offerId。插件定时逐个重新采集，
+   *  ingestOffer/propagateToListings 自己完成库存/成本同步和自动重发。 */
+  r.post("/rescan-queue", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const rows = await db
+      .selectDistinct({ offerId: sourceItems.sourceItemId })
+      .from(sourceItems)
+      .innerJoin(listings, eq(listings.sourceItemId, sourceItems.id))
+      .where(
+        and(
+          eq(sourceItems.workspaceId, workspaceId),
+          eq(sourceItems.sourcePlatform, "1688"),
+        ),
+      )
+      .limit(500);
+    const items = rows
+      .map((r) => r.offerId)
+      .filter((v): v is string => !!v)
+      .map((offerId) => ({ offerId }));
+    return c.json({ ok: true, items });
+  });
+
   /** Dedup marking — pages batch-check which items are already collected. */
   r.post("/check", zValidator("json", checkSchema), async (c) => {
     const { db } = c.var.deps;

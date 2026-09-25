@@ -135,6 +135,7 @@ type SettingsForm = PricingRule & {
   bannedWords?: string[];
   publishStatus?: "active" | "draft";
   trackStock?: boolean;
+  inventoryLocationId?: string;
   defaultTags?: string[];
   defaultProductType?: string;
   defaultWeightKg?: number;
@@ -165,6 +166,7 @@ function formToPayload(v: SettingsForm): StoreSettingsPayload {
       bannedWords: v.bannedWords ?? [],
       publishStatus: v.publishStatus ?? "active",
       trackStock: v.trackStock ?? false,
+      inventoryLocationId: v.inventoryLocationId || undefined,
       defaultTags: v.defaultTags ?? [],
       defaultProductType: v.defaultProductType?.trim() || undefined,
       defaultWeightKg: v.defaultWeightKg ?? undefined,
@@ -195,6 +197,7 @@ function payloadToForm(p: StoreSettingsPayload): SettingsForm {
     bannedWords: p.rules.bannedWords ?? [],
     publishStatus: p.rules.publishStatus ?? "active",
     trackStock: p.rules.trackStock ?? false,
+    inventoryLocationId: p.rules.inventoryLocationId,
     defaultTags: p.rules.defaultTags ?? [],
     defaultProductType: p.rules.defaultProductType,
     defaultWeightKg: p.rules.defaultWeightKg,
@@ -231,6 +234,13 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
   // 切换店铺/关闭重开时清空选中，避免显示的模板与表单内容不符
   useEffect(() => setTplId(undefined), [store]);
   const tplQ = useQuery({ queryKey: ["templates"], queryFn: api.templates });
+  // 库存地点只在打开库存开关时才用到，懒拉取
+  const locQ = useQuery({
+    queryKey: ["store-locations", store?.id],
+    queryFn: () => api.storeLocations(store!.id),
+    enabled: !!store,
+    retry: 0,
+  });
   const saveTpl = useMutation({
     mutationFn: api.saveTemplate,
     onSuccess: (res) => {
@@ -381,6 +391,24 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
           >
             <Switch />
           </Form.Item>
+          {watched?.trackStock && (
+            <Form.Item
+              name="inventoryLocationId"
+              label="库存地点"
+              extra="库存写到这个地点；不选用第一个可用地点"
+            >
+              <Select
+                style={{ width: 220 }}
+                allowClear
+                placeholder="默认（第一个可用地点）"
+                loading={locQ.isLoading}
+                options={(locQ.data?.items ?? []).map((l) => ({
+                  value: l.id,
+                  label: `${l.name}${l.isActive ? "" : "（已停用）"}`,
+                }))}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="defaultWeightKg"
             label="默认重量（kg）"

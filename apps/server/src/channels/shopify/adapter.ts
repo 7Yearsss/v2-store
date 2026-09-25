@@ -208,6 +208,12 @@ const STOCK_DATA = /* GraphQL */ `
   }
 `;
 
+const LOCATIONS = /* GraphQL */ `
+  query Locations {
+    locations(first: 50) { nodes { id name isActive } }
+  }
+`;
+
 const SET_STOCK = /* GraphQL */ `
   mutation SetStock($input: InventorySetQuantitiesInput!, $key: String!) {
     inventorySetQuantities(input: $input) @idempotent(key: $key) {
@@ -240,10 +246,16 @@ async function setVariantStock(
           }>;
         };
       } | null;
-      locations: { nodes: Array<{ id: string; isActive: boolean }> };
+      locations: { nodes: Array<{ id: string; name?: string; isActive: boolean }> };
     }>(deps, store, STOCK_DATA, { id: productId });
-    const location = data.locations.nodes.find((l) => l.isActive) ?? data.locations.nodes[0];
+    const wanted = store.rules?.inventoryLocationId;
+    const configured = wanted ? data.locations.nodes.find((l) => l.id === wanted) : undefined;
+    const location = configured ?? data.locations.nodes.find((l) => l.isActive) ?? data.locations.nodes[0];
     if (!location) return "未能写入库存：店铺没有可用仓库地点";
+    const locationWarning =
+      wanted && !configured
+        ? "配置的库存地点已失效，库存写到了第一个可用地点"
+        : null;
     // changeFromQuantity 是必填的库存基线：取该地点当前 available，首次发布为 0
     const quantities = sent
       .map((v, i) => {
@@ -272,7 +284,8 @@ async function setVariantStock(
       key: `stock-${productId}-${Date.now()}`,
     });
     const errs = res.inventorySetQuantities.userErrors;
-    return errs.length ? `库存写入失败：${errs.map((e) => e.message).join("；")}` : null;
+    const err = errs.length ? `库存写入失败：${errs.map((e) => e.message).join("；")}` : null;
+    return [locationWarning, err].filter(Boolean).join("；") || null;
   } catch (e) {
     return `库存写入失败：${e instanceof Error ? e.message : String(e)}`;
   }
@@ -631,6 +644,13 @@ export const shopifyAdapter: ChannelAdapter = {
       after = pageInfo.hasNextPage ? pageInfo.endCursor : null;
     } while (after);
     return { count };
+  },
+
+  async listLocations(deps, store) {
+    const data = await shopifyGraphql<{
+      locations: { nodes: Array<{ id: string; name: string; isActive: boolean }> };
+    }>(deps, store, LOCATIONS, {});
+    return data.locations.nodes;
   },
 
   async fetchStatuses(deps, store, remoteIds) {

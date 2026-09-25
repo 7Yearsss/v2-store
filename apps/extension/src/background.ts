@@ -187,9 +187,62 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
   return false;
 });
 
+// --- 定时回扫 -----------------------------------------------------------
+// chrome.alarms 每 RESCAN_MIN 唤一次后台：取服务端「有刊登的货源」队列，
+// 逐个 collectByOfferId（带 1688 会话 fetch，串行 + 间隔避免触发风控）。
+// 服务端的 propagateToListings 负责把最新库存/成本同步到刊登并自动重发。
+
+const RESCAN_ALARM = "v2-rescan";
+const RESCAN_MIN = 240; // 4h；MV3 alarm 实际触发可能延迟
+const RESCAN_GAP_MS = 4000; // 两次拉取间隔
+const RESCAN_MAX_PER_RUN = 60; // 每轮最多扫多少条（防风控）
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function rescanTick() {
+  const auth = await getAuth();
+  if (!auth) return;
+  try {
+    const { items } = await api<{ items: Array<{ offerId: string }> }>(
+      "/collect/rescan-queue",
+      {},
+    );
+    let ok = 0;
+    const failed: string[] = [];
+    for (const { offerId } of items.slice(0, RESCAN_MAX_PER_RUN)) {
+      try {
+        await collectByOfferId(offerId);
+        ok++;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failed.push(`${offerId}:${msg.slice(0, 60)}`);
+        // 触发滑块验证时停扫——继续只会积累更多风控
+        if (/验证|滑块|punish/.test(msg)) break;
+      }
+      await sleep(RESCAN_GAP_MS);
+    }
+    await chrome.storage.local.set({
+      rescan: { at: new Date().toISOString(), queued: items.length, ok, failed },
+    });
+  } catch (e) {
+    await chrome.storage.local.set({
+      rescan: { at: new Date().toISOString(), queued: 0, ok: 0, failed: [String(e)] },
+    });
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RESCAN_ALARM) void rescanTick();
+});
+
+// alarms 随浏览器重启保留，但 onStartup 兜底建一次（老版本升级/异常丢失）。
+chrome.runtime.onStartup.addListener(() => {
+  void chrome.alarms.create(RESCAN_ALARM, { periodInMinutes: RESCAN_MIN });
+});
+
 // --- context menu -----------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(() => {
+  void chrome.alarms.create(RESCAN_ALARM, { periodInMinutes: RESCAN_MIN });
   chrome.contextMenus.create({
     id: "v2-collect-offer",
     title: "采集此 1688 商品",

@@ -93,6 +93,11 @@ export const api = {
   syncStore: (id: string) => request<{ queued: boolean }>("POST", `/stores/${id}/sync`, {}),
   syncStoreCategories: (id: string) =>
     request<{ queued: boolean }>("POST", `/stores/${id}/sync-categories`, {}),
+  storeLocations: (id: string) =>
+    request<{ items: Array<{ id: string; name: string; isActive: boolean }> }>(
+      "GET",
+      `/stores/${id}/locations`,
+    ),
   storeCategories: (storeId: string, q: string) =>
     request<{ items: CategoryCandidate[] }>("GET", `/stores/${storeId}/categories${qs({ q })}`),
 
