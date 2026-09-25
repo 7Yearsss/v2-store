@@ -68,10 +68,11 @@ export const api = {
   ) => request<Store>("POST", "/stores/shopify", body),
   shopifyInstallUrl: (shop: string) =>
     request<{ url: string }>("GET", `/shopify/install${qs({ shop })}`),
-  updateStore: (id: string, body: { name?: string; pricing?: PricingRule }) =>
+  updateStore: (id: string, body: { name?: string; pricing?: PricingRule; vendor?: string }) =>
     request<Store>("PATCH", `/stores/${id}`, body),
   verifyStore: (id: string) => request<Store>("POST", `/stores/${id}/verify`, {}),
   deleteStore: (id: string) => request("DELETE", `/stores/${id}`),
+  syncStore: (id: string) => request<{ queued: boolean }>("POST", `/stores/${id}/sync`, {}),
 
   listings: (p: { status?: ListingStatus; storeId?: string; q?: string; page?: number; pageSize?: number }) =>
     request<Page<Listing>>("GET", `/listings${qs(p)}`),

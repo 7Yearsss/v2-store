@@ -15,6 +15,13 @@
       "when": 1790306841197,
       "tag": "0001_media",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790307966182,
+      "tag": "0002_sync_and_vendor",
+      "breakpoints": true
     }
   ]
 }

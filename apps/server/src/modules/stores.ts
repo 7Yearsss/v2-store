@@ -14,6 +14,7 @@ import type { AppEnv, Deps } from "../context.js";
 import { stores } from "../db/schema.js";
 import { DEFAULT_PRICING } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { enqueueStoreSync } from "../jobs/handlers.js";
 import { requireAuth } from "./auth.js";
 
 export function toStoreDto(r: StoreRow): Store {
@@ -25,7 +26,8 @@ export function toStoreDto(r: StoreRow): Store {
     authType: r.authType,
     status: r.status,
     currency: r.currency,
-    pricing: r.pricing,
+    pricing: { ...DEFAULT_PRICING, ...r.pricing },
+    vendor: r.vendor,
     lastError: r.lastError,
     createdAt: r.createdAt.toISOString(),
   };
@@ -100,11 +102,14 @@ const pricingSchema = z.object({
   exchangeRate: z.number().positive().max(1000),
   markup: z.number().positive().max(100),
   priceEnding: z.number().min(0).max(0.99).nullable(),
+  extraCostCny: z.number().min(0).max(100_000).default(0),
+  minPrice: z.number().min(0).max(1_000_000).nullable().default(null),
 }) satisfies z.ZodType<PricingRule>;
 
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   pricing: pricingSchema.optional(),
+  vendor: z.string().trim().max(255).optional(),
 });
 
 export function storeRoutes() {
@@ -189,6 +194,19 @@ export function storeRoutes() {
       .where(eq(stores.id, store.id))
       .returning();
     return c.json(toStoreDto(row!));
+  });
+
+  /** Pull channel-side product status back now (also runs on a schedule). */
+  r.post("/:id/sync", async (c) => {
+    const [store] = await c.var.deps.db
+      .select({ id: stores.id })
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!store) throw notFound("店铺");
+    await enqueueStoreSync(c.var.deps.db, store.id, c.var.auth.workspaceId);
+    return c.json({ queued: true });
   });
 
   r.delete("/:id", async (c) => {

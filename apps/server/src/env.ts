@@ -22,9 +22,13 @@ const schema = z.object({
   /** Shopify public-app credentials (OAuth install flow). */
   SHOPIFY_API_KEY: z.string().optional(),
   SHOPIFY_API_SECRET: z.string().optional(),
-  SHOPIFY_SCOPES: z.string().default("write_products,read_products,read_inventory,write_inventory,read_locations"),
+  SHOPIFY_SCOPES: z
+    .string()
+    .default("write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications"),
   SHOPIFY_API_VERSION: z.string().default("2026-07"),
   /** Run the job worker inside the API process. */
+  /** How often channel-side product status is pulled back. */
+  SYNC_INTERVAL_MINUTES: z.coerce.number().min(1).default(10),
   RUN_WORKER: z
     .enum(["true", "false"])
     .default("true")

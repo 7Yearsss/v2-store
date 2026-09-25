@@ -22,7 +22,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api } from "../api";
-import { STATUS } from "./Listings";
+import { REMOTE, STATUS } from "./Listings";
 
 type Editable = Pick<
   Listing,
@@ -98,6 +98,9 @@ export function ListingEditPage() {
       <Space>
         <Button onClick={() => navigate("/listings")}>← 返回</Button>
         <Tag color={STATUS[listing.status].color}>{STATUS[listing.status].label}</Tag>
+        {listing.remoteStatus && (
+          <Tag color={REMOTE[listing.remoteStatus].color}>店铺：{REMOTE[listing.remoteStatus].label}</Tag>
+        )}
         <Typography.Text type="secondary">
           {store ? `${store.name}（${store.currency ?? ""}）` : ""}
         </Typography.Text>
@@ -109,6 +112,12 @@ export function ListingEditPage() {
       </Space>
       {listing.status === "failed" && listing.lastError && (
         <Alert type="error" showIcon message="发布失败" description={listing.lastError} />
+      )}
+      {listing.status === "published" && listing.lastError && (
+        <Alert type="warning" showIcon message="已发布，但有需要处理的问题" description={listing.lastError} />
+      )}
+      {listing.remoteStatus === "DELETED" && (
+        <Alert type="warning" showIcon message="该商品已在店铺中被删除，再次发布会新建一个商品" />
       )}
 
       <Card title="基本信息">

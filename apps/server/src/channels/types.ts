@@ -1,3 +1,4 @@
+import type { RemoteStatus } from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
 
@@ -24,6 +25,8 @@ export interface ShopInfo {
 export interface PublishResult {
   remoteId: string;
   remoteUrl: string | null;
+  /** set on first publish; undefined = leave the synced value alone */
+  remoteStatus?: RemoteStatus;
   /** published, but something needs attention (e.g. images failed) */
   warnings?: string[];
 }
@@ -36,4 +39,6 @@ export interface ChannelAdapter {
   verify(deps: Deps, store: StoreRow): Promise<ShopInfo>;
   /** Create or fully sync the remote product (idempotent on listing.remoteId). */
   publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult>;
+  /** Channel-side status per remote id; missing products map to DELETED. */
+  fetchStatuses(deps: Deps, store: StoreRow, remoteIds: string[]): Promise<Map<string, RemoteStatus>>;
 }

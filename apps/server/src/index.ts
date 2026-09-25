@@ -4,6 +4,9 @@ import { openDb } from "./db/client.js";
 import { env } from "./env.js";
 import { jobHandlers } from "./jobs/handlers.js";
 import { startWorker } from "./jobs/queue.js";
+import { enqueueStoreSync } from "./jobs/handlers.js";
+import { stores } from "./db/schema.js";
+import { eq } from "drizzle-orm";
 import { type BlobStore, LocalDiskStore, R2Store } from "./lib/blobStore.js";
 import { SecretBox } from "./lib/crypto.js";
 import type { Deps } from "./context.js";
@@ -41,6 +44,18 @@ const deps: Deps = {
 const app = createApp(deps, { log: env.NODE_ENV !== "test" });
 const stopWorker = env.RUN_WORKER ? startWorker(deps, jobHandlers) : () => {};
 
+/** Pull channel-side product status for every active store periodically. */
+async function scheduleStoreSyncs() {
+  const rows = await deps.db
+    .select({ id: stores.id, workspaceId: stores.workspaceId })
+    .from(stores)
+    .where(eq(stores.status, "active"));
+  for (const s of rows) await enqueueStoreSync(deps.db, s.id, s.workspaceId);
+}
+const syncTimer = env.RUN_WORKER
+  ? setInterval(() => scheduleStoreSyncs().catch((e) => console.error("[sync]", e)), env.SYNC_INTERVAL_MINUTES * 60_000)
+  : undefined;
+
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   console.log(
     `caiji api on http://localhost:${info.port} (db: ${env.DATABASE_URL ? "postgres" : `pglite ${env.PGLITE_DIR}`}, media: ${blobs instanceof R2Store ? `r2 ${env.R2_BUCKET}` : `disk ${env.MEDIA_DIR}`})`,
@@ -49,6 +64,7 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 
 async function shutdown() {
   stopWorker();
+  clearInterval(syncTimer);
   server.close();
   await handle.close();
   process.exit(0);

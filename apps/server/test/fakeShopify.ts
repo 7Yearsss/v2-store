@@ -7,6 +7,10 @@ export function fakeShopify(
     mediaStatus?: "READY" | "FAILED";
     /** bytes served for source image URLs (server-side fetch fallback) */
     sourceImages?: Record<string, Uint8Array>;
+    /** remote id → status for the sync query; null = product deleted */
+    remoteStatuses?: Record<string, string | null>;
+    /** simulate an app installed without publication scopes */
+    noPublicationScope?: boolean;
   } = {},
 ): FakeFetch {
   return (url, init) => {
@@ -49,6 +53,35 @@ export function fakeShopify(
                 ],
               },
             },
+          },
+        });
+      }
+      if (query.includes("query Publications")) {
+        if (opts.noPublicationScope) {
+          return json({ errors: [{ message: "Access denied for publications field." }] });
+        }
+        return json({
+          data: {
+            publications: {
+              nodes: [
+                { id: "gid://shopify/Publication/pos", supportsFuturePublishing: false },
+                { id: "gid://shopify/Publication/online", supportsFuturePublishing: true },
+              ],
+            },
+          },
+        });
+      }
+      if (query.includes("publishablePublish")) {
+        return json({ data: { publishablePublish: { userErrors: [] } } });
+      }
+      if (query.includes("ProductStatuses")) {
+        return json({
+          data: {
+            nodes: variables.ids.map((id: string) =>
+              opts.remoteStatuses && id in opts.remoteStatuses
+                ? opts.remoteStatuses[id] && { id, status: opts.remoteStatuses[id] }
+                : { id, status: "ACTIVE" },
+            ),
           },
         });
       }

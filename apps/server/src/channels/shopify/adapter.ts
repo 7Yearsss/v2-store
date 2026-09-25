@@ -1,3 +1,4 @@
+import type { RemoteStatus } from "@caiji/shared";
 import type { Deps } from "../../context.js";
 import {
   ChannelError,
@@ -33,6 +34,9 @@ export function toProductSetInput(
   costRate?: number,
   /** originalSource per image (staged-upload URLs); defaults to listing.images */
   fileSources: string[] = listing.images,
+  /** status is set only when creating — later syncs must not override what
+   *  the merchant chose in Shopify (e.g. switched back to draft) */
+  isCreate = !listing.remoteId,
 ) {
   const hasOptions = listing.options.length > 0;
   const productOptions = hasOptions
@@ -67,7 +71,7 @@ export function toProductSetInput(
     vendor: listing.vendor || undefined,
     productType: listing.productType || undefined,
     tags: listing.tags,
-    status: "ACTIVE",
+    status: isCreate ? "ACTIVE" : undefined,
     productOptions,
     variants,
     files: fileSources.map((src) => ({
@@ -123,11 +127,78 @@ export const shopifyAdapter: ChannelAdapter = {
     if (!product) throw new ChannelError("Shopify 未返回商品", false);
     const numericId = product.id.split("/").pop();
     const warnings = await checkShopifyMedia(deps, store, product.id);
+    if (!listing.remoteId) {
+      const channelWarning = await publishToOnlineStore(deps, store, product.id);
+      if (channelWarning) warnings.push(channelWarning);
+    }
     if (media.fallbacks) warnings.unshift(`${media.fallbacks} 张图片未能转存，使用了货源原图链接`);
     return {
       remoteId: product.id,
       remoteUrl: `https://${store.shopDomain}/admin/products/${numericId}`,
+      remoteStatus: listing.remoteId ? undefined : "ACTIVE",
       warnings,
     };
   },
+
+  async fetchStatuses(deps, store, remoteIds) {
+    const out = new Map<string, RemoteStatus>();
+    for (let i = 0; i < remoteIds.length; i += 100) {
+      const ids = remoteIds.slice(i, i + 100);
+      const data = await shopifyGraphql<{
+        nodes: Array<{ id: string; status: RemoteStatus } | null>;
+      }>(deps, store, PRODUCT_STATUSES, { ids });
+      data.nodes.forEach((n, k) => out.set(ids[k]!, n?.status ?? "DELETED"));
+    }
+    return out;
+  },
 };
+
+const PUBLICATIONS = /* GraphQL */ `
+  query Publications {
+    publications(first: 50) { nodes { id supportsFuturePublishing } }
+  }
+`;
+
+const PUBLISHABLE_PUBLISH = /* GraphQL */ `
+  mutation PublishablePublish($id: ID!, $input: [PublicationInput!]!) {
+    publishablePublish(id: $id, input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
+const PRODUCT_STATUSES = /* GraphQL */ `
+  query ProductStatuses($ids: [ID!]!) {
+    nodes(ids: $ids) { ... on Product { id status } }
+  }
+`;
+
+/**
+ * API-created products aren't on any sales channel; put new ones on the
+ * Online Store (the only publication that supports future publishing).
+ * Returns a warning instead of failing — the product itself was created.
+ */
+async function publishToOnlineStore(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+): Promise<string | null> {
+  try {
+    const { publications } = await shopifyGraphql<{
+      publications: { nodes: Array<{ id: string; supportsFuturePublishing: boolean }> };
+    }>(deps, store, PUBLICATIONS);
+    const online = publications.nodes.find((p) => p.supportsFuturePublishing);
+    if (!online) return "店铺没有在线商店渠道，商品未挂到前台";
+    const { publishablePublish } = await shopifyGraphql<{
+      publishablePublish: { userErrors: Array<{ message: string }> };
+    }>(deps, store, PUBLISHABLE_PUBLISH, { id: productId, input: [{ publicationId: online.id }] });
+    return publishablePublish.userErrors.length
+      ? `未能挂到在线商店：${publishablePublish.userErrors[0]!.message}`
+      : null;
+  } catch (e) {
+    if (!(e instanceof ChannelError)) throw e;
+    return /access|denied|权限|scope/i.test(e.message)
+      ? "未能挂到在线商店：应用缺少 read_publications / write_publications 权限，请在店铺后台更新应用授权"
+      : `未能挂到在线商店：${e.message}`;
+  }
+}

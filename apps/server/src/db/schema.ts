@@ -3,6 +3,7 @@ import type {
   ListingVariant,
   OfferSku,
   PricingRule,
+  RemoteStatus,
 } from "@caiji/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -174,6 +175,7 @@ export const stores = pgTable(
       .default("active"),
     currency: text("currency"),
     pricing: jsonb("pricing").$type<PricingRule>().notNull(),
+    vendor: text("vendor").notNull().default(""),
     lastError: text("last_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -216,6 +218,9 @@ export const listings = pgTable(
     vendor: text("vendor").notNull().default(""),
     remoteId: text("remote_id"),
     remoteUrl: text("remote_url"),
+    /** channel-side status (ACTIVE/DRAFT/ARCHIVED/DELETED…), synced back */
+    remoteStatus: text("remote_status").$type<RemoteStatus>(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt: createdAt(),

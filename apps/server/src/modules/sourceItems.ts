@@ -155,7 +155,8 @@ export function sourceItemRoutes() {
           images: item.images.slice(0, 20),
           options,
           variants,
-          vendor: item.sellerName ?? "",
+          // never expose the supplier as the brand
+          vendor: store.vendor,
         };
       }),
     );

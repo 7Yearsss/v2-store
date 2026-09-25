@@ -110,73 +110,109 @@ function ConnectShopifyModal({ open, onClose }: { open: boolean; onClose: () => 
   );
 }
 
-function PricingModal({ store, onClose }: { store?: Store; onClose: () => void }) {
+/** Mirrors applyPricing on the server so the preview matches real prices. */
+function previewPrice(costCny: number, p: Partial<PricingRule> & { endingOn?: boolean }) {
+  if (!p.exchangeRate || !p.markup) return null;
+  const converted = (costCny + (p.extraCostCny ?? 0)) * p.exchangeRate * p.markup;
+  const raw = Math.max(converted, p.minPrice ?? 0);
+  if (!p.endingOn) return raw.toFixed(2);
+  const v = Math.floor(raw) + (p.priceEnding ?? 0.99);
+  return (v < raw ? v + 1 : v).toFixed(2);
+}
+
+type SettingsForm = PricingRule & { endingOn: boolean; vendor: string };
+
+function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () => void }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [form] = Form.useForm<PricingRule & { endingOn: boolean }>();
+  const [form] = Form.useForm<SettingsForm>();
   useEffect(() => {
     if (store) {
-      form.setFieldsValue({ ...store.pricing, endingOn: store.pricing.priceEnding != null });
+      form.setFieldsValue({
+        ...store.pricing,
+        endingOn: store.pricing.priceEnding != null,
+        vendor: store.vendor,
+      });
     }
   }, [store, form]);
   const save = useMutation({
-    mutationFn: (pricing: PricingRule) => api.updateStore(store!.id, { pricing }),
+    mutationFn: (body: { pricing: PricingRule; vendor: string }) => api.updateStore(store!.id, body),
     onSuccess: () => {
-      message.success("定价规则已保存，新认领的商品生效");
+      message.success("已保存，对之后认领的商品生效");
       qc.invalidateQueries({ queryKey: ["stores"] });
       onClose();
     },
     onError: (e) => message.error(e.message),
   });
   const watched = Form.useWatch([], form);
-  const preview =
-    watched?.exchangeRate && watched?.markup
-      ? (() => {
-          const raw = 10 * watched.exchangeRate * watched.markup;
-          if (!watched.endingOn) return raw.toFixed(2);
-          const p = Math.floor(raw) + (watched.priceEnding ?? 0.99);
-          return (p < raw ? p + 1 : p).toFixed(2);
-        })()
-      : "—";
+  const cur = store?.currency ?? "";
   return (
     <Modal
-      title={`定价规则 · ${store?.name ?? ""}`}
+      title={`刊登设置 · ${store?.name ?? ""}`}
       open={!!store}
       onCancel={onClose}
       confirmLoading={save.isPending}
       onOk={async () => {
         const v = await form.validateFields();
         save.mutate({
-          exchangeRate: v.exchangeRate,
-          markup: v.markup,
-          priceEnding: v.endingOn ? (v.priceEnding ?? 0.99) : null,
+          vendor: v.vendor ?? "",
+          pricing: {
+            exchangeRate: v.exchangeRate,
+            markup: v.markup,
+            priceEnding: v.endingOn ? (v.priceEnding ?? 0.99) : null,
+            extraCostCny: v.extraCostCny ?? 0,
+            minPrice: v.minPrice ?? null,
+          },
         });
       }}
     >
       <Form form={form} layout="vertical">
-        <Form.Item name="exchangeRate" label={`汇率（1 人民币 = ? ${store?.currency ?? ""}）`} rules={[{ required: true }]}>
-          <InputNumber min={0.0001} step={0.01} style={{ width: "100%" }} />
-        </Form.Item>
-        <Form.Item name="markup" label="加价倍数" rules={[{ required: true }]}>
-          <InputNumber min={0.1} step={0.1} style={{ width: "100%" }} />
-        </Form.Item>
-        <Form.Item name="endingOn" label="价格尾数">
-          <Select
-            options={[
-              { value: true, label: "统一尾数" },
-              { value: false, label: "保留两位小数" },
-            ]}
-          />
-        </Form.Item>
-        {watched?.endingOn && (
-          <Form.Item name="priceEnding" label="尾数">
-            <InputNumber min={0} max={0.99} step={0.01} style={{ width: "100%" }} />
+        <Typography.Title level={5}>定价</Typography.Title>
+        <Space size={12} style={{ display: "flex" }}>
+          <Form.Item name="exchangeRate" label={`汇率（1 人民币 = ? ${cur}）`} rules={[{ required: true }]}>
+            <InputNumber min={0.0001} step={0.01} style={{ width: 170 }} />
           </Form.Item>
-        )}
+          <Form.Item name="markup" label="加价倍数" rules={[{ required: true }]}>
+            <InputNumber min={0.1} step={0.1} style={{ width: 120 }} />
+          </Form.Item>
+        </Space>
+        <Space size={12} style={{ display: "flex" }}>
+          <Form.Item name="extraCostCny" label="固定费用 ¥（运费、包装等，先加到成本上）">
+            <InputNumber min={0} step={1} style={{ width: 170 }} />
+          </Form.Item>
+          <Form.Item name="minPrice" label={`最低售价 ${cur}`}>
+            <InputNumber min={0} step={1} placeholder="不限" style={{ width: 120 }} />
+          </Form.Item>
+        </Space>
+        <Space size={12} style={{ display: "flex" }}>
+          <Form.Item name="endingOn" label="价格尾数">
+            <Select
+              style={{ width: 170 }}
+              options={[
+                { value: true, label: "统一尾数" },
+                { value: false, label: "保留两位小数" },
+              ]}
+            />
+          </Form.Item>
+          {watched?.endingOn && (
+            <Form.Item name="priceEnding" label="尾数">
+              <InputNumber min={0} max={0.99} step={0.01} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+        </Space>
+        <Typography.Paragraph type="secondary">
+          示例：成本 ¥2 → {previewPrice(2, watched ?? {}) ?? "—"} {cur}；成本 ¥10 →{" "}
+          {previewPrice(10, watched ?? {}) ?? "—"} {cur}；成本 ¥50 → {previewPrice(50, watched ?? {}) ?? "—"} {cur}
+        </Typography.Paragraph>
+        <Typography.Title level={5}>商品信息</Typography.Title>
+        <Form.Item
+          name="vendor"
+          label="品牌（Vendor）"
+          extra="显示在商品上的品牌名。留空则不填，不会使用 1688 供应商名。"
+        >
+          <Input placeholder="你的品牌名" maxLength={255} />
+        </Form.Item>
       </Form>
-      <Typography.Text type="secondary">
-        示例：成本 ¥10 → 售价 {preview} {store?.currency}
-      </Typography.Text>
     </Modal>
   );
 }
@@ -186,7 +222,7 @@ export function StoresPage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [connectOpen, setConnectOpen] = useState(false);
-  const [pricingStore, setPricingStore] = useState<Store>();
+  const [settingsStore, setSettingsStore] = useState<Store>();
   const stores = useQuery({ queryKey: ["stores"], queryFn: api.stores });
 
   useEffect(() => {
@@ -244,10 +280,24 @@ export function StoresPage() {
           { title: "授权方式", dataIndex: "authType", width: 160, render: (t: Store["authType"]) => AUTH_LABEL[t] },
           { title: "币种", dataIndex: "currency", width: 80 },
           {
-            title: "定价",
-            width: 170,
-            render: (_, s) =>
-              `×${s.pricing.exchangeRate} ×${s.pricing.markup}${s.pricing.priceEnding != null ? ` 尾数 ${s.pricing.priceEnding}` : ""}`,
+            title: "定价 / 品牌",
+            width: 220,
+            render: (_, s) => {
+              const p = s.pricing;
+              const parts = [
+                `(成本${p.extraCostCny ? `+¥${p.extraCostCny}` : ""}) ×${p.exchangeRate} ×${p.markup}`,
+                p.minPrice ? `最低 ${p.minPrice}` : null,
+                p.priceEnding != null ? `尾数 ${p.priceEnding}` : null,
+              ].filter(Boolean);
+              return (
+                <Space direction="vertical" size={0}>
+                  <span>{parts.join(" · ")}</span>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    品牌：{s.vendor || "未设置"}
+                  </Typography.Text>
+                </Space>
+              );
+            },
           },
           {
             title: "状态",
@@ -264,7 +314,7 @@ export function StoresPage() {
             width: 220,
             render: (_, s) => (
               <Space>
-                <a onClick={() => setPricingStore(s)}>定价规则</a>
+                <a onClick={() => setSettingsStore(s)}>刊登设置</a>
                 <a onClick={() => verify.mutate(s.id)}>检测连接</a>
                 <Popconfirm
                   title="删除店铺授权？"
@@ -279,7 +329,7 @@ export function StoresPage() {
         ]}
       />
       <ConnectShopifyModal open={connectOpen} onClose={() => setConnectOpen(false)} />
-      <PricingModal store={pricingStore} onClose={() => setPricingStore(undefined)} />
+      <ListingSettingsModal store={settingsStore} onClose={() => setSettingsStore(undefined)} />
     </Card>
   );
 }

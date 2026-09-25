@@ -10,6 +10,16 @@ describe("pricing", () => {
     expect(applyPricing(5.5 / 0.42, DEFAULT_PRICING)).toBe(5.99);
     expect(applyPricing(5.995 / 0.42, DEFAULT_PRICING)).toBe(6.99);
   });
+
+  it("adds a fixed extra cost before conversion and enforces a price floor", () => {
+    // (2.09 + 15) * 0.42 = 7.18 → 7.99
+    expect(applyPricing(2.09, { ...DEFAULT_PRICING, extraCostCny: 15 })).toBe(7.99);
+    // 2.09 * 0.42 = 0.88 → floor 9.9 → 9.99
+    expect(applyPricing(2.09, { ...DEFAULT_PRICING, minPrice: 9.9 })).toBe(9.99);
+    // rules saved before these fields existed still work
+    const legacy = { exchangeRate: 0.14, markup: 3, priceEnding: 0.99 };
+    expect(applyPricing(10, legacy)).toBe(4.99);
+  });
 });
 
 describe("buildVariants", () => {

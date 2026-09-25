@@ -101,6 +101,10 @@ export interface PricingRule {
   markup: number;
   /** price ending, e.g. 0.99 → 12.99; null keeps two decimals. */
   priceEnding: number | null;
+  /** fixed CNY added to the source cost before conversion (shipping, packing…). */
+  extraCostCny?: number;
+  /** floor for the final price, in store currency; null = no floor. */
+  minPrice?: number | null;
 }
 
 export interface Store {
@@ -112,6 +116,8 @@ export interface Store {
   status: "active" | "error" | "disconnected";
   currency: string | null;
   pricing: PricingRule;
+  /** brand shown on published products; empty = none (never the supplier). */
+  vendor: string;
   lastError: string | null;
   createdAt: string;
 }
@@ -134,6 +140,9 @@ export interface ListingVariant {
 
 export type ListingStatus = "draft" | "publishing" | "published" | "failed";
 
+/** Product status on the channel, synced back periodically. */
+export type RemoteStatus = "ACTIVE" | "DRAFT" | "ARCHIVED" | "UNLISTED" | "DELETED";
+
 /** 刊登草稿：采集箱条目认领到某个店铺后的平台侧商品。 */
 export interface Listing {
   id: string;
@@ -150,6 +159,8 @@ export interface Listing {
   vendor: string;
   remoteId: string | null;
   remoteUrl: string | null;
+  remoteStatus: RemoteStatus | null;
+  syncedAt: string | null;
   lastError: string | null;
   publishedAt: string | null;
   createdAt: string;

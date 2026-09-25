@@ -9,10 +9,17 @@ export const DEFAULT_PRICING: PricingRule = {
   exchangeRate: 0.14,
   markup: 3,
   priceEnding: 0.99,
+  extraCostCny: 0,
+  minPrice: null,
 };
 
+/**
+ * (source cost + fixed extra cost) → store currency → × markup, floored at
+ * minPrice, then rounded up to the price ending.
+ */
 export function applyPricing(costCny: number, rule: PricingRule): number {
-  const raw = costCny * rule.exchangeRate * rule.markup;
+  const converted = (costCny + (rule.extraCostCny ?? 0)) * rule.exchangeRate * rule.markup;
+  const raw = Math.max(converted, rule.minPrice ?? 0);
   if (rule.priceEnding == null) return Math.max(0.01, Math.round(raw * 100) / 100);
   const p = Math.floor(raw) + rule.priceEnding;
   // round up to the next ending so we never undercut the target price

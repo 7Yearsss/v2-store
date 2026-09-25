@@ -29,6 +29,8 @@ export function toListingDto(r: ListingRow, images: string[] = r.images): Listin
     vendor: r.vendor,
     remoteId: r.remoteId,
     remoteUrl: r.remoteUrl,
+    remoteStatus: r.remoteStatus,
+    syncedAt: r.syncedAt?.toISOString() ?? null,
     lastError: r.lastError,
     publishedAt: r.publishedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),

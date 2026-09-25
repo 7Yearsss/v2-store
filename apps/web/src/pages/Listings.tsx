@@ -1,4 +1,4 @@
-import type { Listing, ListingStatus } from "@caiji/shared";
+import type { Listing, ListingStatus, RemoteStatus } from "@caiji/shared";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Image, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from "antd";
 import dayjs from "dayjs";
@@ -11,6 +11,15 @@ export const STATUS: Record<ListingStatus, { label: string; color: string }> = {
   publishing: { label: "发布中", color: "processing" },
   published: { label: "已发布", color: "success" },
   failed: { label: "发布失败", color: "error" },
+};
+
+/** Product status on the channel (synced back from the store). */
+export const REMOTE: Record<RemoteStatus, { label: string; color: string }> = {
+  ACTIVE: { label: "在售", color: "green" },
+  DRAFT: { label: "草稿", color: "default" },
+  ARCHIVED: { label: "已归档", color: "default" },
+  UNLISTED: { label: "不公开", color: "default" },
+  DELETED: { label: "已删除", color: "red" },
 };
 
 export function ListingsPage() {
@@ -46,6 +55,19 @@ export function ListingsPage() {
   }, [publishing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["listings"] });
+  const syncAll = useMutation({
+    mutationFn: async () => {
+      const all = stores.data ?? [];
+      await Promise.all(all.filter((s) => s.status === "active").map((s) => api.syncStore(s.id)));
+      // the worker picks the job up within a second or two
+      await new Promise((r) => setTimeout(r, 3000));
+    },
+    onSuccess: () => {
+      message.success("已从店铺同步最新状态");
+      invalidate();
+    },
+    onError: (e) => message.error(e.message),
+  });
   const publish = useMutation({
     mutationFn: (ids: string[]) => api.publish(ids),
     onSuccess: (r) => {
@@ -104,6 +126,9 @@ export function ListingsPage() {
         />
         <Button type="primary" disabled={!selected.length} loading={publish.isPending} onClick={() => publish.mutate(selected)}>
           发布{status === "published" ? "（同步更新）" : ""} {selected.length ? `(${selected.length})` : ""}
+        </Button>
+        <Button loading={syncAll.isPending} onClick={() => syncAll.mutate()}>
+          同步店铺状态
         </Button>
         <Popconfirm
           title="删除选中的刊登草稿？"
@@ -171,9 +196,23 @@ export function ListingsPage() {
             dataIndex: "status",
             width: 120,
             render: (s: ListingStatus, r) => {
-              const tag = <Tag color={STATUS[s].color}>{STATUS[s].label}</Tag>;
+              // published with a warning (e.g. images, sales channel) → orange
+              const warn = s === "published" && r.lastError;
+              const tag = <Tag color={warn ? "warning" : STATUS[s].color}>{STATUS[s].label}{warn ? " ⚠" : ""}</Tag>;
               return r.lastError ? <Tooltip title={r.lastError}>{tag}</Tooltip> : tag;
             },
+          },
+          {
+            title: "店铺状态",
+            width: 110,
+            render: (_, r) =>
+              r.remoteStatus ? (
+                <Tooltip title={r.syncedAt ? `同步于 ${dayjs(r.syncedAt).format("MM-DD HH:mm")}` : undefined}>
+                  <Tag color={REMOTE[r.remoteStatus].color}>{REMOTE[r.remoteStatus].label}</Tag>
+                </Tooltip>
+              ) : (
+                <Typography.Text type="secondary">—</Typography.Text>
+              ),
           },
           { title: "更新时间", dataIndex: "updatedAt", width: 130, render: (t: string) => dayjs(t).format("MM-DD HH:mm") },
           {
