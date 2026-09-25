@@ -9,6 +9,7 @@ import { authRoutes } from "./modules/auth.js";
 import { categoryMappingRoutes } from "./modules/categoryMappings.js";
 import { termMappingRoutes } from "./modules/termMappings.js";
 import { collectRoutes } from "./modules/collect.js";
+import { jobRoutes } from "./modules/jobs.js";
 import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
 import { overviewRoutes } from "./modules/overview.js";
@@ -32,6 +33,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/stores", storeRoutes());
   app.route("/api/listings", listingRoutes());
   app.route("/api/overview", overviewRoutes());
+  app.route("/api/jobs", jobRoutes());
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
   app.route("/api/templates", templateRoutes());
