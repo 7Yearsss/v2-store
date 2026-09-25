@@ -528,6 +528,56 @@ export function listingRoutes() {
     return c.json({ queued: queued > 0 });
   });
 
+  /** 把刊登复制到另一个店铺：内容字段原样带走（含已编辑/AI 优化结果），
+   *  remoteId/远端状态清掉——对目标店铺而言是全新草稿。变体价格沿用原值
+   *  （两店铺币种可能不同，复制后需要按目标店铺定价人工核对）。 */
+  r.post(
+    "/:id/copy",
+    zValidator("json", z.object({ storeId: z.string().uuid() })),
+    async (c) => {
+      const { db } = c.var.deps;
+      const { workspaceId } = c.var.auth;
+      const id = c.req.param("id");
+      const { storeId } = c.req.valid("json");
+      const [src] = await db
+        .select()
+        .from(listings)
+        .where(and(eq(listings.id, id), eq(listings.workspaceId, workspaceId)));
+      if (!src) throw notFound("刊登");
+      const [store] = await db
+        .select({ id: stores.id })
+        .from(stores)
+        .where(
+          and(eq(stores.id, storeId), eq(stores.workspaceId, workspaceId), ne(stores.status, "disconnected")),
+        );
+      if (!store) throw notFound("店铺");
+      const [copy] = await db
+        .insert(listings)
+        .values({
+          workspaceId,
+          storeId,
+          sourceItemId: src.sourceItemId,
+          status: "draft",
+          title: src.title,
+          descriptionHtml: src.descriptionHtml,
+          images: src.images,
+          descImages: src.descImages,
+          options: src.options,
+          variants: src.variants,
+          tags: src.tags,
+          productType: src.productType,
+          vendor: src.vendor,
+          weightKg: src.weightKg,
+          channelCategoryId: src.channelCategoryId,
+          channelCategoryName: src.channelCategoryName,
+          channelAttributes: src.channelAttributes,
+        })
+        .returning();
+      const show = await displayUrls(db, workspaceId, [[...copy!.images, ...copy!.descImages]]);
+      return c.json(toListingDto(copy!, show(copy!.images), show(copy!.descImages)), 201);
+    },
+  );
+
   /** Removes our draft only; a product already on the shop stays there. */
   r.post("/delete", zValidator("json", idsSchema), async (c) => {
     const deleted = await c.var.deps.db
