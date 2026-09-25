@@ -133,6 +133,9 @@ type SettingsForm = PricingRule & {
   priceMaxCny?: number;
   maxImages?: number;
   bannedWords?: string[];
+  publishStatus?: "active" | "draft";
+  defaultTags?: string[];
+  defaultProductType?: string;
 };
 
 const rulesToText = (rules?: StoreRules["replacements"]) =>
@@ -163,6 +166,9 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         priceMaxCny: store.rules.priceMaxCny ?? undefined,
         maxImages: store.rules.maxImages ?? undefined,
         bannedWords: store.rules.bannedWords ?? [],
+        publishStatus: store.rules.publishStatus ?? "active",
+        defaultTags: store.rules.defaultTags ?? [],
+        defaultProductType: store.rules.defaultProductType,
       });
     }
   }, [store, form]);
@@ -203,6 +209,9 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             priceMaxCny: v.priceMaxCny ?? null,
             maxImages: v.maxImages ?? null,
             bannedWords: v.bannedWords ?? [],
+            publishStatus: v.publishStatus ?? "active",
+            defaultTags: v.defaultTags ?? [],
+            defaultProductType: v.defaultProductType?.trim() || undefined,
           },
           pricing: {
             exchangeRate: v.exchangeRate,
@@ -260,6 +269,34 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         >
           <Input placeholder="你的品牌名" maxLength={255} />
         </Form.Item>
+        <Typography.Title level={5}>发布与默认项</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item
+            name="publishStatus"
+            label="发布后状态"
+            extra="草稿适合先人工复查再在 Shopify 上架"
+          >
+            <Select
+              style={{ width: 170 }}
+              options={[
+                { value: "active", label: "直接上架" },
+                { value: "draft", label: "发布为草稿" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="defaultProductType" label="默认商品类型">
+            <Input placeholder="如 Women's Clothing" style={{ width: 200 }} maxLength={255} />
+          </Form.Item>
+          <Form.Item name="defaultTags" label="默认标签（认领时填入）">
+            <Select
+              mode="tags"
+              tokenSeparators={[",", "，"]}
+              open={false}
+              style={{ width: 260 }}
+              placeholder="输入标签后回车"
+            />
+          </Form.Item>
+        </Space>
         <Typography.Title level={5}>AI 产线</Typography.Title>
         <Space size={12} style={{ display: "flex" }}>
           <Form.Item

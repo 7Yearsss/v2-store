@@ -244,6 +244,16 @@ export function ListingEditPage() {
           dataSource={draft.variants}
           pagination={draft.variants.length > 50 ? { pageSize: 50 } : false}
           columns={[
+            {
+              title: "图",
+              width: 56,
+              render: (_, v: ListingVariant) =>
+                v.image ? (
+                  <Image src={v.image} width={40} height={40} style={{ objectFit: "cover" }} />
+                ) : (
+                  "—"
+                ),
+            },
             ...draft.options.map((o, idx) => ({
               title: o.name,
               render: (_: unknown, v: ListingVariant) => v.optionValues[idx],

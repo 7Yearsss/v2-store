@@ -193,6 +193,8 @@ export function sourceItemRoutes() {
             images: applyImageLimit(item.images, rules),
             options,
             variants,
+            tags: rules.defaultTags ?? [],
+            productType: rules.defaultProductType ?? "",
             // never expose the supplier as the brand
             vendor: store.vendor,
             channelCategoryId: mapping?.channelCategoryId ?? null,
