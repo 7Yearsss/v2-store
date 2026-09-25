@@ -145,6 +145,35 @@ export function fakeShopify(
           },
         });
       }
+      if (query.includes("StockData")) {
+        return json({
+          data: {
+            product: {
+              variants: {
+                nodes: Array.from({ length: variantsCount }, (_, i) => ({
+                  inventoryItem: {
+                    id: `gid://shopify/InventoryItem/i${i}`,
+                    inventoryLevels: { nodes: [] },
+                  },
+                })),
+              },
+            },
+            locations: {
+              nodes: [{ id: "gid://shopify/Location/l1", isActive: true }],
+            },
+          },
+        });
+      }
+      if (query.includes("inventorySetQuantities")) {
+        return json({
+          data: {
+            inventorySetQuantities: {
+              inventoryAdjustmentGroup: { reason: "correction" },
+              userErrors: [],
+            },
+          },
+        });
+      }
       if (query.includes("BindData")) {
         return json({
           data: {
