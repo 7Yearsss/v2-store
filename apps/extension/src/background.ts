@@ -5,7 +5,14 @@ import {
   findInitData,
   productOnlyData,
 } from "@caiji/shared";
-import type { BgMessage, BgResponse, SubmitResult } from "./lib/messages";
+import type {
+  BgMessage,
+  BgResponse,
+  PendingChanged,
+  PendingItem,
+  SubmitPendingResult,
+  SubmitResult,
+} from "./lib/messages";
 
 const VERSION = chrome.runtime.getManifest().version;
 
@@ -134,6 +141,84 @@ async function fetchDescImages(descUrl: string): Promise<string[]> {
   return descImagesFromHtml(html).slice(0, 30);
 }
 
+// --- 待确认队列 ---------------------------------------------------------------
+// 点采集只进 chrome.storage.local 的 pending，面板勾选「提交」才真正入库。
+// 详情页条目带完整 harvest（免重拉）；列表页条目只有 offerId+卡片预览。
+
+const PENDING_KEY = "pending";
+
+async function getPending(): Promise<PendingItem[]> {
+  const { [PENDING_KEY]: items } = await chrome.storage.local.get(PENDING_KEY);
+  return (items as PendingItem[] | undefined) ?? [];
+}
+
+/** 队列变化后广播给所有 1688 页：面板刷新列表，卡片按钮同步状态。 */
+async function broadcastPending(okIds: string[] = []) {
+  const items = await getPending();
+  const msg: PendingChanged = {
+    type: "V2_PENDING_CHANGED",
+    stagedIds: items.map((i) => i.offerId),
+    okIds,
+  };
+  const tabs = await chrome.tabs.query({ url: ["*://*.1688.com/*", "*://1688.com/*"] });
+  for (const t of tabs) {
+    if (t.id != null) chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+  }
+}
+
+async function stageCollect(item: PendingItem) {
+  const items = await getPending();
+  const idx = items.findIndex((i) => i.offerId === item.offerId);
+  if (idx >= 0) items[idx] = item;
+  else items.push(item);
+  await chrome.storage.local.set({ [PENDING_KEY]: items });
+  await broadcastPending();
+  return { count: items.length };
+}
+
+async function unstage(offerId: string) {
+  const items = (await getPending()).filter((i) => i.offerId !== offerId);
+  await chrome.storage.local.set({ [PENDING_KEY]: items });
+  await broadcastPending();
+  return { count: items.length };
+}
+
+async function clearPending() {
+  await chrome.storage.local.set({ [PENDING_KEY]: [] });
+  await broadcastPending();
+  return { count: 0 };
+}
+
+/** 提交勾选的待确认项：harvest 直接入箱，裸 offerId 走详情页重拉。串行+间隔防风控。 */
+async function submitPending(offerIds: string[]): Promise<SubmitPendingResult> {
+  const items = await getPending();
+  const targets = items.filter((i) => offerIds.includes(i.offerId));
+  const results: SubmitPendingResult["results"] = [];
+  for (const it of targets) {
+    try {
+      const r = it.harvest
+        ? await submitHarvest(it.harvest)
+        : await collectByOfferId(it.offerId);
+      results.push({
+        offerId: it.offerId,
+        ok: true,
+        duplicated: r.duplicated,
+        title: r.item.title,
+        image: r.item.images?.[0],
+      });
+    } catch (e) {
+      results.push({ offerId: it.offerId, ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    if (!it.harvest) await sleep(RESCAN_GAP_MS / 2);
+  }
+  const okIds = results.filter((r) => r.ok).map((r) => r.offerId);
+  await chrome.storage.local.set({
+    [PENDING_KEY]: items.filter((i) => !okIds.includes(i.offerId)),
+  });
+  await broadcastPending(okIds);
+  return { results };
+}
+
 function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
   p.then(
     (data) => sendResponse({ ok: true, data }),
@@ -154,6 +239,16 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(fetchDescImages(String((msg as any).url ?? "")).then((images) => ({ images })), sendResponse);
     case "COLLECT_BY_OFFER_ID":
       return reply(collectByOfferId(String((msg as any).offerId ?? "")), sendResponse);
+    case "STAGE_COLLECT":
+      return reply(stageCollect((msg as any).item), sendResponse);
+    case "GET_PENDING":
+      return reply(getPending().then((items) => ({ items })), sendResponse);
+    case "UNSTAGE":
+      return reply(unstage(String((msg as any).offerId ?? "")), sendResponse);
+    case "CLEAR_PENDING":
+      return reply(clearPending(), sendResponse);
+    case "SUBMIT_PENDING":
+      return reply(submitPending(((msg as any).offerIds ?? []) as string[]), sendResponse);
     case "GET_STATUS":
       return reply(
         getAuth().then((auth) => ({

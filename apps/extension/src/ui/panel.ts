@@ -5,6 +5,7 @@
  */
 
 import { sendToBackground } from "../lib/messages";
+import type { PendingItem, SubmitPendingResult } from "../lib/messages";
 
 export interface ExtStatus {
   authorized: boolean;
@@ -43,6 +44,13 @@ const CSS = `
 .progress { height: 6px; background: #f3f4f6; border-radius: 3px; overflow: hidden; }
 .progress > i { display: block; height: 100%; width: 0; background: #f97316; transition: width .2s; }
 .log { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #f3f4f6; padding-top: 8px; }
+.pend { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #f3f4f6; padding-top: 8px; }
+.pend-title { color: #9ca3af; font-size: 12px; }
+.pend .item { cursor: default; }
+.pend .item input[type=checkbox] { flex: none; margin: 0; cursor: pointer; }
+.pend .item .price { color: #f97316; font-size: 11px; flex: none; }
+.pend .x { border: none; background: transparent; color: #9ca3af; cursor: pointer; font-size: 13px; padding: 0 2px; flex: none; }
+.pend .x:hover { color: #dc2626; }
 .log-title { color: #9ca3af; font-size: 12px; }
 .item { display: flex; gap: 8px; align-items: center; }
 .item img { width: 32px; height: 32px; border-radius: 4px; object-fit: cover; background: #f3f4f6; flex: none; }
@@ -108,7 +116,8 @@ export async function mountPanel(): Promise<Panel> {
   const progressWrap = el("div", { class: "progress", style: "display:none" }, bar);
   const logList = el("div", { class: "log", style: "display:none" }, el("div", { class: "log-title" }, "本次采集"));
   const appLink = el("a", { class: "link", target: "_blank", rel: "noreferrer" }, "打开 V2Store 工作台 →");
-  const body = el("div", { class: "body" }, authArea, actions, progressWrap, logList, appLink);
+  const pendList = el("div", { class: "pend", style: "display:none" });
+  const body = el("div", { class: "body" }, authArea, actions, pendList, progressWrap, logList, appLink);
   root.append(head, body);
   shadow.append(root);
   document.documentElement.append(host);
@@ -123,6 +132,80 @@ export async function mountPanel(): Promise<Panel> {
       /* storage blocked */
     }
   };
+
+  // 待确认队列：后台广播 V2_PENDING_CHANGED 时重拉并渲染
+  const renderPending = async () => {
+    let items: PendingItem[] = [];
+    try {
+      const res = await sendToBackground<{ items: PendingItem[] }>({ type: "GET_PENDING" });
+      items = res.items;
+    } catch {
+      /* 离线时保持现状 */
+    }
+    if (!items.length) {
+      pendList.style.display = "none";
+      pendList.replaceChildren();
+      return;
+    }
+    pendList.style.display = "";
+    const submitBtn = el("button", { class: "btn primary", type: "button" });
+    const boxes: Array<{ id: string; box: HTMLInputElement }> = [];
+    const refreshSubmitLabel = () => {
+      const n = boxes.filter((b) => b.box.checked).length;
+      submitBtn.textContent = `提交 ${n} 条到采集箱`;
+      submitBtn.disabled = n === 0;
+    };
+    const rows = items.map((it) => {
+      const box = el("input", { type: "checkbox", checked: true });
+      box.onchange = refreshSubmitLabel;
+      boxes.push({ id: it.offerId, box });
+      const x = el("button", { class: "x", title: "移出待确认" }, "×");
+      x.onclick = () => sendToBackground({ type: "UNSTAGE", offerId: it.offerId }).catch(() => {});
+      return el(
+        "div",
+        { class: "item", title: it.title },
+        box,
+        el("img", { src: it.image ?? "", alt: "" }),
+        el("span", { class: "t" }, it.title),
+        it.price ? el("span", { class: "price" }, it.price) : null,
+        x,
+      );
+    });
+    submitBtn.onclick = async () => {
+      const ids = boxes.filter((b) => b.box.checked).map((b) => b.id);
+      if (!ids.length) return;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "提交中…";
+      try {
+        const res = await sendToBackground<SubmitPendingResult>({
+          type: "SUBMIT_PENDING",
+          offerIds: ids,
+        });
+        const ok = res.results.filter((r) => r.ok);
+        const fail = res.results.filter((r) => !r.ok);
+        for (const r of ok) panel.log({ title: r.title ?? r.offerId, image: r.image, state: r.duplicated ? "dup" : "ok" });
+        for (const r of fail) panel.log({ title: `offer ${r.offerId}`, state: "err", note: r.error });
+        panel.toast(`已入库 ${ok.length} 条${fail.length ? `，失败 ${fail.length} 条` : ""}`, fail.length === 0);
+      } catch (e) {
+        panel.toast(`提交失败：${e instanceof Error ? e.message : e}`, false);
+        submitBtn.disabled = false;
+        refreshSubmitLabel();
+      }
+    };
+    const clearBtn = el("button", { class: "btn", type: "button", style: "flex:none;width:auto;padding:4px 10px" }, "清空");
+    clearBtn.onclick = () => sendToBackground({ type: "CLEAR_PENDING" }).catch(() => {});
+    refreshSubmitLabel();
+    pendList.replaceChildren(
+      el("div", { class: "pend-title" }, `待确认（${items.length}）— 勾选后提交`),
+      ...rows,
+      el("div", { class: "row" }, submitBtn, clearBtn),
+    );
+  };
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === "V2_PENDING_CHANGED") void renderPending();
+  });
+  void renderPending();
+
   toggle.onclick = () => setMin(!root.classList.contains("min"));
   try {
     setMin(localStorage.getItem(MIN_KEY) === "1");
