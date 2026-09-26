@@ -35,6 +35,7 @@ import {
   PUSH_PRICE,
   PUSH_STOCK,
 } from "../jobs/handlers.js";
+import { backfillDiscovery } from "../lib/selection.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { toSourceItemDto } from "./sourceItems.js";
@@ -87,6 +88,7 @@ export async function ingestOffer(
   workspaceId: string,
   userId: string,
   offer: CollectedOffer,
+  via?: "manual" | "plan" | "inquiry",
 ) {
   const sourceUrl = canonicalSourceUrl(offer);
   const values = {
@@ -104,6 +106,8 @@ export async function ingestOffer(
     sourceCategoryId: offer.categoryId ?? null,
     sourceCategoryName: offer.categoryPath?.[0] ?? null,
     collectedBy: userId,
+    /** 重复采集时 undefined 会被 drizzle set 跳过，保留首次入口归因。 */
+    collectedVia: via,
     collectedAt: new Date(offer.collectedAt || Date.now()),
   };
   const [existing] = await db
@@ -451,6 +455,7 @@ const harvestSchema = z.object({
   afterUrl: z.string().optional(),
   productExtInfo: z.record(z.string(), z.unknown()).optional(),
   collectedAt: z.string().default(() => new Date().toISOString()),
+  collectedVia: z.enum(["manual", "plan", "inquiry"]).optional(),
 });
 
 const checkSchema = z.object({
@@ -475,7 +480,14 @@ export function collectRoutes() {
     if (!offer) {
       throw new HttpError(422, "页面未解析出商品数据", "rowDataInvalid");
     }
-    const { item, duplicated, prev } = await ingestOffer(db, workspaceId, userId, offer);
+    const via = c.req.valid("json").collectedVia;
+    const { item, duplicated, prev } = await ingestOffer(
+      db,
+      workspaceId,
+      userId,
+      offer,
+      via,
+    );
     const propagation =
       duplicated && prev
         ? await recordSourceChanges(
@@ -489,6 +501,21 @@ export function collectRoutes() {
     // 重采到数据 = 货源已回架：之前插件上报的下架变更落账
     if (prev && prev.availability !== "ok") {
       await markRelisted(db, workspaceId, item.id);
+    }
+    // 选品回填：候选池里同 offerId 的 new 条目 → collected + 指向入箱行；
+    // harvest 没带 via 但池里命中，说明这条就是候选 → 归因 plan。
+    const discoveryBackfilled = await backfillDiscovery(
+      db,
+      workspaceId,
+      offer.offerId,
+      item.id,
+    );
+    if (!via && discoveryBackfilled > 0) {
+      await db
+        .update(sourceItems)
+        .set({ collectedVia: "plan" })
+        .where(and(eq(sourceItems.id, item.id), isNull(sourceItems.collectedVia)));
+      item.collectedVia = item.collectedVia ?? "plan";
     }
     // the extension uploads images right after this; the server fills gaps later
     if (item.images.length || item.descImages.length) {
@@ -521,7 +548,7 @@ export function collectRoutes() {
       }
     }
     return c.json(
-      { ok: true, item: toSourceItemDto(item, []), duplicated, ...propagation },
+      { ok: true, item: toSourceItemDto(item, []), duplicated, discoveryBackfilled, ...propagation },
       duplicated ? 200 : 201,
     );
   });

@@ -24,6 +24,7 @@ const JOB_LABELS: Record<string, string> = {
   "order.sync": "订单同步",
   "order.map": "订单映射",
   "fulfill.push": "履约回传",
+  "selection.score": "选品打分",
 };
 
 function toDto(j: typeof jobs.$inferSelect) {

@@ -32,6 +32,7 @@ import {
 import { advancePolicy, circuitOpen, nextRunAt } from "../lib/pipeline.js";
 import { findBannedWords } from "../lib/rules.js";
 import { acceptSuggestion } from "../lib/suggestions.js";
+import { scorePlanItems } from "../lib/selection.js";
 import { meteredEditImage } from "../lib/ai.js";
 import {
   fetchAndStore,
@@ -67,6 +68,8 @@ export const ORDER_SYNC = "order.sync";
 export const ORDER_MAP = "order.map";
 /** 履约回传（fulfillmentOrders → fulfillmentCreate 写 trackingInfo）。 */
 export const FULFILL_PUSH = "fulfill.push";
+/** 选品候选打分：确定性信号分 + top-20 LLM 评语。 */
+export const SELECTION_SCORE = "selection.score";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -281,6 +284,30 @@ export async function enqueueStoreSync(db: Db, storeId: string, workspaceId: str
     )
     .limit(1);
   if (!pending) await enqueue(db, SYNC_STORE, { storeId }, { workspaceId, maxAttempts: 1 });
+}
+
+/** Queue a selection scoring pass unless one for the same plan is waiting/running. */
+export async function enqueueSelectionScore(
+  db: Db,
+  workspaceId: string,
+  planId: string | null,
+) {
+  const key = planId ?? "";
+  const [pending] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.workspaceId, workspaceId),
+        eq(jobs.type, SELECTION_SCORE),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`coalesce(${jobs.payload}->>'planId', '') = ${key}`,
+      ),
+    )
+    .limit(1);
+  if (pending) return false;
+  await enqueue(db, SELECTION_SCORE, { planId }, { workspaceId, maxAttempts: 1 });
+  return true;
 }
 
 /** Queue a platform category-tree sync for a store unless one is already waiting. */
@@ -1399,6 +1426,14 @@ const pushPriceJob: JobHandler = {
  * 仓储 L1 兜底：重扫可能漏报（插件未装/被风控），每日按 rules.inventory 策略
  * 把该店铺所有监控中刊登的推送库存重算一遍——与货源本地值不一致就刷新并推远端。
  */
+const selectionScore: JobHandler = {
+  async run(deps, job) {
+    const planId = (job.payload.planId as string | null | undefined) ?? null;
+    if (!job.workspaceId) throw new PermanentJobError("job 缺 workspaceId");
+    await scorePlanItems(deps, job.workspaceId, planId);
+  },
+};
+
 const reconcileInventory: JobHandler = {
   async run(deps: Deps, job) {
     const storeId = String(job.payload.storeId);
@@ -1686,6 +1721,7 @@ const fulfillPush: JobHandler = {
 
 export const jobHandlers: Record<string, JobHandler> = {
   [ORDER_SYNC]: orderSync,
+  [SELECTION_SCORE]: selectionScore,
   [ORDER_MAP]: orderMap,
   [FULFILL_PUSH]: fulfillPush,
   [PUBLISH_LISTING]: publishListing,

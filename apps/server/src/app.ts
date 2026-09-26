@@ -18,7 +18,7 @@ import { overviewRoutes } from "./modules/overview.js";
 import { purchaseOrderRoutes } from "./modules/purchaseOrders.js";
 import { publishRoutes } from "./modules/publish.js";
 import { sourceChangeRoutes } from "./modules/sourceChanges.js";
-import { sourceItemRoutes } from "./modules/sourceItems.js";
+import { discoveryRoutes, selectionPlanRoutes } from "./modules/selection.js";import { sourceItemRoutes } from "./modules/sourceItems.js";
 import { storeRoutes } from "./modules/stores.js";
 import { templateRoutes } from "./modules/templates.js";
 
@@ -45,6 +45,8 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
   app.route("/api/templates", templateRoutes());
+  app.route("/api/selection-plans", selectionPlanRoutes());
+  app.route("/api/discovery", discoveryRoutes());
   app.route("/api/attribute-mappings", attributeMappingRoutes());
   app.route("/api/media", mediaRoutes());
   app.route("/api/orders", orderRoutes());

@@ -19,7 +19,8 @@ export const JOB_LABELS: Record<string, string> = {
   "store.syncCategories": "类目树同步",
   "order.sync": "订单同步",
   "order.map": "订单映射",
-  "fulfill.push": "履约回传",
+    "fulfill.push": "履约回传",
+  "selection.score": "选品打分",
 };
 
 const JSTATUS: Record<JobStatus, { st: string; label: string }> = {

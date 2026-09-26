@@ -41,11 +41,11 @@ export function toSourceItemDto(
     sourceCategoryName: r.sourceCategoryName,
     collectedAt: r.collectedAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
+    collectedVia: r.collectedVia as SourceItem["collectedVia"],
     claimedStoreIds,
     availability: r.availability,
     delistedAt: r.delistedAt?.toISOString() ?? null,
     lastScannedAt: r.lastScannedAt?.toISOString() ?? null,
-    collectedVia: r.collectedVia,
   };
 }
 
