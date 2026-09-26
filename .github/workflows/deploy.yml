@@ -1,0 +1,54 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install + typecheck + test + build web bundle
+        run: |
+          npm ci
+          npm run typecheck
+          npm test -w @caiji/server
+          npm run build -w @caiji/web
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+
+      - name: Sync code to server
+        run: |
+          rsync -az --delete \
+            --exclude node_modules --exclude .git --exclude 'apps/extension/dist' \
+            --exclude 'apps/server/data' --exclude 'apps/server/.env' --exclude '*.env' --exclude '.*' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ "$SSH_USER@$SSH_HOST:apps/v2-store/"
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+
+      - name: Install deps + restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
+            'cd ~/apps/v2-store && npm install --no-audit --no-fund && sudo -n systemctl restart v2-store && sleep 3 && curl -sf http://127.0.0.1:3200/api/health'
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
