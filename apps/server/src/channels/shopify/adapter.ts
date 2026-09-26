@@ -168,9 +168,10 @@ function remoteVariantMapFrom(
   sent: ListingVariant[],
 ): RemoteVariantMap {
   const out: RemoteVariantMap = {};
+  const sentSkus = new Set(sent.map((v) => v.sku).filter(Boolean));
   data.product?.variants.nodes.forEach((n, i) => {
-    // 键用本地 sku（订单映射查本地 sku）；远端 sku 兜底
-    const key = sent[i]?.sku ?? n.sku;
+    // 远端 sku 命中本地 sku → 用 sku 对齐（下标对齐在远端顺序不同时会配错供应商）
+    const key = n.sku && sentSkus.has(n.sku) ? n.sku : (sent[i]?.sku ?? n.sku);
     if (key) out[key] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
   });
   return out;
@@ -955,7 +956,9 @@ export const shopifyAdapter: ChannelAdapter = {
         ORDER_ONE,
         { id },
       );
-      return data.order ? [toRemoteOrder(data.order)] : [];
+      if (!data.order) return [];
+      await fillOrderLines(deps, store, data.order);
+      return [toRemoteOrder(data.order)];
     }
     const out: RemoteOrder[] = [];
     let after: string | null = null;
@@ -975,7 +978,10 @@ export const shopifyAdapter: ChannelAdapter = {
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
       }>(deps, store, ORDER_LIST, { first: 50, after, query });
-      out.push(...data.orders.nodes.map(toRemoteOrder));
+      for (const n of data.orders.nodes) {
+        await fillOrderLines(deps, store, n);
+        out.push(toRemoteOrder(n));
+      }
       if (!data.orders.pageInfo.hasNextPage) break;
       after = data.orders.pageInfo.endCursor;
     }
@@ -1084,8 +1090,45 @@ const ORDER_FIELDS = /* GraphQL */ `
       originalUnitPriceSet { shopMoney { amount } }
       variant { id }
     }
+    pageInfo { hasNextPage endCursor }
   }
 `;
+
+const ORDER_LINES = /* GraphQL */ `
+  query OrderLines($id: ID!, $after: String) {
+    order(id: $id) {
+      lineItems(first: 100, after: $after) {
+        nodes {
+          id
+          title
+          sku
+          quantity
+          originalUnitPriceSet { shopMoney { amount } }
+          variant { id }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+type OrderLineNode = NonNullable<ShopifyOrderNode["lineItems"]>["nodes"][number];
+
+/** >100 行的订单补拉剩余 lineItems（ORDER_FIELDS 第一页只有 100）。 */
+async function fillOrderLines(deps: Deps, store: StoreRow, n: ShopifyOrderNode) {
+  let li = n.lineItems;
+  while (li?.pageInfo?.hasNextPage) {
+    const data = await shopifyGraphql<{
+      order: {
+        lineItems: { nodes: OrderLineNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+      } | null;
+    }>(deps, store, ORDER_LINES, { id: n.id, after: li.pageInfo.endCursor });
+    const next = data.order?.lineItems;
+    if (!next || !next.nodes.length) break;
+    li.nodes.push(...next.nodes);
+    li.pageInfo = next.pageInfo;
+  }
+}
 
 interface ShopifyOrderNode {
   id: string;
@@ -1118,6 +1161,7 @@ interface ShopifyOrderNode {
       originalUnitPriceSet?: { shopMoney?: { amount?: string | null } | null } | null;
       variant?: { id: string } | null;
     }>;
+    pageInfo?: { hasNextPage: boolean; endCursor: string | null };
   } | null;
 }
 

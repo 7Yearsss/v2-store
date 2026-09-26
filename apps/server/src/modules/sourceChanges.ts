@@ -66,7 +66,7 @@ async function applyChangeToListing(
       );
       patch.variants = variants;
       if (published) {
-        await enqueue(db, PUSH_PRICE, { listingId: listing.id }, { workspaceId });
+        await enqueue(db, PUSH_PRICE, { listingId: listing.id, manual: true }, { workspaceId });
         action = "price_push_queued";
       } else {
         action = "price_recalculated";
@@ -81,8 +81,8 @@ async function applyChangeToListing(
         return { ...v, stock: pushQuantity(src, inv) };
       });
       patch.variants = variants;
-      if (published && storeRules?.trackStock) {
-        await enqueue(db, PUSH_STOCK, { listingId: listing.id }, { workspaceId });
+      if (published) {
+        await enqueue(db, PUSH_STOCK, { listingId: listing.id, manual: true }, { workspaceId });
         action = "stock_push_queued";
       } else {
         action = "stock_updated";

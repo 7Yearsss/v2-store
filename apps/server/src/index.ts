@@ -3,6 +3,7 @@ import { createApp } from "./app.js";
 import { openDb } from "./db/client.js";
 import { env } from "./env.js";
 import {
+  enqueueOrderSync,
   enqueueStoreSync,
   jobHandlers,
   RECONCILE_INVENTORY,
@@ -51,13 +52,17 @@ const deps: Deps = {
 const app = createApp(deps, { log: env.NODE_ENV !== "test" });
 const stopWorker = env.RUN_WORKER ? startWorker(deps, jobHandlers) : () => {};
 
-/** Pull channel-side product status for every active store periodically. */
+/** Pull channel-side product status for every active store periodically.
+ *  顺带排 order.sync 增量轮询：手动 token 店没有我们 app 的 webhook，全靠它。 */
 async function scheduleStoreSyncs() {
   const rows = await deps.db
     .select({ id: stores.id, workspaceId: stores.workspaceId })
     .from(stores)
     .where(eq(stores.status, "active"));
-  for (const s of rows) await enqueueStoreSync(deps.db, s.id, s.workspaceId);
+  for (const s of rows) {
+    await enqueueStoreSync(deps.db, s.id, s.workspaceId);
+    await enqueueOrderSync(deps.db, s.id, s.workspaceId);
+  }
 }
 const syncTimer = env.RUN_WORKER
   ? setInterval(() => scheduleStoreSyncs().catch((e) => console.error("[sync]", e)), env.SYNC_INTERVAL_MINUTES * 60_000)

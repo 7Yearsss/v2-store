@@ -87,6 +87,11 @@ async function makeStore(t: string) {
     t,
   );
   expect(res.status).toBeOneOf([200, 201]);
+  // webhook 只路由 oauth 安装的店；测试店铺直接改 authType 模拟 oauth 店
+  await ctx!.deps.db
+    .update(stores)
+    .set({ authType: "oauth" })
+    .where(eq(stores.id, res.body.id as string));
   return res.body.id as string;
 }
 
@@ -456,7 +461,8 @@ describe("采购单 + 履约", () => {
     );
     expect(tracked.body.domesticTracking).toEqual([{ carrier: "中通", no: "SF123" }]);
 
-    // procure-confirm：插件「标记已下单」回填 → 已有 placed PO 直接写 sourceOrderId
+    // procure-confirm：插件「标记已下单」回填。poA 混了乙货源的行项 → 不复用，
+    // 该 orderItem 的链接被搬到新建 PO，poA 保持原状
     const confirm = await ctx.api(
       "POST",
       `/api/orders/${o4001.id}/procure-confirm`,
@@ -464,12 +470,36 @@ describe("采购单 + 履约", () => {
       t,
     );
     expect(confirm.status).toBe(200);
-    expect(confirm.body.purchaseOrderId).toBe(poA.id);
+    expect(confirm.body.purchaseOrderId).not.toBe(poA.id);
     const poRow = (
-      await ctx.deps.db.select().from(purchaseOrders).where(eq(purchaseOrders.id, poA.id))
+      await ctx.deps.db
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, confirm.body.purchaseOrderId))
     )[0]!;
     expect(poRow.sourceOrderId).toBe("1688-SO-9");
     expect(poRow.status).toBe("placed");
+    // 行项从混合 PO 搬进新 PO，一条订单行只属于一张未完结采购单
+    const linksAfter = await ctx.deps.db
+      .select()
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.orderItemId, o4001.items[0].id));
+    expect(linksAfter.length).toBe(1);
+    expect(linksAfter[0]!.purchaseOrderId).toBe(confirm.body.purchaseOrderId);
+    // poA 未被覆盖：仍是旧的 sourceOrderId / placed
+    const poAAfter = (
+      await ctx.deps.db.select().from(purchaseOrders).where(eq(purchaseOrders.id, poA.id))
+    )[0]!;
+    expect(poAAfter.sourceOrderId).toBe("1688-SO-1");
+    expect(poAAfter.status).toBe("placed");
+    // 干净场景复用：再次 confirm 同一 offer → 命中刚建的纯覆盖 PO
+    const confirm2 = await ctx.api(
+      "POST",
+      `/api/orders/${o4001.id}/procure-confirm`,
+      { offerId: "777", sourceOrderId: "1688-SO-10" },
+      t,
+    );
+    expect(confirm2.body.purchaseOrderId).toBe(confirm.body.purchaseOrderId);
   });
 
   it("POST /orders/:id/procure returns offers with address (buyer) for the extension card", async () => {

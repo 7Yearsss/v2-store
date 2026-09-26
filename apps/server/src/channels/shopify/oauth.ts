@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, Deps } from "../../context.js";
 import { stores } from "../../db/schema.js";
@@ -161,10 +161,13 @@ export function shopifyAppRoutes() {
       topic &&
       ["orders/create", "orders/updated", "orders/cancelled"].includes(topic)
     ) {
+      // webhook 用我们 app 的 secret 签的 → 只路由到 oauth 店；
+      // 手动 token 店在同一 shopDomain 下不该吃到别的 workspace 的订单数据
       const [store] = await deps.db
         .select()
         .from(stores)
-        .where(eq(stores.shopDomain, shop))
+        .where(and(eq(stores.shopDomain, shop), eq(stores.authType, "oauth")))
+        .orderBy(desc(stores.updatedAt))
         .limit(1);
       if (store) {
         // 只取 gid 做定向同步；拿不到就退全店增量（报文本体绝不进 worker）

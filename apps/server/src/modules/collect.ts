@@ -289,10 +289,10 @@ export async function recordSourceChanges(
     let priceDirty = false;
 
     const variants = l.variants.map((v, i) => {
-      const sku =
-        (v.sourceSkuId
-          ? offerSkus.find((s) => (s.skuId || s.spec) === v.sourceSkuId)
-          : undefined) ?? offerSkus[i];
+      // sourceSkuId 已绑定但货源里没了 = 该规格被供应商下架 → 不借位，按 0 处理
+      const sku = v.sourceSkuId
+        ? offerSkus.find((s) => (s.skuId || s.spec) === v.sourceSkuId)
+        : offerSkus[i];
       const next = { ...v };
       if (sku) {
         const qty = pushQuantity(sku.stock, inv);

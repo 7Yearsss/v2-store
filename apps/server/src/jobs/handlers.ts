@@ -872,7 +872,9 @@ const pushStockJob: JobHandler = {
     // 已入队的也尊重当前策略：店铺未追踪库存或刊登 stock 策略非 auto 时跳过；
     // force=售罄清零（oosAction=zero）是店铺级明确配置，不受刊登策略拦截
     const force = job.payload.force === true;
-    if (!force && (!store.rules?.trackStock || listing.syncPolicy.stock !== "auto")) return;
+    // manual=用户在变更列表点了「应用」：明确意图，绕过自动策略门禁
+    const manual = job.payload.manual === true;
+    if (!force && !manual && (!store.rules?.trackStock || listing.syncPolicy.stock !== "auto")) return;
     const adapter = adapterFor(store.platform);
     const at = new Date().toISOString();
     if (!adapter.pushStock) {
@@ -1368,11 +1370,14 @@ const pushPriceJob: JobHandler = {
     const { listing, store } = row;
     if (store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
     if (!listing.remoteId || listing.remoteStatus === "DELETED") return;
-    // 入队时复核策略：监控总开关 + priceAuto + 刊登 price=auto 缺一即跳
+    // 入队时复核策略：监控总开关 + priceAuto + 刊登 price=auto 缺一即跳；
+    // manual=用户在变更列表点了「应用」：明确意图，绕过自动策略门禁
+    const manual = job.payload.manual === true;
     if (
-      !store.rules?.monitor?.enabled ||
-      !store.rules.monitor.priceAuto ||
-      listing.syncPolicy.price !== "auto"
+      !manual &&
+      (!store.rules?.monitor?.enabled ||
+        !store.rules.monitor.priceAuto ||
+        listing.syncPolicy.price !== "auto")
     ) {
       return;
     }
@@ -1463,11 +1468,15 @@ const reconcileInventory: JobHandler = {
       const oos = isSourceOos(item.availability, item.skus, monitor);
       let dirty = false;
       const variants = listing.variants.map((v, i) => {
-        const sku =
-          (v.sourceSkuId
-            ? item.skus.find((s) => (s.skuId || s.spec) === v.sourceSkuId)
-            : undefined) ?? item.skus[i];
-        let qty = sku ? pushQuantity(sku.stock, inv) : v.stock ?? 0;
+        // sourceSkuId 已绑定但货源里没了 = 该规格被供应商下架 → 不借位，按 0 处理
+        const sku = v.sourceSkuId
+          ? item.skus.find((s) => (s.skuId || s.spec) === v.sourceSkuId)
+          : item.skus[i];
+        let qty = sku
+          ? pushQuantity(sku.stock, inv)
+          : v.sourceSkuId
+            ? 0
+            : (v.stock ?? 0);
         if (oos && inv?.oosAction === "zero") qty = 0;
         if (qty !== v.stock) {
           dirty = true;
@@ -1475,7 +1484,13 @@ const reconcileInventory: JobHandler = {
         }
         return v;
       });
-      if (!dirty) continue;
+      if (!dirty) {
+        // 库存没变也可能要处理断货动作（已在 0 库存但仍 published 的刊登）
+        if (oos && inv?.oosAction === "unpublish" && listing.status === "published") {
+          await enqueue(deps.db, DELIST_LISTING, { listingId: listing.id }, { workspaceId: store.workspaceId });
+        }
+        continue;
+      }
       await deps.db
         .update(listings)
         .set({ variants, updatedAt: new Date() })
@@ -1680,6 +1695,10 @@ const fulfillPush: JobHandler = {
     if (!adapter.pushFulfillment) throw new PermanentJobError("该平台不支持履约回传");
     const res = await adapter.pushFulfillment(deps, row.store, {
       remoteOrderId: row.order.remoteId,
+      lineItems: row.shipment.lineItems?.map((id) => ({
+        remoteLineItemId: id,
+        qty: Number.MAX_SAFE_INTEGER, // min() 收敛到 remainingQuantity
+      })),
       tracking: {
         number: row.shipment.trackingNo ?? "",
         company: row.shipment.carrier ?? undefined,

@@ -91,8 +91,9 @@ export function scoreDiscoveryItem(
 
 /** 到期判定：未跑过即到期；daily 计划距上次 feed ≥24h 到期。 */
 export function planIsDue(plan: { lastRunAt: Date | string | null; schedule: string }): boolean {
-  if (plan.lastRunAt == null) return true;
+  // manual 计划只响应 run-now，不走 alarm 周期
   if (plan.schedule !== "daily") return false;
+  if (plan.lastRunAt == null) return true;
   const at = new Date(plan.lastRunAt).getTime();
   return Number.isFinite(at) && Date.now() - at >= 24 * 3600 * 1000;
 }

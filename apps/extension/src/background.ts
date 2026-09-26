@@ -418,7 +418,14 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
         return false;
       }
       return reply(
-        chrome.storage.local.set({ auth: { apiBase, token } satisfies ExtAuth }).then(() => ({ ok: true })),
+        // 换绑工作区时清掉上一任的采购任务（含收货地址）与待确认采集队列
+        chrome.storage.local
+          .set({
+            auth: { apiBase, token } satisfies ExtAuth,
+            procures: [],
+            pending: [],
+          })
+          .then(() => ({ ok: true })),
         sendResponse,
       );
     }
@@ -541,11 +548,14 @@ async function discoveryTick() {
       }
       await sleep(RESCAN_GAP_MS);
     }
-    try {
-      await api("/discovery/feed", { planId: plan.id, items });
-      fed += items.length;
-    } catch {
-      /* 服务端挂了不影响下一轮 */
+    // 全抓空的轮次不上报：feed 会推进 lastRunAt，白跑一轮要再等 24h
+    if (items.length) {
+      try {
+        await api("/discovery/feed", { planId: plan.id, items });
+        fed += items.length;
+      } catch {
+        /* 服务端挂了不影响下一轮 */
+      }
     }
     if (blocked) break; // 风控要停，继续抓只会雪上加霜
   }

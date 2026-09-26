@@ -315,8 +315,34 @@ export function orderRoutes() {
             inArray(purchaseOrders.status, ["draft", "placed", "paid"]),
           ),
         );
-      let poId = existingLinks[0]?.purchase_orders.id;
+      // 只复用「所有行项都在本次覆盖集内」的采购单：PO 按货源聚合可能混了
+      // 别的订单/别的货源行，整单置 placed 会把无关行项一并标记
+      const coveredIds = new Set(covered.map((i) => i.id));
+      let poId: string | undefined;
+      for (const candId of new Set(existingLinks.map((l) => l.purchase_orders.id))) {
+        const rows = await deps.db
+          .select({ orderItemId: purchaseOrderItems.orderItemId })
+          .from(purchaseOrderItems)
+          .where(eq(purchaseOrderItems.purchaseOrderId, candId));
+        if (rows.length && rows.every((r) => coveredIds.has(r.orderItemId))) {
+          poId = candId;
+          break;
+        }
+      }
       if (!poId) {
+        // covered 行项若挂在别的未完结 PO 上（如手工合并进来的），先把链接搬走，
+        // 保证一条订单行只属于一张未完结采购单
+        const stalePoIds = [...new Set(existingLinks.map((l) => l.purchase_orders.id))];
+        if (stalePoIds.length) {
+          await deps.db
+            .delete(purchaseOrderItems)
+            .where(
+              and(
+                inArray(purchaseOrderItems.purchaseOrderId, stalePoIds),
+                inArray(purchaseOrderItems.orderItemId, covered.map((i) => i.id)),
+              ),
+            );
+        }
         const [created] = await deps.db
           .insert(purchaseOrders)
           .values({
@@ -330,6 +356,23 @@ export function orderRoutes() {
           .returning({ id: purchaseOrders.id });
         poId = created!.id;
         for (const it of covered) {
+          const sku = srcs
+            .find((s) => s.id === it.sourceItemId)
+            ?.skus.find((s) => s.skuId === it.sourceSkuId);
+          await deps.db.insert(purchaseOrderItems).values({
+            purchaseOrderId: poId,
+            orderItemId: it.id,
+            qty: it.qty,
+            unitPriceCny: sku?.priceCny ?? null,
+          });
+        }
+      } else {
+        const linked = new Set(
+          existingLinks
+            .filter((l) => l.purchase_orders.id === poId)
+            .map((l) => l.purchase_order_items.orderItemId),
+        );
+        for (const it of covered.filter((i) => !linked.has(i.id))) {
           const sku = srcs
             .find((s) => s.id === it.sourceItemId)
             ?.skus.find((s) => s.skuId === it.sourceSkuId);
@@ -403,6 +446,7 @@ export function orderRoutes() {
             carrier: body.carrier ?? s.carrier,
             trackingNo: body.trackingNo,
             trackingUrl: body.trackingUrl ?? s.trackingUrl,
+            lineItems: body.remoteLineItemIds ?? s.lineItems,
             status: "pending",
             lastError: null,
           })
@@ -416,6 +460,7 @@ export function orderRoutes() {
             carrier: body.carrier ?? null,
             trackingNo: body.trackingNo,
             trackingUrl: body.trackingUrl ?? null,
+            lineItems: body.remoteLineItemIds ?? null,
           })
           .returning({ id: shipments.id });
         shipmentId = ins!.id;

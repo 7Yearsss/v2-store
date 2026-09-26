@@ -97,7 +97,8 @@ export function deriveOrderStatus(
   if (ships.some((s) => s.status === "pushed")) return "shipped";
   if (!o.reviewedAt) return "new";
   const procurable = items.filter((i) => i.mapping !== "unmatched");
-  if (items.length && procurable.every((i) => i.procureStatus === "done")) return "to_ship";
+  // 全部行已匹配且全部采购完成才算可发货；procurable 为空时 every 误过
+  if (items.length && procurable.length === items.length && procurable.every((i) => i.procureStatus === "done")) return "to_ship";
   if (items.some((i) => ["queued", "placed", "shipped"].includes(i.procureStatus))) {
     return "procuring";
   }
@@ -174,7 +175,12 @@ export async function upsertRemoteOrder(
     itemsCount: remote.itemsCount ?? remote.lineItems.length,
     placedAt: remote.placedAt ? new Date(remote.placedAt) : null,
     syncedAt: new Date(),
-    raw: (remote.raw ?? remote) as Record<string, unknown>,
+    // raw 里剥掉收货地址：加密副本在 shippingAddressEnc，raw 不落明文 PII
+    raw: (() => {
+      const r = { ...((remote.raw ?? remote) as Record<string, unknown>) };
+      delete r.shippingAddress;
+      return r;
+    })(),
   };
 
   let orderId: string;
@@ -251,6 +257,7 @@ function toShipmentDto(s: typeof shipments.$inferSelect): Shipment {
     trackingNo: s.trackingNo,
     trackingUrl: s.trackingUrl,
     remoteFulfillmentId: s.remoteFulfillmentId,
+    lineItems: s.lineItems ?? null,
     status: s.status,
     lastError: s.lastError,
     createdAt: s.createdAt.toISOString(),
