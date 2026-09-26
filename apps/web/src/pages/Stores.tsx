@@ -1,4 +1,11 @@
-import type { PricingRule, Store, StoreRules, StoreSettingsPayload } from "@caiji/shared";
+import type {
+  PipelinePolicy,
+  PricingRule,
+  Store,
+  StoreRules,
+  StoreSettingsPayload,
+  SuggestionField,
+} from "@caiji/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -7,6 +14,7 @@ import {
   Card,
   Form,
   Input,
+  DatePicker,
   Empty,
   InputNumber,
   Modal,
@@ -140,7 +148,59 @@ type SettingsForm = PricingRule & {
   defaultTags?: string[];
   defaultProductType?: string;
   defaultWeightKg?: number;
+  monitorEnabled?: boolean;
+  monitorMinStock?: number;
+  monitorPriceAuto?: boolean;
+  invStrategy?: "mirror" | "fixed" | "percent" | "cap";
+  invFixedQty?: number;
+  invPercent?: number;
+  invCap?: number;
+  invBuffer?: number;
+  invOosAction?: "zero" | "unpublish" | "notify";
+  // 自动化链路（stores.rules.pipeline）
+  pipelineOn?: boolean;
+  pipelineAutoClaim?: boolean;
+  pipelineAutoAcceptFields?: SuggestionField[];
+  pipelineHoldPoint?: PipelinePolicy["holdPoint"];
+  pipelineAutoPublish?: boolean;
+  pipelinePublishMode?: PipelinePolicy["publishMode"];
+  pipelinePublishAt?: dayjs.Dayjs;
+  pipelinePaceMinutes?: number;
+  pipelineHoldOnWarning?: boolean;
+  pipelineDisabledStages?: string[];
+  /** rules 里本表单不管的键（未来分支加的键），原样带回避免覆盖。 */
+  extraRules?: Partial<StoreRules>;
 };
+
+/** rules 里由本表单管理的键；其余键原样透传（别的分支并行在 rules 上加键）。 */
+const FORM_RULE_KEYS = new Set([
+  "titlePrefix",
+  "titleSuffix",
+  "replacements",
+  "priceMinCny",
+  "priceMaxCny",
+  "maxImages",
+  "bannedWords",
+  "publishStatus",
+  "trackStock",
+  "inventoryLocationId",
+  "defaultTags",
+  "defaultProductType",
+  "defaultWeightKg",
+  "pipeline",
+  "monitor",
+  "inventory",
+]);
+
+const AUTO_ACCEPT_FIELD_OPTIONS: { value: SuggestionField; label: string }[] = [
+  { value: "title", label: "标题" },
+  { value: "descriptionHtml", label: "描述" },
+  { value: "productType", label: "商品类型" },
+  { value: "tags", label: "标签" },
+  { value: "options", label: "变体选项" },
+  { value: "category", label: "类目" },
+  { value: "attributes", label: "平台属性" },
+];
 
 const rulesToText = (rules?: StoreRules["replacements"]) =>
   (rules ?? []).map((r) => `${r.from} => ${r.to}`).join("\n");
@@ -158,6 +218,7 @@ function formToPayload(v: SettingsForm): StoreSettingsPayload {
     aiEnhance: v.aiEnhance ?? true,
     language: v.language ?? "en",
     rules: {
+      ...(v.extraRules ?? {}),
       titlePrefix: v.titlePrefix?.trim() || undefined,
       titleSuffix: v.titleSuffix?.trim() || undefined,
       replacements: textToRules(v.replacementsText),
@@ -171,6 +232,41 @@ function formToPayload(v: SettingsForm): StoreSettingsPayload {
       defaultTags: v.defaultTags ?? [],
       defaultProductType: v.defaultProductType?.trim() || undefined,
       defaultWeightKg: v.defaultWeightKg ?? undefined,
+      monitor: {
+        enabled: v.monitorEnabled ?? false,
+        minStock: v.monitorMinStock ?? null,
+        priceAuto: v.monitorPriceAuto ?? false,
+      },
+      inventory: {
+        strategy: v.invStrategy ?? "mirror",
+        fixedQty: v.invFixedQty ?? undefined,
+        percent: v.invPercent ?? undefined,
+        cap: v.invCap ?? undefined,
+        buffer: v.invBuffer ?? undefined,
+        oosAction: v.invOosAction ?? "notify",
+      },
+      // pipeline 键存在 = 链路开启；关闭时整个键不落库
+      pipeline: v.pipelineOn
+        ? {
+            autoClaim: v.pipelineAutoClaim ?? false,
+            autoAcceptFields: v.pipelineAutoAcceptFields?.length
+              ? v.pipelineAutoAcceptFields
+              : undefined,
+            holdPoint: v.pipelineHoldPoint ?? "auto",
+            autoPublish: v.pipelineAutoPublish ?? false,
+            publishMode: v.pipelinePublishMode ?? "now",
+            publishAt:
+              v.pipelinePublishMode === "scheduled" && v.pipelinePublishAt
+                ? v.pipelinePublishAt.toISOString()
+                : undefined,
+            paceMinutes:
+              v.pipelinePublishMode === "paced" ? (v.pipelinePaceMinutes ?? 30) : undefined,
+            holdOnWarning: v.pipelineHoldOnWarning ?? false,
+            disabledStages: v.pipelineDisabledStages?.length
+              ? v.pipelineDisabledStages
+              : undefined,
+          }
+        : undefined,
     },
     pricing: {
       exchangeRate: v.exchangeRate,
@@ -202,6 +298,30 @@ function payloadToForm(p: StoreSettingsPayload): SettingsForm {
     defaultTags: p.rules.defaultTags ?? [],
     defaultProductType: p.rules.defaultProductType,
     defaultWeightKg: p.rules.defaultWeightKg,
+    monitorEnabled: p.rules.monitor?.enabled ?? false,
+    monitorMinStock: p.rules.monitor?.minStock ?? undefined,
+    monitorPriceAuto: p.rules.monitor?.priceAuto ?? false,
+    invStrategy: p.rules.inventory?.strategy ?? "mirror",
+    invFixedQty: p.rules.inventory?.fixedQty ?? undefined,
+    invPercent: p.rules.inventory?.percent ?? undefined,
+    invCap: p.rules.inventory?.cap ?? undefined,
+    invBuffer: p.rules.inventory?.buffer ?? undefined,
+    invOosAction: p.rules.inventory?.oosAction ?? "notify",
+    pipelineOn: !!p.rules.pipeline,
+    pipelineAutoClaim: p.rules.pipeline?.autoClaim ?? false,
+    pipelineAutoAcceptFields: p.rules.pipeline?.autoAcceptFields ?? [],
+    pipelineHoldPoint: p.rules.pipeline?.holdPoint ?? "auto",
+    pipelineAutoPublish: p.rules.pipeline?.autoPublish ?? false,
+    pipelinePublishMode: p.rules.pipeline?.publishMode ?? "now",
+    pipelinePublishAt: p.rules.pipeline?.publishAt
+      ? dayjs(p.rules.pipeline.publishAt)
+      : undefined,
+    pipelinePaceMinutes: p.rules.pipeline?.paceMinutes,
+    pipelineHoldOnWarning: p.rules.pipeline?.holdOnWarning ?? false,
+    pipelineDisabledStages: p.rules.pipeline?.disabledStages ?? [],
+    extraRules: Object.fromEntries(
+      Object.entries(p.rules).filter(([k]) => !FORM_RULE_KEYS.has(k)),
+    ) as Partial<StoreRules>,
   };
 }
 
@@ -324,6 +444,7 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
         )}
       </Space>
       <Form form={form} layout="vertical">
+        <Form.Item name="extraRules" hidden />
         <Typography.Title level={5}>定价</Typography.Title>
         <Space size={12} style={{ display: "flex" }}>
           <Form.Item name="exchangeRate" label={`汇率（1 人民币 = ? ${cur}）`} rules={[{ required: true }]}>
@@ -430,6 +551,86 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             />
           </Form.Item>
         </Space>
+        <Typography.Title level={5}>库存推送规则（仓储 L1）</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item
+            name="invStrategy"
+            label="推送数量策略"
+            extra="货源库存 → 写入渠道的变换；mirror 原样，fixed 固定值，percent 按比例，cap 封顶"
+          >
+            <Select
+              style={{ width: 150 }}
+              options={[
+                { value: "mirror", label: "原样同步" },
+                { value: "fixed", label: "固定值" },
+                { value: "percent", label: "按比例" },
+                { value: "cap", label: "封顶" },
+              ]}
+            />
+          </Form.Item>
+          {watched?.invStrategy === "fixed" && (
+            <Form.Item name="invFixedQty" label="固定库存数">
+              <InputNumber min={0} max={1000000} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          {watched?.invStrategy === "percent" && (
+            <Form.Item name="invPercent" label="比例（0-1）">
+              <InputNumber min={0} max={1} step={0.05} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          {watched?.invStrategy === "cap" && (
+            <Form.Item name="invCap" label="封顶值">
+              <InputNumber min={0} max={1000000} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          <Form.Item name="invBuffer" label="安全余量" extra="推送量再减该值，防止超卖">
+            <InputNumber min={0} max={1000000} style={{ width: 110 }} placeholder="0" />
+          </Form.Item>
+          <Form.Item
+            name="invOosAction"
+            label="货源售罄动作"
+            extra="货源下架或低于库存阈值时：推 0 = 清零库存，下架 = 刊登转草稿，只提醒 = 仅关注页提示"
+          >
+            <Select
+              style={{ width: 150 }}
+              options={[
+                { value: "notify", label: "只提醒" },
+                { value: "zero", label: "库存推 0" },
+                { value: "unpublish", label: "下架刊登" },
+              ]}
+            />
+          </Form.Item>
+        </Space>
+        <Typography.Title level={5}>货源监控</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item
+            name="monitorEnabled"
+            label="开启监控"
+            valuePropName="checked"
+            extra="插件回扫发现货源变化时按上面的规则自动处理；不开则只在关注页记录"
+          >
+            <Switch />
+          </Form.Item>
+          {watched?.monitorEnabled && (
+            <>
+              <Form.Item
+                name="monitorMinStock"
+                label="低库存阈值"
+                extra="货源全部 SKU 库存 ≤ 该值时按售罄处理"
+              >
+                <InputNumber min={0} max={1000000} placeholder="不启用" style={{ width: 120 }} />
+              </Form.Item>
+              <Form.Item
+                name="monitorPriceAuto"
+                label="自动跟价"
+                valuePropName="checked"
+                extra="货源改价时按定价规则重算并推送渠道价（刊登还需勾选价格自动同步）"
+              >
+                <Switch />
+              </Form.Item>
+            </>
+          )}
+        </Space>
         <Typography.Title level={5}>AI 产线</Typography.Title>
         <Space size={12} style={{ display: "flex" }}>
           <Form.Item
@@ -460,6 +661,112 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
             />
           </Form.Item>
         </Space>
+        <Typography.Title level={5}>自动化链路</Typography.Title>
+        <Form.Item
+          name="pipelineOn"
+          label="启用一键链路"
+          valuePropName="checked"
+          extra="采集/认领后自动走 AI → 卡点 → 发布前检查 → 发布；关闭则认领只建草稿"
+        >
+          <Switch />
+        </Form.Item>
+        {watched?.pipelineOn && (
+          <>
+            <Space size={12} style={{ display: "flex" }} wrap>
+              <Form.Item
+                name="pipelineAutoClaim"
+                label="采集后自动认领"
+                valuePropName="checked"
+                extra="新货源进采集箱即自动认领到本店"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="pipelineHoldPoint"
+                label="审核卡点"
+                extra="在哪个环节停下等人工放行"
+              >
+                <Select
+                  style={{ width: 220 }}
+                  options={[
+                    { value: "auto", label: "全自动（不卡）" },
+                    { value: "after_ai", label: "AI 建议后待人工" },
+                    { value: "after_precheck", label: "发布检查通过后待人工" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
+                name="pipelineAutoPublish"
+                label="检查通过自动发布"
+                valuePropName="checked"
+                extra="关闭则停在待发布态等手工推进"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="pipelineHoldOnWarning"
+                label="门禁告警也暂停"
+                valuePropName="checked"
+                extra="发布前检查出现 warn 级问题时卡住待确认（block 级永远拦）"
+              >
+                <Switch />
+              </Form.Item>
+            </Space>
+            <Form.Item
+              name="pipelineAutoAcceptFields"
+              label="自动接受的 AI 建议字段"
+              extra="白名单字段的建议自动应用（类目/选项/属性同时写学习映射）"
+            >
+              <Select
+                mode="multiple"
+                style={{ width: "100%" }}
+                placeholder="都不自动接受"
+                options={AUTO_ACCEPT_FIELD_OPTIONS}
+              />
+            </Form.Item>
+            <Space size={12} style={{ display: "flex" }} wrap>
+              <Form.Item name="pipelinePublishMode" label="发布节奏">
+                <Select
+                  style={{ width: 170 }}
+                  options={[
+                    { value: "now", label: "立即发布" },
+                    { value: "scheduled", label: "定时发布" },
+                    { value: "paced", label: "按间隔发布" },
+                  ]}
+                />
+              </Form.Item>
+              {watched?.pipelinePublishMode === "scheduled" && (
+                <Form.Item name="pipelinePublishAt" label="发布时间">
+                  <DatePicker showTime style={{ width: 200 }} />
+                </Form.Item>
+              )}
+              {watched?.pipelinePublishMode === "paced" && (
+                <Form.Item
+                  name="pipelinePaceMinutes"
+                  label="发布间隔（分钟）"
+                  extra="同店相邻两件自动发布至少隔这么久"
+                >
+                  <InputNumber min={1} max={1440} placeholder="30" style={{ width: 140 }} />
+                </Form.Item>
+              )}
+              <Form.Item
+                name="pipelineDisabledStages"
+                label="关闭的 AI 环节"
+                extra="关掉的 stage 不再产出建议"
+              >
+                <Select
+                  mode="multiple"
+                  style={{ width: 220 }}
+                  placeholder="全部开启"
+                  options={[
+                    { value: "enhance", label: "内容优化" },
+                    { value: "categorySuggest", label: "类目推荐" },
+                  ]}
+                />
+              </Form.Item>
+            </Space>
+          </>
+        )}
         <Typography.Title level={5}>采集预处理</Typography.Title>
         <Space size={12} style={{ display: "flex" }} wrap>
           <Form.Item name="titlePrefix" label="标题前缀">

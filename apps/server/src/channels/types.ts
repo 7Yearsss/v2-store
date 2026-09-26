@@ -1,9 +1,12 @@
 import type {
   CategoryCandidate,
   ChannelAttribute,
+  FulfillPushInput,
   ListingVariant,
+  RemoteOrder,
   RemoteSnapshot,
   RemoteStatus,
+  RemoteVariantMap,
 } from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
@@ -44,6 +47,8 @@ export interface PublishResult {
   remoteUrl: string | null;
   /** set on first publish; undefined = leave the synced value alone */
   remoteStatus?: RemoteStatus;
+  /** 本地变体 sku ↔ 远端 variantId 映射（回填 listings.remote_variant_map，订单行匹配键）。 */
+  remoteVariantMap?: RemoteVariantMap;
   /** published, but something needs attention (e.g. images failed) */
   warnings?: string[];
 }
@@ -83,6 +88,16 @@ export interface ChannelAdapter {
    * 可选能力：缺省时同步链路用全量发布兜底（会记审计标明是兜底覆盖）。
    */
   pushStock?(
+    deps: Deps,
+    store: StoreRow,
+    remoteId: string,
+    variants: ListingVariant[],
+  ): Promise<string | null>;
+  /**
+   * 只更新远端变体价格（货源改价重算后的轻量同步，不动标题/描述/库存）。
+   * 返回警告文案或 null；可选能力：缺省时同步链路只标 drift。
+   */
+  pushPrices?(
     deps: Deps,
     store: StoreRow,
     remoteId: string,
@@ -131,4 +146,32 @@ export interface ChannelAdapter {
     deps: Deps,
     store: StoreRow,
   ): Promise<Array<{ id: string; name: string; isActive: boolean }>>;
+  /**
+   * OAuth 授权店连接成功后注册订单 webhook（orders/create|updated|cancelled）。
+   * 手动 token 店没有我们的 app secret，验签不了 —— 缺省 = 只能走增量轮询。
+   */
+  registerOrderWebhooks?(
+    deps: Deps,
+    store: StoreRow,
+    callbackUrl: string,
+  ): Promise<{ registered: string[]; errors: string[] }>;
+  /**
+   * 拉渠道订单：remoteId 给定时拉单条，否则按 updatedAfter（ISO 游标）增量拉；
+   * after 续传分页位置。返回 { orders, nextAfter }——nextAfter 非空表示这次
+   * 没拉完（页数打满），调用方应原样记下游标下次续拉，别推进 updatedAfter。
+   */
+  fetchOrders?(
+    deps: Deps,
+    store: StoreRow,
+    opts: { updatedAfter?: string | null; remoteId?: string; after?: string | null },
+  ): Promise<{ orders: RemoteOrder[]; nextAfter: string | null }>;
+  /**
+   * 履约回传：fulfillmentOrders → fulfillmentCreate（trackingInfo + notifyCustomer），
+   * 部分发货按 fulfillmentOrder 粒度。返回远端 fulfillment id；缺省 = 不支持。
+   */
+  pushFulfillment?(
+    deps: Deps,
+    store: StoreRow,
+    input: FulfillPushInput,
+  ): Promise<{ remoteFulfillmentId: string }>;
 }

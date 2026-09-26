@@ -1,15 +1,18 @@
-import type { CollectHarvest } from "@caiji/shared";
+import type { CollectHarvest, DiscoveryFeedItem } from "@caiji/shared";
 import {
   descImagesFromHtml,
   descUrlFromData,
   findInitData,
   productOnlyData,
+  stripViewerData,
 } from "@caiji/shared";
 import type {
   BgMessage,
   BgResponse,
+  DiscoveryPlanMeta,
   PendingChanged,
   PendingItem,
+  ProcureOfferTask,
   SubmitPendingResult,
   SubmitResult,
 } from "./lib/messages";
@@ -62,6 +65,21 @@ async function api<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function apiGet<T>(path: string): Promise<T> {
+  const auth = await getAuth();
+  if (!auth) throw new NotAuthorizedError();
+  const res = await fetch(`${auth.apiBase}/api${path}`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    await chrome.storage.local.remove("auth");
+    throw new NotAuthorizedError("插件授权已失效，请在工作台重新「授权插件」");
+  }
+  if (!res.ok) throw new Error(data?.error ?? `服务端错误 HTTP ${res.status}`);
+  return data as T;
+}
+
 /**
  * Copy a collected item's images into our storage: download in the user's
  * browser (reliable access to the source CDN from their network), upload
@@ -103,7 +121,7 @@ async function submitHarvest(harvest: CollectHarvest) {
 
 /** Collect an offer by id: fetch detail HTML in the user's 1688 session, ship
  * it to the server which owns all field extraction (harvest contract). */
-async function collectByOfferId(offerId: string) {
+async function collectByOfferId(offerId: string, via?: PendingItem["via"]) {
   if (!/^\d+$/.test(offerId)) throw new Error("offerId 格式错误");
   const url = `https://detail.1688.com/offer/${offerId}.html`;
   const resp = await fetch(url, { credentials: "include" });
@@ -118,17 +136,24 @@ async function collectByOfferId(offerId: string) {
   if (!data && /punish|verifycode|滑块验证/.test(html)) {
     throw new Error("1688 触发了安全验证，请在浏览器里打开任一 1688 商品页完成滑块后重试");
   }
+  // 详情页无商品数据且出现下架标记 → 上报服务端（source_changes: delisted）
+  if (!data && /已下架|商品不存在|该商品已删除|已被删除|已售完|商品已被移除/.test(html)) {
+    await api("/collect/report", { offerId, availability: "delisted" }).catch(() => {});
+    throw new Error("货源已下架（已上报服务端）");
+  }
   // 详情图只活在 DOM/ descUrl 接口里——后台再拉一次 descUrl HTML 解析。
   const descUrl = data ? descUrlFromData(data) : undefined;
   const descImages = descUrl ? await fetchDescImages(descUrl).catch(() => []) : [];
   return submitHarvest({
     sourceInfo: { itemUrl: url, itemId: offerId, site: "detail", source: "1688" },
-    pageContent: data ? undefined : html,
+    // 解析失败兜底上传整页前先把浏览者自己的买家数据（buyerModel）剥掉
+    pageContent: data ? undefined : stripViewerData(html),
     afterUrl: resp.url,
     productExtInfo: data
       ? { initData: productOnlyData(data), ...(descImages.length ? { descImages } : {}) }
       : undefined,
     collectedAt: new Date().toISOString(),
+    collectedVia: via,
   });
 }
 
@@ -186,6 +211,23 @@ async function stageCollect(item: PendingItem) {
   return { count: items.length };
 }
 
+/** 批量 stage（选品页勾选采集）：一次 read-modify-write，避免并发丢更新。 */
+async function stageCollectMany(items: PendingItem[]) {
+  const pending = await getPending();
+  for (const item of items) {
+    const idx = pending.findIndex((i) => i.offerId === item.offerId);
+    if (idx >= 0) {
+      pending[idx] = { ...item, harvest: item.harvest ?? pending[idx]!.harvest };
+    } else {
+      if (pending.length >= PENDING_MAX) break;
+      pending.push(item);
+    }
+  }
+  await chrome.storage.local.set({ [PENDING_KEY]: pending });
+  await broadcastPending();
+  return { count: pending.length };
+}
+
 async function unstage(offerId: string) {
   const items = (await getPending()).filter((i) => i.offerId !== offerId);
   await chrome.storage.local.set({ [PENDING_KEY]: items });
@@ -207,8 +249,11 @@ async function submitPending(offerIds: string[]): Promise<SubmitPendingResult> {
   for (const it of targets) {
     try {
       const r = it.harvest
-        ? await submitHarvest(it.harvest)
-        : await collectByOfferId(it.offerId);
+        ? await submitHarvest({
+            ...it.harvest,
+            collectedVia: it.harvest.collectedVia ?? it.via,
+          })
+        : await collectByOfferId(it.offerId, it.via);
       results.push({
         offerId: it.offerId,
         ok: true,
@@ -229,6 +274,58 @@ async function submitPending(offerIds: string[]): Promise<SubmitPendingResult> {
   });
   await broadcastPending(okIds);
   return { results };
+}
+
+// --- 待采购任务 ---------------------------------------------------------------
+// web 侧订单页「去采购」经 site-bridge 下发采购卡负载；按 (orderId, offerId) 去重。
+// 详情页 content script 按 offerId 取任务渲染采购卡；「标记已下单」回传后剔除。
+
+const PROCURE_KEY = "procures";
+
+async function getProcures(): Promise<ProcureOfferTask[]> {
+  const { [PROCURE_KEY]: items } = await chrome.storage.local.get(PROCURE_KEY);
+  return (items as ProcureOfferTask[] | undefined) ?? [];
+}
+
+async function broadcastProcure() {
+  const tabs = await chrome.tabs.query({ url: ["*://*.1688.com/*", "*://1688.com/*"] });
+  for (const t of tabs) {
+    if (t.id != null) {
+      chrome.tabs.sendMessage(t.id, { type: "V2_PROCURE_CHANGED" }).catch(() => {});
+    }
+  }
+}
+
+async function putProcure(orderId: string, orderName: string | null | undefined, offers: ProcureOfferTask[], address?: unknown) {
+  const items = await getProcures();
+  const drop = new Set(offers.map((o) => `${orderId}:${o.offerId}`));
+  const keep = items.filter((i) => !drop.has(`${i.orderId}:${i.offerId}`));
+  for (const o of offers) {
+    keep.push({ ...o, orderId, orderName: orderName ?? o.orderName, address: (address as never) ?? o.address });
+  }
+  await chrome.storage.local.set({ [PROCURE_KEY]: keep });
+  await broadcastProcure();
+  // 打开第一个货源详情页；多张卡时面板里可逐个跳
+  const first = offers[0]?.offerId;
+  if (first) {
+    await chrome.tabs.create({ url: `https://detail.1688.com/offer/${first}.html` });
+  }
+  return { count: keep.length };
+}
+
+async function removeProcure(orderId: string, offerId?: string) {
+  const keep = (await getProcures()).filter(
+    (i) => !(i.orderId === orderId && (!offerId || i.offerId === offerId)),
+  );
+  await chrome.storage.local.set({ [PROCURE_KEY]: keep });
+  await broadcastProcure();
+}
+
+/** 插件「标记已下单」→ 服务端回填 sourceOrderId + 行项推进 placed。 */
+async function markProcurePlaced(orderId: string, sourceOrderId: string, offerId?: string) {
+  await api(`/orders/${orderId}/procure-confirm`, { offerId, sourceOrderId });
+  await removeProcure(orderId, offerId);
+  return { ok: true };
 }
 
 function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
@@ -253,6 +350,18 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(collectByOfferId(String((msg as any).offerId ?? "")), sendResponse);
     case "STAGE_COLLECT":
       return reply(stageCollect((msg as any).item), sendResponse);
+    case "STAGE_COLLECT_MANY":
+      return reply(stageCollectMany(((msg as any).items ?? []) as PendingItem[]), sendResponse);
+    case "DISCOVERY_FEED":
+      return reply(
+        api("/discovery/feed", {
+          planId: (msg as any).planId ?? null,
+          items: ((msg as any).items ?? []) as DiscoveryFeedItem[],
+        }),
+        sendResponse,
+      );
+    case "GET_DISCOVERY_PLANS":
+      return reply(getDiscoveryPlans().then((plans) => ({ plans })), sendResponse);
     case "GET_PENDING":
       return reply(getPending().then((items) => ({ items })), sendResponse);
     case "UNSTAGE":
@@ -261,6 +370,31 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(clearPending(), sendResponse);
     case "SUBMIT_PENDING":
       return reply(submitPending(((msg as any).offerIds ?? []) as string[]), sendResponse);
+    case "PROCURE_1688": {
+      const m = msg as any;
+      return reply(
+        putProcure(String(m.orderId), m.orderName, (m.offers ?? []) as ProcureOfferTask[], m.address),
+        sendResponse,
+      );
+    }
+    case "GET_PROCURE": {
+      const offerId = String((msg as any).offerId ?? "");
+      return reply(
+        getProcures().then((items) => ({
+          items: items.filter((i) => i.offerId === offerId),
+        })),
+        sendResponse,
+      );
+    }
+    case "GET_PROCURE_LIST":
+      return reply(getProcures().then((items) => ({ items })), sendResponse);
+    case "PROCURE_PLACED": {
+      const m = msg as any;
+      return reply(
+        markProcurePlaced(String(m.orderId), String(m.sourceOrderId ?? ""), m.offerId),
+        sendResponse,
+      );
+    }
     case "GET_STATUS":
       return reply(
         getAuth().then((auth) => ({
@@ -286,7 +420,14 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
         return false;
       }
       return reply(
-        chrome.storage.local.set({ auth: { apiBase, token } satisfies ExtAuth }).then(() => ({ ok: true })),
+        // 换绑工作区时清掉上一任的采购任务（含收货地址）与待确认采集队列
+        chrome.storage.local
+          .set({
+            auth: { apiBase, token } satisfies ExtAuth,
+            procures: [],
+            pending: [],
+          })
+          .then(() => ({ ok: true })),
         sendResponse,
       );
     }
@@ -337,8 +478,101 @@ async function rescanTick() {
   }
 }
 
+// --- 选品回流 ---------------------------------------------------------------
+// tasks 拉到的所有启用计划缓存给 list.ts 做被动匹配；due 的计划在这里抓列表页
+// → offscreen DOMParser 提卡 → POST /discovery/feed。
+
+const PLANS_KEY = "discoveryPlans";
+const PLANS_TTL_MS = 10 * 60_000;
+
+async function getDiscoveryPlans(force = false): Promise<DiscoveryPlanMeta[]> {
+  const { [PLANS_KEY]: cache } = await chrome.storage.local.get(PLANS_KEY);
+  const c = cache as { at: number; plans: DiscoveryPlanMeta[] } | undefined;
+  if (!force && c && Date.now() - c.at < PLANS_TTL_MS) return c.plans;
+  const { items } = await apiGet<{ items: DiscoveryPlanMeta[] }>("/discovery/tasks");
+  await chrome.storage.local.set({ [PLANS_KEY]: { at: Date.now(), plans: items } });
+  return items;
+}
+
+let offscreenReady = false;
+async function ensureOffscreen() {
+  if (offscreenReady) return;
+  const runtime = chrome.runtime as typeof chrome.runtime & {
+    getContexts?: (q: { contextTypes: string[] }) => Promise<unknown[]>;
+  };
+  const existing = await runtime.getContexts?.({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
+  if (!existing?.length) {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: [chrome.offscreen.Reason.DOM_PARSER],
+      justification: "解析 1688 列表页 HTML 提取选品候选卡片",
+    });
+  }
+  offscreenReady = true;
+}
+
+async function parseCardsInOffscreen(html: string): Promise<DiscoveryFeedItem[]> {
+  await ensureOffscreen();
+  const res = await chrome.runtime.sendMessage({ type: "PARSE_OFFER_CARDS", html });
+  return ((res?.items ?? []) as DiscoveryFeedItem[]).slice(0, 60);
+}
+
+/** alarm 顺带跑：到期 daily 计划抓搜索/榜单页 → 提卡 → feed 回服务端。 */
+async function discoveryTick() {
+  const auth = await getAuth();
+  if (!auth) return;
+  let plans: DiscoveryPlanMeta[] = [];
+  try {
+    plans = await getDiscoveryPlans(true);
+  } catch {
+    return; // 未授权/服务端没部署新接口时静默退出
+  }
+  let fed = 0;
+  for (const plan of plans) {
+    if (!plan.due || !plan.urls?.length) continue;
+    const items: DiscoveryFeedItem[] = [];
+    let blocked = false;
+    for (const url of plan.urls.slice(0, 5)) {
+      try {
+        const resp = await fetch(url, { credentials: "include", cache: "no-store" });
+        if (!resp.ok) break;
+        const html = await resp.text();
+        if (
+          /login\.(taobao|1688)\.com/.test(resp.url) ||
+          /punish|verifycode|滑块验证/.test(html)
+        ) {
+          blocked = true;
+          break;
+        }
+        items.push(...(await parseCardsInOffscreen(html)));
+      } catch {
+        break;
+      }
+      await sleep(RESCAN_GAP_MS);
+    }
+    // 全抓空的轮次不上报：feed 会推进 lastRunAt，白跑一轮要再等 24h
+    if (items.length) {
+      try {
+        await api("/discovery/feed", { planId: plan.id, items });
+        fed += items.length;
+      } catch {
+        /* 服务端挂了不影响下一轮 */
+      }
+    }
+    if (blocked) break; // 风控要停，继续抓只会雪上加霜
+  }
+  await chrome.storage.local.set({
+    discovery: { at: new Date().toISOString(), plans: plans.length, fed },
+  });
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === RESCAN_ALARM) void rescanTick();
+  if (alarm.name === RESCAN_ALARM) {
+    void (async () => {
+      await discoveryTick();
+      await rescanTick();
+    })();
+  }
 });
 
 // alarms 随浏览器重启保留，但 onStartup 兜底建一次（老版本升级/异常丢失）。

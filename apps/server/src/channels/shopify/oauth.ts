@@ -1,11 +1,14 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, Deps } from "../../context.js";
 import { stores } from "../../db/schema.js";
+import { audit } from "../../lib/audit.js";
 import { HttpError } from "../../lib/errors.js";
+import { enqueueOrderSync } from "../../jobs/handlers.js";
 import { requireAuth } from "../../modules/auth.js";
 import { connectShopifyStore } from "../../modules/stores.js";
+import { adapterFor } from "../index.js";
 import { normalizeShopDomain } from "./client.js";
 
 /**
@@ -97,17 +100,51 @@ export function shopifyAppRoutes() {
     });
     if (!res.ok) throw new HttpError(502, `Shopify 换取令牌失败 HTTP ${res.status}`);
     const token = (await res.json()) as { access_token: string; scope?: string };
-    await connectShopifyStore(deps, workspaceId, shop, {
+    const store = await connectShopifyStore(deps, workspaceId, shop, {
       kind: "oauth",
       accessToken: token.access_token,
       scope: token.scope,
     });
+    // oauth 店注册订单 webhook（手动 token 店没有我们的 app secret，只能轮询）。
+    // 注册失败不阻塞连接——增量轮询仍在兜底。
+    const adapter = adapterFor(store.platform);
+    if (adapter.registerOrderWebhooks) {
+      try {
+        const res = await adapter.registerOrderWebhooks(
+          deps,
+          store,
+          `${deps.config.appUrl}/api/shopify/webhooks`,
+        );
+        if (res.errors.length || res.registered.length < 3) {
+          await audit(deps.db, workspaceId, {
+            actor: "system",
+            action: "order.webhooks_partial",
+            entityType: "store",
+            entityId: store.id,
+            payload: { registered: res.registered, errors: res.errors },
+          });
+        }
+      } catch (e) {
+        await audit(deps.db, workspaceId, {
+          actor: "system",
+          action: "order.webhooks_failed",
+          entityType: "store",
+          entityId: store.id,
+          payload: { error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    }
     return c.redirect(`${deps.config.appUrl}/stores?connected=${encodeURIComponent(shop)}`);
   });
 
-  /** app/uninstalled + mandatory privacy webhooks (we hold no customer PII). */
+  /**
+   * app/uninstalled + mandatory privacy webhooks + 订单 topics。
+   * 订单 webhook 只入队不处理报文：worker 内按 remoteId 拉最新单（payload 会过期）。
+   * 手动 token 店的 webhook 用商家自建应用 secret 签，这里验签不了 → 那类店只靠轮询。
+   */
   r.post("/webhooks", async (c) => {
-    const { apiSecret } = requireApp(c.var.deps);
+    const deps = c.var.deps;
+    const { apiSecret } = requireApp(deps);
     const raw = await c.req.text();
     const given = c.req.header("x-shopify-hmac-sha256") ?? "";
     const digest = createHmac("sha256", apiSecret).update(raw, "utf8").digest("base64");
@@ -115,10 +152,35 @@ export function shopifyAppRoutes() {
     const topic = c.req.header("x-shopify-topic");
     const shop = c.req.header("x-shopify-shop-domain");
     if (topic === "app/uninstalled" && shop) {
-      await c.var.deps.db
+      await deps.db
         .update(stores)
         .set({ status: "disconnected", lastError: "应用已从店铺卸载" })
         .where(eq(stores.shopDomain, shop));
+    } else if (
+      shop &&
+      topic &&
+      ["orders/create", "orders/updated", "orders/cancelled"].includes(topic)
+    ) {
+      // webhook 用我们 app 的 secret 签的 → 只路由到 oauth 店；
+      // 手动 token 店在同一 shopDomain 下不该吃到别的 workspace 的订单数据
+      const [store] = await deps.db
+        .select()
+        .from(stores)
+        .where(and(eq(stores.shopDomain, shop), eq(stores.authType, "oauth")))
+        .orderBy(desc(stores.updatedAt))
+        .limit(1);
+      if (store) {
+        // 只取 gid 做定向同步；拿不到就退全店增量（报文本体绝不进 worker）
+        let remoteId: string | undefined;
+        try {
+          const id = (JSON.parse(raw) as { admin_graphql_api_id?: string })
+            .admin_graphql_api_id;
+          if (typeof id === "string" && id) remoteId = id;
+        } catch {
+          /* fall through to incremental */
+        }
+        await enqueueOrderSync(deps.db, store.id, store.workspaceId, remoteId);
+      }
     }
     return c.text("ok");
   });

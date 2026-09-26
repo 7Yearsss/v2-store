@@ -25,6 +25,7 @@ await build({
     "collect1688-main": "src/main-world/1688.ts",
     "site-bridge": "src/site-bridge.ts",
     list: "src/list.ts",
+    offscreen: "src/offscreen.ts",
   },
 });
 

@@ -169,6 +169,52 @@ function getModel(data: any): any | null {
  * browser — the current format also carries the *viewer's* 1688 account
  * (buyerModel), which we must not ship to our server.
  */
+/**
+ * Raw-HTML sanitizer for the fallback path: when the client can't parse init
+ * data we still must not ship the viewer's own 1688 account (buyerModel).
+ * Brace-matches `buyerModel: {…}` / `["buyerModel": […]]` literals (quoted or
+ * bare keys) inside script blobs and cuts them out.
+ */
+export function stripViewerData(html: string): string {
+  let out = html;
+  const keyRe = /"?buyerModel"?\s*:\s*/g;
+  for (;;) {
+    const m = keyRe.exec(out);
+    if (!m) break;
+    let i = m.index + m[0].length;
+    const openCh = out[i];
+    if (openCh !== "{" && openCh !== "[") continue; // scalar, leave it
+    const closeCh = openCh === "{" ? "}" : "]";
+    let depth = 0;
+    let inStr = false;
+    let start = i;
+    for (; i < out.length; i++) {
+      const ch = out[i]!;
+      if (inStr) {
+        if (ch === "\\") i++;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === openCh) depth++;
+      else if (ch === closeCh) {
+        depth--;
+        if (depth === 0) {
+          // remove `key:{…}` plus a trailing comma when present
+          let j = i + 1;
+          while (out[j] === " " || out[j] === "\n") j++;
+          if (out[j] === ",") j++;
+          out = out.slice(0, m.index) + out.slice(j);
+          keyRe.lastIndex = 0;
+          break;
+        }
+      }
+    }
+    if (i >= out.length) break; // unbalanced → stop
+  }
+  return out;
+}
+
 export function productOnlyData(data: any): any {
   const model = getModel(data);
   if (!model) return data;

@@ -3,9 +3,9 @@
  * shop (offer list sniffed on this page → background fetch per offer).
  */
 
-import type { CollectHarvest } from "@caiji/shared";
+import type { CollectHarvest, ShippingAddress } from "@caiji/shared";
 import { collectorRequest } from "./lib/bridge";
-import { sendToBackground, type SubmitResult } from "./lib/messages";
+import { sendToBackground, type ProcureOfferTask, type SubmitResult } from "./lib/messages";
 import { el, mountPanel, sleep } from "./ui/panel";
 
 const offerId = location.href.match(/offer\/(\d+)/)?.[1];
@@ -21,7 +21,8 @@ const offerId = location.href.match(/offer\/(\d+)/)?.[1];
   const collectBtn = el("button", { class: "btn primary" }, "采集此商品");
   const shopBtn = el("button", { class: "btn" }, "整店加入待确认（最多 50 个）");
   const hint = el("div", { class: "stat" });
-  panel.setActions(hint, collectBtn, shopBtn);
+  const procureBox = el("div");
+  panel.setActions(hint, collectBtn, shopBtn, procureBox);
 
   const refreshEnabled = () => {
     collectBtn.disabled = shopBtn.disabled = !panel.status.authorized;
@@ -135,4 +136,77 @@ const offerId = location.href.match(/offer\/(\d+)/)?.[1];
       refreshEnabled();
     }
   };
+
+  // --- 采购卡：本页 offerId 有待采购任务时，浮层显示规格/数量/地址一键复制 + 标记已下单 ---
+  const fmtAddr = (a?: ShippingAddress | null) =>
+    a ? [a.recipient, a.phone, [a.country, a.province, a.city].filter(Boolean).join(" "), a.address1, a.address2, a.postcode].filter(Boolean).join("，") : "";
+  const copy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      panel.toast(`${label}已复制`);
+    } catch {
+      panel.toast(`复制失败：${label}`, false);
+    }
+  };
+  const renderProcure = async () => {
+    if (!offerId || !panel.status.authorized) return;
+    let items: ProcureOfferTask[] = [];
+    try {
+      const res = await sendToBackground<{ items: ProcureOfferTask[] }>({
+        type: "GET_PROCURE",
+        offerId,
+      });
+      items = res.items;
+    } catch {
+      return;
+    }
+    if (!items.length) {
+      procureBox.replaceChildren();
+      return;
+    }
+    procureBox.replaceChildren(
+      ...items.map((t) => {
+        const spec = t.specText || "默认规格";
+        const qty = `×${t.qty}`;
+        const addr = fmtAddr(t.address);
+        const specBtn = el("button", { class: "btn", style: "flex:1" }, `规格：${spec}`);
+        specBtn.onclick = () => copy(spec, "规格");
+        const qtyBtn = el("button", { class: "btn", style: "flex:1" }, `数量：${qty}`);
+        qtyBtn.onclick = () => copy(String(t.qty), "数量");
+        const addrBtn = el("button", { class: "btn" }, addr ? `地址：${addr.slice(0, 26)}…（点我复制）` : "本单无收货地址");
+        addrBtn.disabled = !addr;
+        addrBtn.onclick = () => copy(addr, "地址");
+        const placed = el("button", { class: "btn primary" }, "标记已下单");
+        placed.onclick = async () => {
+          const sourceOrderId = window.prompt(`订单 ${t.orderName ?? t.orderId} 的 1688 采购单号：`);
+          if (!sourceOrderId?.trim()) return;
+          placed.disabled = true;
+          try {
+            await sendToBackground({
+              type: "PROCURE_PLACED",
+              orderId: t.orderId,
+              offerId: t.offerId,
+              sourceOrderId: sourceOrderId.trim(),
+            });
+            panel.toast("已回传采购单号，行项标记为「已下单」");
+          } catch (e) {
+            panel.toast(`回传失败：${e instanceof Error ? e.message : e}`, false);
+            placed.disabled = false;
+          }
+        };
+        return el(
+          "div",
+          { class: "pcard" },
+          el("div", { class: "pcard-t" }, `待采购 · ${t.orderName ?? t.orderId.slice(0, 8)}`),
+          el("div", { class: "row" }, specBtn, qtyBtn),
+          addrBtn,
+          placed,
+        );
+      }),
+    );
+  };
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === "V2_PROCURE_CHANGED") void renderProcure();
+  });
+  void renderProcure();
 })();

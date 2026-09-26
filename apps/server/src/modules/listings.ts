@@ -1,5 +1,17 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, count, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  exists,
+  ilike,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
@@ -8,7 +20,9 @@ import type {
   Listing,
   ListingSuggestion,
   OptionsSuggestionValue,
+  SourceChangeType,
 } from "@caiji/shared";
+import { audit } from "../lib/audit.js";
 import { adapterFor } from "../channels/index.js";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
@@ -18,22 +32,25 @@ import {
   listingSuggestions,
   publishAttempts,
   publishRuns,
+  sourceChanges,
   sourceItems,
   stores,
 } from "../db/schema.js";
 import { listAudits } from "../lib/audit.js";
 import { toFieldsSnapshot } from "../lib/drift.js";
 import { HttpError, notFound } from "../lib/errors.js";
-import { upsertAttrMappings } from "../lib/attributes.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
-import { upsertTermPairs } from "../lib/terms.js";
+import { acceptSuggestion } from "../lib/suggestions.js";
 import {
   AI_ENHANCE_LISTING,
   CATEGORY_SUGGEST,
   DELIST_LISTING,
+  dequeueQueuedPublish,
   enqueueAiEnhance,
   enqueueAiImage,
+  enqueuePipelineAdvance,
+  enterPipeline,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
 import { toProductSetInput } from "../channels/shopify/adapter.js";
@@ -42,11 +59,13 @@ import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
-/** `images`/`descImages` default to stored refs; pass display URLs (our copies) when resolved. */
+/** `images`/`descImages` default to stored refs; pass display URLs (our copies) when resolved.
+ *  `monitor` = 列表页聚合出的未消费货源变更概览。 */
 export function toListingDto(
   r: ListingRow,
   images: string[] = r.images,
   descImages: string[] = r.descImages,
+  monitor?: { pending: number; types: SourceChangeType[] },
 ): Listing {
   return {
     id: r.id,
@@ -75,9 +94,17 @@ export function toListingDto(
     remoteDrift: r.remoteDrift,
     lastPulledAt: r.lastPulledAt?.toISOString() ?? null,
     lastAutoAction: r.lastAutoAction,
+    sourceChangedAt: r.sourceChangedAt?.toISOString() ?? null,
+    internalTags: r.internalTags,
+    publishAt: r.publishAt?.toISOString() ?? null,
+    ...(monitor ? { sourceMonitor: monitor } : {}),
     syncedAt: r.syncedAt?.toISOString() ?? null,
     lastError: r.lastError,
     publishedAt: r.publishedAt?.toISOString() ?? null,
+    pipelineStage: r.pipelineStage,
+    pipelineHoldReason: r.pipelineHoldReason,
+    policySnapshot: r.policySnapshot ?? null,
+    remoteVariantMap: r.remoteVariantMap ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -85,8 +112,29 @@ export function toListingDto(
 
 const listQuery = z.object({
   status: z.enum(["draft", "publishing", "published", "failed"]).optional(),
+  pipelineStage: z
+    .enum([
+      "claimed",
+      "ai_running",
+      "hold_ai",
+      "precheck",
+      "hold_precheck",
+      "queued",
+      "publishing",
+      "published",
+      "failed",
+    ])
+    .optional(),
   storeId: z.string().uuid().optional(),
   sourceItemId: z.string().uuid().optional(),
+  /** 内部标记过滤（text[] 包含）。 */
+  tag: z.string().trim().max(100).optional(),
+  /** 关注页过滤：drift ∪ 未消费货源变更 ∪ remote_deleted ∪ 货源已下架。
+   *  （coerce.boolean 会把 "false" 当 true，用枚举转换）。 */
+  watch: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true" || v === "1")),
   q: z.string().trim().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
@@ -123,9 +171,12 @@ const patchSchema = z
       .object({
         stock: z.enum(["auto", "notify", "off"]),
         content: z.enum(["notify", "off"]),
-        price: z.enum(["notify", "off"]),
+        price: z.enum(["auto", "notify", "off"]),
       })
       .partial(),
+    /** 内部运营标签（不上渠道）。 */
+    internalTags: z.array(z.string().trim().min(1).max(64)).max(50),
+    publishAt: z.string().datetime().nullable(),
   })
   .partial()
   .refine(
@@ -157,47 +208,11 @@ function toSuggestionDto(r: typeof listingSuggestions.$inferSelect): ListingSugg
     id: r.id,
     listingId: r.listingId,
     field: r.field,
+    stage: r.stage,
     value: r.value,
     status: r.status,
     createdAt: r.createdAt.toISOString(),
   };
-}
-
-/** Write an accepted suggestion into the listing row (must run inside the caller's tx). */
-function applySuggestion(
-  listing: ListingRow,
-  s: typeof listingSuggestions.$inferSelect,
-): Partial<ListingRow> {
-  switch (s.field) {
-    case "title":
-      return { title: String(s.value).slice(0, 255) };
-    case "descriptionHtml":
-      return { descriptionHtml: String(s.value).slice(0, 200_000) };
-    case "productType":
-      return { productType: String(s.value).slice(0, 255) };
-    case "tags":
-      return { tags: (s.value as string[]).slice(0, 250) };
-    case "options": {
-      const v = s.value as OptionsSuggestionValue;
-      const variants = listing.variants.map((vr, i) => ({
-        ...vr,
-        optionValues: v.variantOptionValues[i] ?? vr.optionValues,
-      }));
-      return { options: v.options, variants };
-    }
-    case "attributes": {
-      const v = s.value as AttributesSuggestionValue;
-      return {
-        channelAttributes: v.attributes.map((a) => ({
-          attrId: a.attrId,
-          name: a.attrName,
-          value: a.value,
-        })),
-      };
-    }
-    default:
-      return {};
-  }
 }
 
 export function listingRoutes() {
@@ -206,13 +221,45 @@ export function listingRoutes() {
 
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
-    const { status, storeId, sourceItemId, q, page, pageSize } = c.req.valid("query");
+    const workspaceId = c.var.auth.workspaceId;
+    const { status, pipelineStage, storeId, sourceItemId, tag, watch, q, page, pageSize } =
+      c.req.valid("query");
     const where = and(
-      eq(listings.workspaceId, c.var.auth.workspaceId),
+      eq(listings.workspaceId, workspaceId),
       status ? eq(listings.status, status) : undefined,
+      pipelineStage ? eq(listings.pipelineStage, pipelineStage) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
       sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
-      q ? ilike(listings.title, `%${q}%`) : undefined,
+      tag ? sql`${tag} = any(${listings.internalTags})` : undefined,
+      watch
+        ? or(
+            sql`coalesce(jsonb_array_length(${listings.remoteDrift}), 0) > 0`,
+            eq(listings.linkStatus, "remote_deleted"),
+            exists(
+              db
+                .select({ id: sourceChanges.id })
+                .from(sourceChanges)
+                .where(
+                  and(
+                    eq(sourceChanges.workspaceId, workspaceId),
+                    eq(sourceChanges.sourceItemId, listings.sourceItemId),
+                    isNull(sourceChanges.appliedAt),
+                  ),
+                ),
+            ),
+            exists(
+              db
+                .select({ id: sourceItems.id })
+                .from(sourceItems)
+                .where(
+                  and(
+                    eq(sourceItems.id, listings.sourceItemId),
+                    eq(sourceItems.availability, "delisted"),
+                  ),
+                ),
+            ),
+          )
+        : undefined,
     );
     const [rows, [total]] = await Promise.all([
       db
@@ -224,13 +271,45 @@ export function listingRoutes() {
         .offset((page - 1) * pageSize),
       db.select({ n: count() }).from(listings).where(where),
     ]);
+    // 每条刊登的未消费货源变更概览（黄标文案用）
+    const itemIds = [...new Set(rows.map((r) => r.sourceItemId))];
+    const pendingRows = itemIds.length
+      ? await db
+          .select({
+            sid: sourceChanges.sourceItemId,
+            n: count(),
+            types: sql<string[]>`array_agg(distinct ${sourceChanges.changeType})`,
+          })
+          .from(sourceChanges)
+          .where(
+            and(
+              eq(sourceChanges.workspaceId, workspaceId),
+              inArray(sourceChanges.sourceItemId, itemIds),
+              isNull(sourceChanges.appliedAt),
+            ),
+          )
+          .groupBy(sourceChanges.sourceItemId)
+      : [];
+    const pendingByItem = new Map(
+      pendingRows.map((r) => [
+        r.sid,
+        { pending: r.n, types: r.types as SourceChangeType[] },
+      ]),
+    );
     const show = await displayUrls(
       db,
-      c.var.auth.workspaceId,
+      workspaceId,
       rows.map((r) => [...r.images, ...r.descImages]),
     );
     return c.json({
-      items: rows.map((r) => toListingDto(r, show(r.images), show(r.descImages))),
+      items: rows.map((r) =>
+        toListingDto(
+          r,
+          show(r.images),
+          show(r.descImages),
+          pendingByItem.get(r.sourceItemId),
+        ),
+      ),
       total: total?.n ?? 0,
     });
   });
@@ -265,7 +344,15 @@ export function listingRoutes() {
     const { db } = c.var.deps;
     const body = c.req.valid("json");
     const { syncPolicy, ...rest } = body;
-    const patch: Partial<ListingRow> = rest;
+    const patch: Partial<ListingRow> = {
+      ...rest,
+      publishAt:
+        rest.publishAt === undefined
+          ? undefined
+          : rest.publishAt
+            ? new Date(rest.publishAt)
+            : null,
+    };
     if (syncPolicy) {
       const [cur] = await db
         .select({ syncPolicy: listings.syncPolicy })
@@ -477,6 +564,118 @@ export function listingRoutes() {
     return c.json({ audits: await listAudits(db, c.var.auth.workspaceId, "listing", row.id) });
   });
 
+  /** 批量工具（fl-monitor）：价格设/乘/加、内部标签增删、同步策略、定时发布、
+   *  批量开启监控（= 把勾选刊登的 stock/price 策略置 auto）。 */
+  const batchSchema = z.object({
+    ids: z.array(z.string().uuid()).min(1).max(200),
+    ops: z
+      .array(
+        z.discriminatedUnion("op", [
+          z.object({ op: z.literal("price_set"), value: z.number().min(0).max(1_000_000) }),
+          z.object({ op: z.literal("price_mul"), value: z.number().min(0).max(1000) }),
+          z.object({ op: z.literal("price_add"), value: z.number().min(-1_000_000).max(1_000_000) }),
+          z.object({
+            op: z.literal("internal_tag"),
+            add: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+            remove: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+          }),
+          z.object({
+            op: z.literal("sync_policy"),
+            value: z
+              .object({
+                stock: z.enum(["auto", "notify", "off"]),
+                content: z.enum(["notify", "off"]),
+                price: z.enum(["auto", "notify", "off"]),
+              })
+              .partial(),
+          }),
+          z.object({ op: z.literal("publish_at"), value: z.string().datetime().nullable() }),
+          z.object({ op: z.literal("monitor_enable"), value: z.boolean().optional() }),
+        ]),
+      )
+      .min(1)
+      .max(10),
+  });
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+
+  r.post("/batch", zValidator("json", batchSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const { ids, ops } = c.req.valid("json");
+    const rows = await db
+      .select()
+      .from(listings)
+      .where(
+        and(
+          eq(listings.workspaceId, workspaceId),
+          inArray(listings.id, ids),
+          ne(listings.status, "publishing"),
+        ),
+      );
+    let updated = 0;
+    for (const l of rows) {
+      const patch: Partial<ListingRow> = {};
+      for (const op of ops) {
+        switch (op.op) {
+          case "price_set":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: round2(op.value),
+            }));
+            break;
+          case "price_mul":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: round2(v.price * op.value),
+            }));
+            break;
+          case "price_add":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: Math.max(0, round2(v.price + op.value)),
+            }));
+            break;
+          case "internal_tag": {
+            const cur = new Set(patch.internalTags ?? l.internalTags);
+            for (const t of op.add ?? []) cur.add(t);
+            for (const t of op.remove ?? []) cur.delete(t);
+            patch.internalTags = [...cur].sort();
+            break;
+          }
+          case "sync_policy":
+            patch.syncPolicy = { ...(patch.syncPolicy ?? l.syncPolicy), ...op.value };
+            break;
+          case "publish_at":
+            patch.publishAt = op.value ? new Date(op.value) : null;
+            break;
+          case "monitor_enable": {
+            const on = op.value !== false;
+            const cur = patch.syncPolicy ?? l.syncPolicy;
+            patch.syncPolicy = on
+              ? { ...cur, stock: "auto", price: "auto" }
+              : { ...cur, stock: "notify", price: "notify" };
+            break;
+          }
+        }
+      }
+      if (!Object.keys(patch).length) continue;
+      await db
+        .update(listings)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(listings.id, l.id));
+      updated++;
+      await audit(db, workspaceId, {
+        actor: `user:${c.var.auth.userId}`,
+        action: "listing.batch",
+        entityType: "listing",
+        entityId: l.id,
+        payload: { ops: ops.map((o) => o.op) },
+      });
+    }
+    return c.json({ updated, skipped: ids.length - updated });
+  });
+
   /** Queue delist: 已发布 + 有 remoteId 的刊登下架（远端 status→DRAFT，刊登记录保留）。 */
   r.post("/delist", zValidator("json", idsSchema), async (c) => {
     const { db } = c.var.deps;
@@ -603,9 +802,15 @@ export function listingRoutes() {
 
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
-        .select({ listing: listings, storePlatform: stores.platform, storeLanguage: stores.language })
+        .select({
+          listing: listings,
+          storePlatform: stores.platform,
+          storeLanguage: stores.language,
+          sourcePlatform: sourceItems.sourcePlatform,
+        })
         .from(listings)
         .innerJoin(stores, eq(stores.id, listings.storeId))
+        .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
         .where(
           and(
             eq(listings.id, listingId),
@@ -635,56 +840,19 @@ export function listingRoutes() {
         const s = byId.get(d.id);
         if (!s) continue;
         if (d.action === "accept") {
-          if (s.field === "category") {
-            const v = s.value as CategorySuggestionValue;
-            const cand =
-              v.candidates.find((cd) => cd.id === d.choice) ?? v.candidates[0];
-            if (!cand) throw new HttpError(400, "类目建议没有可选候选");
-            Object.assign(listingPatch, {
-              channelCategoryId: cand.id,
-              channelCategoryName: cand.fullName || cand.name,
-            });
-            // 用户确认即记住：同来源类目以后自动套用
-            await upsertCategoryMapping(tx, {
+          // apply + 学习钩子（类目映射/术语对/属性映射）都在 acceptSuggestion 里，
+          // 与链路 autoAccept 完全同一套。
+          Object.assign(
+            listingPatch,
+            await acceptSuggestion(tx, listing, s, {
               workspaceId,
-              sourcePlatform: "1688",
-              sourceCategoryId: v.sourceCategoryId ?? "",
-              sourceCategoryName: v.sourceCategoryName,
-              channel: row.storePlatform,
-              candidate: cand,
-              confidence: 100,
+              storePlatform: row.storePlatform,
+              storeLanguage: row.storeLanguage,
+              sourcePlatform: row.sourcePlatform,
               confirmedBy: "user",
-              version: TAXONOMY_VERSION,
-            });
-          } else {
-            Object.assign(listingPatch, applySuggestion(listing, s));
-            if (s.field === "options") {
-              const v = s.value as OptionsSuggestionValue;
-              // 接受即学习：以建议生成时的选项快照为准（用户可能已改过草稿），按位成对存术语映射
-              const pairs: Array<[string, string]> = [];
-              (v.sourceOptions ?? listing.options).forEach((o, i) => {
-                pairs.push([o.name, v.options[i]?.name ?? o.name]);
-                o.values.forEach((sv, j) => {
-                  pairs.push([sv, v.options[i]?.values[j] ?? sv]);
-                });
-              });
-              await upsertTermPairs(tx, workspaceId, row.storeLanguage, pairs);
-            }
-            // 接受属性提案即记住 源属性名→平台属性 映射
-            if (s.field === "attributes") {
-              const v = s.value as AttributesSuggestionValue;
-              await upsertAttrMappings(
-                tx,
-                workspaceId,
-                row.storePlatform,
-                v.attributes.map((a) => ({
-                  sourceName: a.sourceName,
-                  attrId: a.attrId,
-                  attrName: a.attrName,
-                })),
-              );
-            }
-          }
+              choice: d.choice,
+            }),
+          );
           accepted++;
         } else rejected++;
         await tx
@@ -698,6 +866,119 @@ export function listingRoutes() {
       return { accepted, rejected };
     });
     return c.json(result);
+  });
+
+  /** 链路进度：手工推进（越过所有卡点/熔断；queued 时提前放行发布）。
+   *  未入链路的刊登带上策略进入（链路从此刻开始）。 */
+  r.post(
+    "/:id/pipeline/advance",
+    zValidator(
+      "json",
+      z
+        .object({
+          /** 本次推进同时覆盖 autoAccept 白名单（写进策略快照）。 */
+          fields: z
+            .array(
+              z.enum([
+                "title",
+                "descriptionHtml",
+                "productType",
+                "tags",
+                "options",
+                "category",
+                "attributes",
+              ]),
+            )
+            .max(7)
+            .optional(),
+        })
+        .optional(),
+    ),
+    async (c) => {
+      const { db } = c.var.deps;
+      const { workspaceId } = c.var.auth;
+      const listingId = c.req.param("id");
+      const body = c.req.valid("json") ?? {};
+      const [row] = await db
+        .select({ listing: listings, store: stores })
+        .from(listings)
+        .innerJoin(stores, eq(stores.id, listings.storeId))
+        .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+      if (!row) throw notFound("刊登");
+      const { listing, store } = row;
+      if (listing.pipelineStage == null) {
+        // 链外刊登：按店铺策略入场（fields 覆盖进快照）
+        await enterPipeline(db, listingId, {
+          ...(store.rules?.pipeline ?? {}),
+          ...(body.fields ? { autoAcceptFields: body.fields } : {}),
+        });
+        return c.json({ ok: true, stage: "claimed" });
+      }
+      if (body.fields) {
+        await db
+          .update(listings)
+          .set({
+            policySnapshot: {
+              ...(listing.policySnapshot ?? store.rules?.pipeline ?? {}),
+              autoAcceptFields: body.fields,
+            },
+          })
+          .where(eq(listings.id, listingId));
+      }
+      await enqueuePipelineAdvance(db, listingId, workspaceId, { manual: true });
+      return c.json({ ok: true, stage: listing.pipelineStage });
+    },
+  );
+
+  /** 链路暂停：在途自动推进停下（stage 保留在原地）；queued 时撤销排队发布。 */
+  r.post("/:id/pipeline/pause", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const [listing] = await db
+      .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+    if (!listing) throw notFound("刊登");
+    if (!listing.pipelineStage) throw new HttpError(409, "刊登不在链路里");
+    if (listing.pipelineStage === "queued") {
+      // 排队发布撤回到卡点；失败态/发布态没什么好暂停的
+      await dequeueQueuedPublish(db, listingId);
+    }
+    const [cur] = await db
+      .update(listings)
+      .set({
+        pipelineHoldReason: "manual",
+        pipelineStage: sql`case when ${listings.pipelineStage} = 'queued' then 'hold_precheck' else ${listings.pipelineStage} end`,
+      })
+      .where(and(eq(listings.id, listingId), ne(listings.pipelineStage, "published")))
+      .returning({ pipelineStage: listings.pipelineStage });
+    return c.json({ ok: true, stage: cur?.pipelineStage ?? listing.pipelineStage });
+  });
+
+  /** 退出链路：清 stage/快照/排定时间，撤销排队发布（发布中/已发布不动）。 */
+  r.post("/:id/pipeline/cancel", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const [listing] = await db
+      .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+    if (!listing) throw notFound("刊登");
+    if (!listing.pipelineStage) throw new HttpError(409, "刊登不在链路里");
+    if (listing.pipelineStage === "queued") await dequeueQueuedPublish(db, listingId);
+    // publishing/published 由发布 job 收尾时自己置终态，这里只清快照
+    await db
+      .update(listings)
+      .set({
+        pipelineStage: sql`case when ${listings.pipelineStage} in ('publishing','published') then ${listings.pipelineStage} else null end`,
+        pipelineHoldReason: null,
+        policySnapshot: null,
+        publishAt: null,
+      })
+      .where(eq(listings.id, listingId));
+    return c.json({ ok: true });
   });
 
   /** Manually re-run the AI pass (fresh suggestions supersede pending ones). */
