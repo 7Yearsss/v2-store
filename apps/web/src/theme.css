@@ -46,7 +46,7 @@
   --dur: 220ms;
 }
 
-html, body, #root { height: 100%; }
+html, body, #root, #root > .ant-app { height: 100%; }
 
 body {
   margin: 0;
