@@ -288,6 +288,10 @@ function AccountCard() {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           插件负责在 1688 页面采集商品并回扫货源变化；授权后工作台顶栏可随时重新绑定。
         </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          安装：<a href="/extension.zip" download>下载插件压缩包</a>，解压后打开 chrome://extensions，
+          开启右上角「开发者模式」，点「加载已解压的扩展程序」选择解压目录，然后刷新本页点「授权插件」。
+        </Typography.Text>
       </Space>
     </Card>
   );

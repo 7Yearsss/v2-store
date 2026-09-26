@@ -23,6 +23,8 @@ jobs:
           npm run typecheck
           npm test -w @caiji/server
           npm run build -w @caiji/web
+          npm run build -w @caiji/extension
+          cd apps/extension/dist && zip -qr ../../web/dist/extension.zip .
 
       - name: Set up SSH
         run: |
