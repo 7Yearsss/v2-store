@@ -1,3 +1,4 @@
+import { sweepLegacyFwAddresses } from "./modules/freightForwarders.js";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { openDb } from "./db/client.js";
@@ -95,6 +96,7 @@ async function scheduleInventoryReconcile() {
 if (env.RUN_WORKER) {
   // 启动先排一轮：重启/店铺新启用监控时不必等满 24h
   scheduleInventoryReconcile().catch((e) => console.error("[reconcile]", e));
+  sweepLegacyFwAddresses(deps).catch((e) => console.error("[fw-sweep]", e));
 }
 const reconcileTimer = env.RUN_WORKER
   ? setInterval(() => scheduleInventoryReconcile().catch((e) => console.error("[reconcile]", e)), 24 * 3600_000)

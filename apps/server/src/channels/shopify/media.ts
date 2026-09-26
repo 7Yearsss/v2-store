@@ -32,14 +32,15 @@ interface StagedTarget {
  * Turn listing image refs into productSet `originalSource`s. Images we hold
  * (or can fetch now) are uploaded to Shopify's staged storage, so publishing
  * never depends on the source CDN being reachable from Shopify. Images we
- * can't obtain fall back to their source URL.
+ * can't obtain are dropped — never hand 1688 source URLs to Shopify
+ * (hotlink protection + leaks the supplier link; AGENTS.md #6).
  */
 export async function prepareShopifyMedia(
   deps: Deps,
   store: StoreRow,
   workspaceId: string,
   images: string[],
-): Promise<{ sources: string[]; fallbacks: number }> {
+): Promise<{ sources: (string | null)[]; fallbacks: number }> {
   const loaded = await Promise.all(
     images.map((url) => loadImage(deps, workspaceId, url, { fetchMissing: true })),
   );
@@ -47,7 +48,7 @@ export async function prepareShopifyMedia(
     .map((l, i) => (l ? { i, ...l } : null))
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  const sources = [...images];
+  const sources: (string | null)[] = images.map(() => null);
   if (toUpload.length) {
     const data = await shopifyGraphql<{
       stagedUploadsCreate: {

@@ -449,7 +449,15 @@ export function listingRoutes() {
             fieldsSnapshot: snapshot,
           })
           .returning({ id: publishAttempts.id });
-        await enqueue(tx, PUBLISH_LISTING, { listingId: l.id, attemptId: attempt!.id }, { workspaceId });
+        // publishAt 是未来时间 → 定时发布：job 到点才跑，编辑随时可改
+        const runAt =
+          l.publishAt && l.publishAt.getTime() > Date.now() ? l.publishAt : undefined;
+        await enqueue(
+          tx,
+          PUBLISH_LISTING,
+          { listingId: l.id, attemptId: attempt!.id },
+          { workspaceId, runAt },
+        );
       }
       return { queued: rows.length - blocked.length, blocked, runId: run!.id };
     });

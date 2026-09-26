@@ -272,7 +272,9 @@ export async function scorePlanItems(
     .filter((r) => r.score > 0);
   if (deps.config.ai && top.length) {
     const byId = new Map(items.map((i) => [i.id, i]));
-    const brief = top
+    // 已写过 aiNote 的不重复送模型：feed 多轮只在「新候选」上花钱
+    const freshTop = top.filter((r) => !byId.get(r.id)?.aiNote);
+    const brief = freshTop
       .map((r) => {
         const it = byId.get(r.id)!;
         return {

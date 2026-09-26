@@ -115,14 +115,15 @@ describe("publishing images to Shopify", () => {
     ]);
   });
 
-  it("falls back to the source URL and warns when no copy can be obtained", async () => {
+  it("drops images that cannot be copied and warns (source URLs never reach Shopify)", async () => {
     ctx = await setup(fakeShopify());
     const t = await ctx.register();
     const done = await claimAndPublish(t);
     expect(done.status).toBe("published");
     expect(done.lastError).toContain("1 张图片未能转存");
     const productSet = ctx.calls.find((c) => c.body?.query?.includes("productSet"))!;
-    expect(productSet.body.variables.input.files[0].originalSource).toBe(SRC);
+    // 1688 源站 URL 不允许进 originalSource（防盗链 + 不泄露货源）
+    expect(productSet.body.variables.input.files).toEqual([]);
   });
 
   it("surfaces Shopify media processing failures", async () => {

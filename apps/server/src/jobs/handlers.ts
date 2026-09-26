@@ -1654,12 +1654,13 @@ const orderMap: JobHandler = {
           if (listing) {
             sourceItemId = listing.sourceItemId;
             const vmap = listing.remoteVariantMap;
-            const lv = listing.variants.find(
-              (v) =>
-                (it.remoteVariantId &&
-                  vmap?.[v.sku ?? ""]?.variantId === it.remoteVariantId) ||
-                (it.sku && v.sku === it.sku),
-            );
+            // remoteVariantId 优先：同一刊登里 sku 撞车或复用时不能认错变体
+            const lv = it.remoteVariantId
+              ? listing.variants.find(
+                  (v) => vmap?.[v.sku ?? ""]?.variantId === it.remoteVariantId,
+                ) ??
+                (it.sku ? listing.variants.find((v) => v.sku === it.sku) : undefined)
+              : listing.variants.find((v) => v.sku === it.sku);
             sourceSkuId = lv?.sourceSkuId ?? null;
           }
         }

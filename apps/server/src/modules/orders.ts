@@ -22,6 +22,7 @@ import type { ShippingAddress } from "@caiji/shared";
 import {
   hydrateOrders,
   openAddress,
+  openCustomer,
   refreshOrderStatus,
   type OrderRow,
 } from "../lib/orders.js";
@@ -119,7 +120,7 @@ export function orderRoutes() {
       entityId: row.id,
       payload: { name: row.name },
     });
-    return c.json({ address, customer: row.customer });
+    return c.json({ address, customer: openCustomer(deps, row) });
   });
 
   /** 人工审核闸：new → to_procure。 */
@@ -456,6 +457,19 @@ export function orderRoutes() {
             .where(eq(purchaseOrders.id, poId));
         }
       } else {
+        // 已下单/付款/完成的采购单不允许改单号——那是另一条真实采购，不是重填
+        if (
+          poRow &&
+          poRow.status !== "draft" &&
+          poRow.sourceOrderId &&
+          poRow.sourceOrderId !== sourceOrderId
+        ) {
+          throw new HttpError(
+            409,
+            `行项已在采购单 ${poRow.sourceOrderId}（状态 ${poRow.status}）`,
+            "po_conflict",
+          );
+        }
         await deps.db
           .update(purchaseOrders)
           .set({
@@ -528,6 +542,13 @@ export function orderRoutes() {
             and(eq(shipments.id, shipmentId), eq(shipments.orderId, order.id)),
           );
         if (!s) throw notFound("运单");
+        // 只允许失败重推：已回传/推送中的运单重新提交会给剩余行项再发一次履约
+        if (s.status === "pushed") {
+          throw new HttpError(409, "该运单已回传成功，请为剩余行项新建运单", "already_pushed");
+        }
+        if (s.status === "pending") {
+          throw new HttpError(409, "该运单正在推送中", "push_in_flight");
+        }
         await deps.db
           .update(shipments)
           .set({

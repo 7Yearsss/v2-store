@@ -148,9 +148,8 @@ describe("claim → publish", () => {
       ],
       inventoryItem: { tracked: false, cost: "1.47" },
     });
-    expect(input.files).toEqual([
-      { originalSource: "https://cbu01.alicdn.com/a.jpg", contentType: "IMAGE" },
-    ]);
+    // 测试环境无媒体转存（fake fetch 拿不到图源）→ 图片被丢弃，绝不回退源站 URL
+    expect(input.files).toEqual([]);
     expect(call.body.variables.identifier).toBeUndefined();
 
     // republish syncs the same remote product
@@ -269,21 +268,17 @@ describe("claim → publish", () => {
     expect(input.status).toBe("DRAFT");
     expect(input.seo.title).toBe("保温杯");
     expect(input.seo.description).toContain("保温杯");
-    // files = 主图 + 变体图
-    expect(input.files).toHaveLength(2);
-    expect(input.files[1].originalSource).toBe("https://cbu01.alicdn.com/red.jpg");
+    // 测试环境图源不可转存 → 全部丢弃（绝不回退 1688 源站 URL），files 为空
+    expect(input.files).toEqual([]);
     // 详情图：fileCreate 转永久 cdn URL 后追加到描述末尾
     expect(input.descriptionHtml).toContain('<img src="https://cdn.example/desc/f0.jpg"/>');
     expect(input.descriptionHtml).toContain('<img src="https://cdn.example/desc/f1.jpg"/>');
 
-    // 变体图绑定：productSet → BindData 拿 media/variant id → productVariantsBulkUpdate
+    // 变体图绑定：变体图被丢弃 → 无 media 可绑，不发 productVariantsBulkUpdate
     const bind = ctx.calls.find((c) =>
       String(c.body?.query ?? "").includes("productVariantsBulkUpdate"),
     );
-    expect(bind).toBeTruthy();
-    expect(bind!.body.variables.variants).toEqual([
-      { id: "gid://shopify/ProductVariant/v0", mediaId: "gid://shopify/Media/m1" },
-    ]);
+    expect(bind).toBeUndefined();
     // 草稿态不发 publishablePublish
     expect(
       ctx.calls.some((c) => String(c.body?.query ?? "").includes("publishablePublish")),

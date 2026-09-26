@@ -691,7 +691,8 @@ export const orders = pgTable(
     financialStatus: text("financial_status"),
     fulfillmentStatus: text("fulfillment_status"),
     status: text("status").$type<OrderStatus>().notNull().default("new"),
-    customer: jsonb("customer").$type<OrderCustomer>(),
+    /** 买家身份密文（与地址同一 SecretBox）。 */
+    customerEnc: text("customer_enc"),
     /** 收货地址密文（SecretBox）；列表/详情只出脱敏摘要。 */
     shippingAddressEnc: text("shipping_address_enc"),
     currency: text("currency"),

@@ -409,13 +409,18 @@ async function bindVariantImages(
   productId: string,
   listing: ListingRow,
   allImages: string[],
+  /** allImages 下标 → productSet files 序号（转存失败被丢弃的图不在映射里） */
+  mediaIdxByAll: Map<number, number>,
   data: ProductBindData,
 ): Promise<string | null> {
   const hasOptions = listing.options.length > 0;
   const sent = hasOptions ? listing.variants : listing.variants.slice(0, 1);
   const wanted = sent
-    .map((v, i) => ({ i, fileIndex: v.image ? allImages.indexOf(v.image) : -1 }))
-    .filter((w) => w.fileIndex >= 0);
+    .map((v, i) => ({
+      i,
+      fileIndex: v.image ? mediaIdxByAll.get(allImages.indexOf(v.image)) : undefined,
+    }))
+    .filter((w): w is { i: number; fileIndex: number } => w.fileIndex != null);
   if (!wanted.length) return null;
   try {
     const mediaNodes = data.product?.media.nodes ?? [];
@@ -649,8 +654,19 @@ export const shopifyAdapter: ChannelAdapter = {
       ...allImages,
       ...listing.descImages,
     ]);
+    // 转存失败的图被丢弃（不给源站 URL）；imgIdx→files 序号留给变体图绑定对齐
     const fileSources = media.sources.slice(0, allImages.length);
-    const descSources = media.sources.slice(allImages.length).filter(Boolean);
+    const mediaIdxByAll = new Map<number, number>();
+    const fileArr: string[] = [];
+    fileSources.forEach((src, i) => {
+      if (src) {
+        mediaIdxByAll.set(i, fileArr.length);
+        fileArr.push(src);
+      }
+    });
+    const descSources = media.sources
+      .slice(allImages.length)
+      .filter((x): x is string => !!x);
     const descUrls = await permanentDescUrls(deps, store, descSources);
     const descHtml = descUrls
       .map((src) => `<p><img src="${src}"/></p>`)
@@ -666,7 +682,7 @@ export const shopifyAdapter: ChannelAdapter = {
         userErrors: Array<{ field?: string[]; message: string }>;
       };
     }>(deps, store, PRODUCT_SET, {
-      input: toProductSetInput(inputListing, store.pricing.exchangeRate, fileSources, !listing.remoteId, {
+      input: toProductSetInput(inputListing, store.pricing.exchangeRate, fileArr, !listing.remoteId, {
         publishStatus,
         trackStock,
       }),
@@ -689,7 +705,7 @@ export const shopifyAdapter: ChannelAdapter = {
       ? remoteVariantMapFrom(bindData, sentVariants)
       : undefined;
     const bindWarning = bindData
-      ? await bindVariantImages(deps, store, product.id, listing, allImages, bindData)
+      ? await bindVariantImages(deps, store, product.id, listing, allImages, mediaIdxByAll, bindData)
       : "变体图未能绑定（远端变体信息拉取失败）";
     if (bindWarning) warnings.push(bindWarning);
     if (trackStock) {
@@ -702,7 +718,7 @@ export const shopifyAdapter: ChannelAdapter = {
       const channelWarning = await publishToOnlineStore(deps, store, product.id);
       if (channelWarning) warnings.push(channelWarning);
     }
-    if (media.fallbacks) warnings.unshift(`${media.fallbacks} 张图片未能转存，使用了货源原图链接`);
+    if (media.fallbacks) warnings.unshift(`${media.fallbacks} 张图片未能转存，已跳过`);
     const numericId = product.id.split("/").pop();
     return {
       remoteId: product.id,

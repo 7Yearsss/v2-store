@@ -14,7 +14,8 @@ import type { AppEnv, Deps } from "../context.js";
 import { stores } from "../db/schema.js";
 import { DEFAULT_PRICING } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
-import { enqueueCategorySync, enqueueStoreSync } from "../jobs/handlers.js";
+import { enqueue } from "../jobs/queue.js";
+import { enqueueCategorySync, enqueueStoreSync, RECONCILE_INVENTORY } from "../jobs/handlers.js";
 import { cachedCategoryAttributes } from "../lib/attributes.js";
 import { searchCachedCategories } from "../lib/category.js";
 import { requireAuth } from "./auth.js";
@@ -236,6 +237,13 @@ export function storeRoutes() {
 
   r.patch("/:id", zValidator("json", patchSchema), async (c) => {
     const { aiEnhance, ...rest } = c.req.valid("json");
+    const [prev] = await c.var.deps.db
+      .select()
+      .from(stores)
+      .where(
+        and(eq(stores.id, c.req.param("id")), eq(stores.workspaceId, c.var.auth.workspaceId)),
+      );
+    if (!prev) throw notFound("店铺");
     const [row] = await c.var.deps.db
       .update(stores)
       .set({ ...rest, ...(aiEnhance === undefined ? {} : { aiEnhance: aiEnhance ? "on" : "off" }) })
@@ -244,6 +252,11 @@ export function storeRoutes() {
       )
       .returning();
     if (!row) throw notFound("店铺");
+    // 监控由关转开：立即排一次库存核对——监控关闭期间本地库存照刷但远端没推，
+    // 等下一次每日兜底才有 reconcile 会漏掉这一段
+    if (!prev.rules?.monitor?.enabled && row.rules?.monitor?.enabled) {
+      await enqueue(c.var.deps.db, RECONCILE_INVENTORY, { storeId: row.id }, { workspaceId: c.var.auth.workspaceId });
+    }
     return c.json(toStoreDto(row));
   });
 

@@ -492,14 +492,22 @@ describe("采购单 + 履约", () => {
     )[0]!;
     expect(poAAfter.sourceOrderId).toBe("1688-SO-1");
     expect(poAAfter.status).toBe("placed");
-    // 干净场景复用：再次 confirm 同一 offer → 命中刚建的纯覆盖 PO
+    // 幂等：同单号再次 confirm → 命中刚建的 PO
     const confirm2 = await ctx.api(
+      "POST",
+      `/api/orders/${o4001.id}/procure-confirm`,
+      { offerId: "777", sourceOrderId: "1688-SO-9" },
+      t,
+    );
+    expect(confirm2.body.purchaseOrderId).toBe(confirm.body.purchaseOrderId);
+    // 已下单的 PO 不允许改单号（那是另一条真实采购，不是重填）
+    const confirm3 = await ctx.api(
       "POST",
       `/api/orders/${o4001.id}/procure-confirm`,
       { offerId: "777", sourceOrderId: "1688-SO-10" },
       t,
     );
-    expect(confirm2.body.purchaseOrderId).toBe(confirm.body.purchaseOrderId);
+    expect(confirm3.status).toBe(409);
   });
 
   it("POST /orders/:id/procure returns offers with address (buyer) for the extension card", async () => {

@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type {
   Order,
+  OrderCustomer,
   OrderItem,
   OrderStatus,
   RemoteOrder,
@@ -61,6 +62,15 @@ export function maskCustomer(
     email: maskEmail(c.email) ?? undefined,
     phone: maskPhone(c.phone) ?? undefined,
   };
+}
+
+export function openCustomer(deps: Deps, row: OrderRow): OrderCustomer | null {
+  if (!row.customerEnc) return null;
+  try {
+    return deps.secrets.open<OrderCustomer>(row.customerEnc);
+  } catch {
+    return null;
+  }
 }
 
 export function openAddress(deps: Deps, row: OrderRow): ShippingAddress | null {
@@ -167,7 +177,8 @@ export async function upsertRemoteOrder(
     name: remote.name ?? null,
     financialStatus: remote.financialStatus ?? null,
     fulfillmentStatus: remote.fulfillmentStatus ?? null,
-    customer: remote.customer ?? null,
+    // 买家身份信息同样密文落库（出参 maskCustomer 只给脱敏摘要）
+    customerEnc: remote.customer ? deps.secrets.seal(remote.customer) : null,
     ...(enc ? { shippingAddressEnc: enc } : {}),
     currency: remote.currency ?? null,
     subtotal: remote.subtotal ?? null,
@@ -175,14 +186,24 @@ export async function upsertRemoteOrder(
     itemsCount: remote.itemsCount ?? remote.lineItems.length,
     placedAt: remote.placedAt ? new Date(remote.placedAt) : null,
     syncedAt: new Date(),
-    // raw 里剥掉买家 PII：地址加密副本在 shippingAddressEnc，买家摘要在
-    // customer 列（出参本就脱敏）——raw 不再落第二份明文
+    // raw 白名单：只留运营需要的非 PII 字段——地址/买家走密文列，防止
+    // Shopify 以后往节点里加买家字段时悄悄落明文
     raw: (() => {
-      const r = { ...((remote.raw ?? remote) as Record<string, unknown>) };
-      delete r.shippingAddress;
-      delete r.billingAddress;
-      delete r.customer;
-      return r;
+      const r = (remote.raw ?? remote) as Record<string, unknown>;
+      const li = r.lineItems as { nodes?: unknown[] } | undefined;
+      return {
+        id: r.id,
+        name: r.name,
+        displayFinancialStatus: r.displayFinancialStatus,
+        displayFulfillmentStatus: r.displayFulfillmentStatus,
+        cancelledAt: r.cancelledAt,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        currencyCode: r.currencyCode,
+        subtotalPriceSet: r.subtotalPriceSet,
+        totalPriceSet: r.totalPriceSet,
+        lineItems: li ? { nodes: li.nodes } : undefined,
+      };
     })(),
   };
 
@@ -431,7 +452,7 @@ export async function hydrateOrders(
       financialStatus: o.financialStatus,
       fulfillmentStatus: o.fulfillmentStatus,
       status: o.status,
-      customer: maskCustomer(o.customer),
+      customer: maskCustomer(openCustomer(deps, o)),
       shippingAddressMasked: maskAddress(openAddress(deps, o)),
       currency: o.currency,
       subtotal: o.subtotal,

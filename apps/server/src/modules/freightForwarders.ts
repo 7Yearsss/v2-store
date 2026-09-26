@@ -21,6 +21,25 @@ const addressSchema = z.object({
   postcode: z.string().trim().max(16).optional(),
 });
 
+/** 启动时跑一次：把迁移前 plaintext JSON 残留的 address_enc 转成密文。 */
+export async function sweepLegacyFwAddresses(deps: Pick<Deps, "db" | "secrets">) {
+  const rows = await deps.db
+    .select({ id: freightForwarders.id, addressEnc: freightForwarders.addressEnc })
+    .from(freightForwarders);
+  for (const r of rows) {
+    if (r.addressEnc && !r.addressEnc.startsWith("v1.")) {
+      try {
+        await deps.db
+          .update(freightForwarders)
+          .set({ addressEnc: deps.secrets.seal(JSON.parse(r.addressEnc)) })
+          .where(eq(freightForwarders.id, r.id));
+      } catch {
+        // 非 JSON 残留跳过（本来就不可读）
+      }
+    }
+  }
+}
+
 const createSchema = z.object({
   name: z.string().trim().min(1).max(64),
   address: addressSchema,
