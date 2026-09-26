@@ -80,8 +80,13 @@ describe("selection plans", () => {
 
     const run = await ctx.api("POST", `/api/selection-plans/${plan.id}/run`, {}, t);
     expect(run.status).toBe(200);
-    expect(run.body.lastRunAt).toBeNull();
+    // run-now 记 runRequestedAt 而非清 lastRunAt：请求比上次 feed 新 → 到期被抓
+    expect(run.body.lastRunAt).toBe(mine.lastRunAt);
     expect(run.body.due).toBe(true);
+    // 抓完 feed 推进 lastRunAt 后不再到期（run 请求被消费掉）
+    await feed(t, plan.id, [{ sourceItemId: "9002", title: "B" }]);
+    const afterFeed = await ctx.api("GET", "/api/selection-plans", undefined, t);
+    expect(afterFeed.body.items.find((p: any) => p.id === plan.id).due).toBe(false);
 
     const del = await ctx.api("DELETE", `/api/selection-plans/${plan.id}`, undefined, t);
     expect(del.status).toBe(200);

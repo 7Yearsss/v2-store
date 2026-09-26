@@ -307,6 +307,18 @@ export function purchaseOrderRoutes() {
     const deps = c.var.deps;
     const { workspaceId, userId } = c.var.auth;
     const { orderItemIds, forwarderId, note } = c.req.valid("json");
+    if (forwarderId) {
+      const [fw] = await deps.db
+        .select({ id: freightForwarders.id })
+        .from(freightForwarders)
+        .where(
+          and(
+            eq(freightForwarders.id, forwarderId),
+            eq(freightForwarders.workspaceId, workspaceId),
+          ),
+        );
+      if (!fw) throw notFound("货代");
+    }
     const rows = await deps.db
       .select({ item: orderItems, order: orders })
       .from(orderItems)

@@ -175,10 +175,13 @@ export async function upsertRemoteOrder(
     itemsCount: remote.itemsCount ?? remote.lineItems.length,
     placedAt: remote.placedAt ? new Date(remote.placedAt) : null,
     syncedAt: new Date(),
-    // raw 里剥掉收货地址：加密副本在 shippingAddressEnc，raw 不落明文 PII
+    // raw 里剥掉买家 PII：地址加密副本在 shippingAddressEnc，买家摘要在
+    // customer 列（出参本就脱敏）——raw 不再落第二份明文
     raw: (() => {
       const r = { ...((remote.raw ?? remote) as Record<string, unknown>) };
       delete r.shippingAddress;
+      delete r.billingAddress;
+      delete r.customer;
       return r;
     })(),
   };

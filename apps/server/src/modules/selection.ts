@@ -179,17 +179,18 @@ export function selectionPlanRoutes() {
     return c.json({ ok: true });
   });
 
-  // run-now：lastRunAt 置空让 tasks 把它判到期（插件下次轮询会抓），
+  // run-now：记录 runRequestedAt（manual 计划靠它到期被插件抓），
   // 同时给现有候选补一次打分。
   r.post("/:id/run", async (c) => {
     const { workspaceId } = c.var.auth;
     const plan = await getPlan(c.var.deps, workspaceId, c.req.param("id"));
+    const runRequestedAt = new Date();
     await c.var.deps.db
       .update(selectionPlans)
-      .set({ lastRunAt: null })
+      .set({ runRequestedAt })
       .where(eq(selectionPlans.id, plan.id));
     await enqueueSelectionScore(c.var.deps.db, workspaceId, plan.id);
-    return c.json(toPlanDto({ ...plan, lastRunAt: null }, { due: true }));
+    return c.json(toPlanDto({ ...plan, runRequestedAt }, { due: true }));
   });
 
   return r;

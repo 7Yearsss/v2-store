@@ -162,7 +162,9 @@ async function fetchBindData(deps: Deps, store: StoreRow, productId: string) {
   return shopifyGraphql<ProductBindData>(deps, store, PRODUCT_BIND_DATA, { id: productId });
 }
 
-/** 本地变体 sku ↔ 远端 variantId/inventoryItemId：sku 对齐，无 sku 退回下标。 */
+/** 本地变体 sku ↔ 远端 variantId/inventoryItemId：远端 sku 命中本地 sku 才按
+ *  sku 对齐；远端 sku 是本地没有的（远端多余/重排的变体）不映射、留给人工；
+ *  远端无 sku 时退回同位置本地变体。 */
 function remoteVariantMapFrom(
   data: ProductBindData,
   sent: ListingVariant[],
@@ -170,9 +172,16 @@ function remoteVariantMapFrom(
   const out: RemoteVariantMap = {};
   const sentSkus = new Set(sent.map((v) => v.sku).filter(Boolean));
   data.product?.variants.nodes.forEach((n, i) => {
-    // 远端 sku 命中本地 sku → 用 sku 对齐（下标对齐在远端顺序不同时会配错供应商）
-    const key = n.sku && sentSkus.has(n.sku) ? n.sku : (sent[i]?.sku ?? n.sku);
-    if (key) out[key] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
+    if (n.sku) {
+      if (sentSkus.has(n.sku)) {
+        out[n.sku] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
+      }
+      return;
+    }
+    const key = sent[i]?.sku;
+    if (key && !out[key]) {
+      out[key] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
+    }
   });
   return out;
 }
@@ -945,7 +954,7 @@ export const shopifyAdapter: ChannelAdapter = {
   },
 
   /** 增量（updated_at 游标）或按 id 拉订单。webhook 到达或手动同步都在 worker 里走这条。 */
-  async fetchOrders(deps, store, opts): Promise<RemoteOrder[]> {
+  async fetchOrders(deps, store, opts): Promise<{ orders: RemoteOrder[]; nextAfter: string | null }> {
     if (opts.remoteId) {
       const id = opts.remoteId.startsWith("gid://")
         ? opts.remoteId
@@ -956,16 +965,17 @@ export const shopifyAdapter: ChannelAdapter = {
         ORDER_ONE,
         { id },
       );
-      if (!data.order) return [];
+      if (!data.order) return { orders: [], nextAfter: null };
       await fillOrderLines(deps, store, data.order);
-      return [toRemoteOrder(data.order)];
+      return { orders: [toRemoteOrder(data.order)], nextAfter: null };
     }
     const out: RemoteOrder[] = [];
-    let after: string | null = null;
+    let after: string | null = opts.after ?? null;
     // 游标回退 1s：Shopify 的 updated_at:> 是严格大于，边界同刻订单不能丢
     const query = opts.updatedAfter
       ? `updated_at:>${new Date(Date.parse(opts.updatedAfter) - 1000).toISOString()}`
       : undefined;
+    let nextAfter: string | null = null;
     for (let page = 0; page < 20; page++) {
       const data: {
         orders: {
@@ -984,8 +994,9 @@ export const shopifyAdapter: ChannelAdapter = {
       }
       if (!data.orders.pageInfo.hasNextPage) break;
       after = data.orders.pageInfo.endCursor;
+      nextAfter = after; // 打满 20 页仍 hasNextPage → 记下分页位让调用方续拉
     }
-    return out;
+    return { orders: out, nextAfter };
   },
 
   /** fulfillmentOrders → fulfillmentCreate：按 fulfillmentOrder 粒度组行（支持部分发货）。 */

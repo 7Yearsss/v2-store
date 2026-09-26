@@ -89,9 +89,18 @@ export function scoreDiscoveryItem(
   return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
 }
 
-/** 到期判定：未跑过即到期；daily 计划距上次 feed ≥24h 到期。 */
-export function planIsDue(plan: { lastRunAt: Date | string | null; schedule: string }): boolean {
-  // manual 计划只响应 run-now，不走 alarm 周期
+/** 到期判定：daily 未跑过或距上次 feed ≥24h；manual 只在 run-now 请求比上次 feed 新时到期。 */
+export function planIsDue(plan: {
+  lastRunAt: Date | string | null;
+  runRequestedAt?: Date | string | null;
+  schedule: string;
+}): boolean {
+  const last = plan.lastRunAt != null ? new Date(plan.lastRunAt).getTime() : NaN;
+  // run-now 是显式的一次性请求（任意 schedule）：runRequestedAt > lastRunAt = 这轮还没抓到
+  if (plan.runRequestedAt != null) {
+    const req = new Date(plan.runRequestedAt).getTime();
+    if (Number.isFinite(req) && (!Number.isFinite(last) || req > last)) return true;
+  }
   if (plan.schedule !== "daily") return false;
   if (plan.lastRunAt == null) return true;
   const at = new Date(plan.lastRunAt).getTime();

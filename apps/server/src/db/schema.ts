@@ -913,6 +913,8 @@ export const selectionPlans = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     /** 最近一次 feed 落库时间；null = 未跑过（tasks 里视为到期）。 */
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    /** manual 计划的 run-now 请求时间；> lastRunAt 时视为到期（与周期调度分离）。 */
+    runRequestedAt: timestamp("run_requested_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

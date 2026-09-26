@@ -1541,13 +1541,17 @@ const orderSync: JobHandler = {
     const adapter = adapterFor(store.platform);
     if (!adapter.fetchOrders) return;
 
-    const remoteList = await adapter.fetchOrders(
+    // ordersCursor 形态："<ISO>"，或拉满页数时的 "<ISO>|<pageAfter>" 续拉位
+    const sep = store.ordersCursor?.indexOf("|") ?? -1;
+    const cursorTs = sep === -1 ? store.ordersCursor : store.ordersCursor!.slice(0, sep);
+    const resumeAfter = sep === -1 ? null : store.ordersCursor!.slice(sep + 1) || null;
+    const res = await adapter.fetchOrders(
       deps,
       store,
-      remoteId ? { remoteId } : { updatedAfter: store.ordersCursor },
+      remoteId ? { remoteId } : { updatedAfter: cursorTs, after: resumeAfter },
     );
-    let maxUpdated = store.ordersCursor ? Date.parse(store.ordersCursor) : 0;
-    for (const ro of remoteList) {
+    let maxUpdated = cursorTs ? Date.parse(cursorTs) : 0;
+    for (const ro of res.orders) {
       const { orderId, skipped } = await upsertRemoteOrder(deps, store, ro);
       if (!skipped) {
         await enqueueOrderMap(deps.db, { orderId }, store.workspaceId);
@@ -1555,13 +1559,25 @@ const orderSync: JobHandler = {
       const u = ro.updatedAt ? Date.parse(ro.updatedAt) : 0;
       if (u > maxUpdated) maxUpdated = u;
     }
-    if (!remoteId && maxUpdated) {
-      const cursor = new Date(maxUpdated).toISOString();
-      if (cursor !== store.ordersCursor) {
-        await deps.db
-          .update(stores)
-          .set({ ordersCursor: cursor })
-          .where(eq(stores.id, storeId));
+    if (!remoteId) {
+      if (res.nextAfter) {
+        // 这一页区间还没拉完：游标停在「同 updatedAfter + 分页位」，马上续拉
+        const next = `${cursorTs ?? ""}|${res.nextAfter}`;
+        if (next !== store.ordersCursor) {
+          await deps.db
+            .update(stores)
+            .set({ ordersCursor: next })
+            .where(eq(stores.id, storeId));
+        }
+        await enqueue(deps.db, ORDER_SYNC, { storeId }, { workspaceId: store.workspaceId });
+      } else if (maxUpdated) {
+        const cursor = new Date(maxUpdated).toISOString();
+        if (cursor !== store.ordersCursor) {
+          await deps.db
+            .update(stores)
+            .set({ ordersCursor: cursor })
+            .where(eq(stores.id, storeId));
+        }
       }
     }
   },

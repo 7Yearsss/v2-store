@@ -156,14 +156,15 @@ export interface ChannelAdapter {
     callbackUrl: string,
   ): Promise<{ registered: string[]; errors: string[] }>;
   /**
-   * 拉渠道订单：remoteId 给定时拉单条，否则按 updatedAfter（ISO 游标）增量拉。
-   * 返回平台中立 RemoteOrder；缺省 = 该平台不支持订单同步。
+   * 拉渠道订单：remoteId 给定时拉单条，否则按 updatedAfter（ISO 游标）增量拉；
+   * after 续传分页位置。返回 { orders, nextAfter }——nextAfter 非空表示这次
+   * 没拉完（页数打满），调用方应原样记下游标下次续拉，别推进 updatedAfter。
    */
   fetchOrders?(
     deps: Deps,
     store: StoreRow,
-    opts: { updatedAfter?: string | null; remoteId?: string },
-  ): Promise<RemoteOrder[]>;
+    opts: { updatedAfter?: string | null; remoteId?: string; after?: string | null },
+  ): Promise<{ orders: RemoteOrder[]; nextAfter: string | null }>;
   /**
    * 履约回传：fulfillmentOrders → fulfillmentCreate（trackingInfo + notifyCustomer），
    * 部分发货按 fulfillmentOrder 粒度。返回远端 fulfillment id；缺省 = 不支持。

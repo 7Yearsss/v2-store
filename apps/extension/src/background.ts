@@ -4,6 +4,7 @@ import {
   descUrlFromData,
   findInitData,
   productOnlyData,
+  stripViewerData,
 } from "@caiji/shared";
 import type {
   BgMessage,
@@ -145,7 +146,8 @@ async function collectByOfferId(offerId: string, via?: PendingItem["via"]) {
   const descImages = descUrl ? await fetchDescImages(descUrl).catch(() => []) : [];
   return submitHarvest({
     sourceInfo: { itemUrl: url, itemId: offerId, site: "detail", source: "1688" },
-    pageContent: data ? undefined : html,
+    // 解析失败兜底上传整页前先把浏览者自己的买家数据（buyerModel）剥掉
+    pageContent: data ? undefined : stripViewerData(html),
     afterUrl: resp.url,
     productExtInfo: data
       ? { initData: productOnlyData(data), ...(descImages.length ? { descImages } : {}) }
