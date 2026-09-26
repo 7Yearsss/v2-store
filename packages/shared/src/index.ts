@@ -948,7 +948,7 @@ export interface Shipment {
   trackingUrl: string | null;
   remoteFulfillmentId: string | null;
   /** 部分发货：只发这些远端行项（Shopify lineItem gid）；null = 全部剩余行。 */
-  lineItems: string[] | null;
+  lineItems: Array<{ remoteLineItemId: string; qty?: number }> | null;
   status: ShipmentStatus;
   lastError: string | null;
   createdAt: string;

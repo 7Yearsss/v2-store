@@ -92,6 +92,10 @@ async function scheduleInventoryReconcile() {
     }
   }
 }
+if (env.RUN_WORKER) {
+  // 启动先排一轮：重启/店铺新启用监控时不必等满 24h
+  scheduleInventoryReconcile().catch((e) => console.error("[reconcile]", e));
+}
 const reconcileTimer = env.RUN_WORKER
   ? setInterval(() => scheduleInventoryReconcile().catch((e) => console.error("[reconcile]", e)), 24 * 3600_000)
   : undefined;

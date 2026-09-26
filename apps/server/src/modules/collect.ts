@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { asc, and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
@@ -284,7 +284,11 @@ export async function recordSourceChanges(
     const monitor = storeRules?.monitor;
     const enabled = monitor?.enabled === true;
     const inv = storeRules?.inventory;
-    const published = l.status === "published" && !!l.remoteId;
+    const published =
+      l.status === "published" &&
+      !!l.remoteId &&
+      l.remoteStatus !== "DRAFT" &&
+      l.remoteStatus !== "DELETED";
     let stockDirty = false;
     let priceDirty = false;
 
@@ -562,8 +566,12 @@ export function collectRoutes() {
   r.post("/rescan-queue", async (c) => {
     const { db } = c.var.deps;
     const { workspaceId } = c.var.auth;
+    // 按最久未扫优先出队：每轮限额自然轮转，超额的下次轮到
     const rows = await db
-      .selectDistinct({ offerId: sourceItems.sourceItemId })
+      .select({
+        offerId: sourceItems.sourceItemId,
+        lastScannedAt: sourceItems.lastScannedAt,
+      })
       .from(sourceItems)
       .innerJoin(listings, eq(listings.sourceItemId, sourceItems.id))
       .where(
@@ -572,10 +580,13 @@ export function collectRoutes() {
           eq(sourceItems.sourcePlatform, "1688"),
         ),
       )
-      .limit(500);
+      .orderBy(asc(sourceItems.lastScannedAt))
+      .limit(5000);
+    const seen = new Set<string>();
     const items = rows
       .map((r) => r.offerId)
-      .filter((v): v is string => !!v)
+      .filter((v): v is string => !!v && !seen.has(v) && !!seen.add(v))
+      .slice(0, 500)
       .map((offerId) => ({ offerId }));
     return c.json({ ok: true, items });
   });

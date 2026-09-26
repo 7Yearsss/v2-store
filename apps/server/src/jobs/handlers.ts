@@ -1493,7 +1493,9 @@ const reconcileInventory: JobHandler = {
       });
       if (!dirty) {
         // 库存没变也可能要处理断货动作（已在 0 库存但仍 published 的刊登）
-        if (oos && inv?.oosAction === "unpublish" && listing.status === "published") {
+        if (oos && inv?.oosAction === "unpublish" && (listing.status === "published" &&
+          listing.remoteStatus !== "DRAFT" &&
+          listing.remoteStatus !== "DELETED")) {
           await enqueue(deps.db, DELIST_LISTING, { listingId: listing.id }, { workspaceId: store.workspaceId });
         }
         continue;
@@ -1503,7 +1505,9 @@ const reconcileInventory: JobHandler = {
         .set({ variants, updatedAt: new Date() })
         .where(eq(listings.id, listing.id));
       if (
-        listing.status === "published" &&
+        (listing.status === "published" &&
+          listing.remoteStatus !== "DRAFT" &&
+          listing.remoteStatus !== "DELETED") &&
         store.rules.trackStock &&
         listing.syncPolicy.stock === "auto"
       ) {
@@ -1515,7 +1519,9 @@ const reconcileInventory: JobHandler = {
         );
         pushed++;
       }
-      if (oos && inv?.oosAction === "unpublish" && listing.status === "published") {
+      if (oos && inv?.oosAction === "unpublish" && (listing.status === "published" &&
+          listing.remoteStatus !== "DRAFT" &&
+          listing.remoteStatus !== "DELETED")) {
         await enqueue(deps.db, DELIST_LISTING, { listingId: listing.id }, { workspaceId: store.workspaceId });
       }
     }
@@ -1718,10 +1724,7 @@ const fulfillPush: JobHandler = {
     if (!adapter.pushFulfillment) throw new PermanentJobError("该平台不支持履约回传");
     const res = await adapter.pushFulfillment(deps, row.store, {
       remoteOrderId: row.order.remoteId,
-      lineItems: row.shipment.lineItems?.map((id) => ({
-        remoteLineItemId: id,
-        qty: Number.MAX_SAFE_INTEGER, // min() 收敛到 remainingQuantity
-      })),
+      lineItems: row.shipment.lineItems ?? undefined,
       tracking: {
         number: row.shipment.trackingNo ?? "",
         company: row.shipment.carrier ?? undefined,

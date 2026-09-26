@@ -304,6 +304,22 @@ export function orderRoutes() {
         return src && (!offerId || src.sourceItemId === offerId);
       });
       if (!covered.length) throw new HttpError(422, "该订单没有对应货源的行项", "no_items");
+      // 一张 1688 单号只属于一个供应商：覆盖集跨供应商时必须按 offerId 分开确认
+      const coveredSellers = new Set(
+        covered.map(
+          (i) =>
+            srcs.find((s) => s.id === i.sourceItemId)?.sellerName ??
+            i.sourceItemId ??
+            i.id,
+        ),
+      );
+      if (!offerId && coveredSellers.size > 1) {
+        throw new HttpError(
+          422,
+          "行项跨多个供应商，请按货源分别确认下单",
+          "multi_seller",
+        );
+      }
       const src = srcs.find((s) => s.id === covered[0]!.sourceItemId)!;
 
       // 找已含这些行项的活跃采购单（含已发货——已下单过的行不重复建单）。
@@ -485,8 +501,16 @@ export function orderRoutes() {
         trackingUrl: z.string().trim().max(500).optional(),
         /** 重推一条失败/待推的 shipment；缺省新建。 */
         shipmentId: z.string().uuid().optional(),
-        /** 只发这些行项（部分发货）；缺省 = 全部剩余行。 */
-        remoteLineItemIds: z.array(z.string().max(128)).max(100).optional(),
+        /** 部分发货：行项 + 数量（qty 缺省 = 该行剩余全发）；缺省 = 全部剩余行。 */
+        lineItems: z
+          .array(
+            z.object({
+              remoteLineItemId: z.string().max(128),
+              qty: z.number().int().min(1).max(100_000).optional(),
+            }),
+          )
+          .max(100)
+          .optional(),
       }),
     ),
     async (c) => {
@@ -509,7 +533,7 @@ export function orderRoutes() {
             carrier: body.carrier ?? s.carrier,
             trackingNo: body.trackingNo,
             trackingUrl: body.trackingUrl ?? s.trackingUrl,
-            lineItems: body.remoteLineItemIds ?? s.lineItems,
+            lineItems: body.lineItems ?? s.lineItems,
             status: "pending",
             lastError: null,
           })
@@ -523,7 +547,7 @@ export function orderRoutes() {
             carrier: body.carrier ?? null,
             trackingNo: body.trackingNo,
             trackingUrl: body.trackingUrl ?? null,
-            lineItems: body.remoteLineItemIds ?? null,
+            lineItems: body.lineItems ?? null,
           })
           .returning({ id: shipments.id });
         shipmentId = ins!.id;

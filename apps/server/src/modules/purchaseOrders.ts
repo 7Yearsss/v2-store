@@ -398,7 +398,12 @@ export function purchaseOrderRoutes() {
         await deps.db
           .update(orderItems)
           .set({ procureStatus: "queued" })
-          .where(eq(orderItems.id, item.id));
+          .where(
+            and(
+              eq(orderItems.id, item.id),
+              inArray(orderItems.procureStatus, ["none", "failed"]),
+            ),
+          );
         touchedOrders.add(item.orderId);
       }
       await audit(deps.db, workspaceId, {

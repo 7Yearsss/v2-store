@@ -850,8 +850,10 @@ export const shipments = pgTable(
     trackingNo: text("tracking_no"),
     trackingUrl: text("tracking_url"),
     remoteFulfillmentId: text("remote_fulfillment_id"),
-    /** 部分发货：只发这些远端行项（Shopify lineItem gid）；null = 全部剩余行。 */
-    lineItems: jsonb("line_items").$type<string[]>(),
+    /** 部分发货：远端行项 + 数量（缺省该行全量）；null = 全部剩余行。 */
+    lineItems: jsonb("line_items").$type<
+      Array<{ remoteLineItemId: string; qty?: number }>
+    >(),
     status: text("status").$type<ShipmentStatus>().notNull().default("pending"),
     lastError: text("last_error"),
     createdAt: createdAt(),
