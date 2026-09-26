@@ -9,9 +9,20 @@ import type {
   ListingSuggestion,
   OptionsSuggestionValue,
 } from "@caiji/shared";
+import { adapterFor } from "../channels/index.js";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
-import { jobs, listings, listingSuggestions, sourceItems, stores } from "../db/schema.js";
+import {
+  jobs,
+  listings,
+  listingSuggestions,
+  publishAttempts,
+  publishRuns,
+  sourceItems,
+  stores,
+} from "../db/schema.js";
+import { listAudits } from "../lib/audit.js";
+import { toFieldsSnapshot } from "../lib/drift.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { upsertAttrMappings } from "../lib/attributes.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
@@ -24,7 +35,8 @@ import {
   enqueueAiEnhance,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
-import { toProductSetInput, validateForShopify } from "../channels/shopify/adapter.js";
+import { toProductSetInput } from "../channels/shopify/adapter.js";
+import { toAttemptDto } from "./publish.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
@@ -56,6 +68,12 @@ export function toListingDto(
     remoteId: r.remoteId,
     remoteUrl: r.remoteUrl,
     remoteStatus: r.remoteStatus,
+    linkStatus: r.linkStatus,
+    syncPolicy: r.syncPolicy,
+    remoteSnapshot: r.remoteSnapshot,
+    remoteDrift: r.remoteDrift,
+    lastPulledAt: r.lastPulledAt?.toISOString() ?? null,
+    lastAutoAction: r.lastAutoAction,
     syncedAt: r.syncedAt?.toISOString() ?? null,
     lastError: r.lastError,
     publishedAt: r.publishedAt?.toISOString() ?? null,
@@ -67,6 +85,7 @@ export function toListingDto(
 const listQuery = z.object({
   status: z.enum(["draft", "publishing", "published", "failed"]).optional(),
   storeId: z.string().uuid().optional(),
+  sourceItemId: z.string().uuid().optional(),
   q: z.string().trim().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
@@ -98,6 +117,14 @@ const patchSchema = z
     productType: z.string().max(255),
     vendor: z.string().max(255),
     weightKg: z.number().min(0).max(100_000).nullable(),
+    /** 漂移处理策略（部分更新，服务端与现值合并）。 */
+    syncPolicy: z
+      .object({
+        stock: z.enum(["auto", "notify", "off"]),
+        content: z.enum(["notify", "off"]),
+        price: z.enum(["notify", "off"]),
+      })
+      .partial(),
   })
   .partial()
   .refine(
@@ -178,11 +205,12 @@ export function listingRoutes() {
 
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
-    const { status, storeId, q, page, pageSize } = c.req.valid("query");
+    const { status, storeId, sourceItemId, q, page, pageSize } = c.req.valid("query");
     const where = and(
       eq(listings.workspaceId, c.var.auth.workspaceId),
       status ? eq(listings.status, status) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
+      sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
       q ? ilike(listings.title, `%${q}%`) : undefined,
     );
     const [rows, [total]] = await Promise.all([
@@ -234,9 +262,25 @@ export function listingRoutes() {
 
   r.patch("/:id", zValidator("json", patchSchema), async (c) => {
     const { db } = c.var.deps;
+    const body = c.req.valid("json");
+    const { syncPolicy, ...rest } = body;
+    const patch: Partial<ListingRow> = rest;
+    if (syncPolicy) {
+      const [cur] = await db
+        .select({ syncPolicy: listings.syncPolicy })
+        .from(listings)
+        .where(
+          and(
+            eq(listings.id, c.req.param("id")),
+            eq(listings.workspaceId, c.var.auth.workspaceId),
+          ),
+        );
+      if (!cur) throw notFound("刊登");
+      patch.syncPolicy = { ...cur.syncPolicy, ...syncPolicy };
+    }
     const [row] = await db
       .update(listings)
-      .set(c.req.valid("json"))
+      .set(patch)
       .where(
         and(
           eq(listings.id, c.req.param("id")),
@@ -251,12 +295,14 @@ export function listingRoutes() {
   });
 
   /** Queue publish (first publish or re-sync of an already published product).
-   *  发布门禁：命中店铺禁售词的刊登不排队，逐条返回命中原因。 */
+   *  一次调用形成一个 publish_run + 每刊登一条 publish_attempt（含门禁失败的）；
+   *  jobs 仍是执行队列，payload.attemptId 让 job handler 回写 attempt/run。
+   *  发布门禁：命中店铺禁售词的刊登不排队，记为 failed attempt（可归一化 code）。 */
   r.post("/publish", zValidator("json", idsSchema), async (c) => {
     const { db } = c.var.deps;
-    const { workspaceId } = c.var.auth;
+    const { workspaceId, userId } = c.var.auth;
     const { ids } = c.req.valid("json");
-    const { queued, blocked } = await db.transaction(async (tx) => {
+    const { queued, blocked, runId } = await db.transaction(async (tx) => {
       const rows = await tx
         .select({ listing: listings, rules: stores.rules })
         .from(listings)
@@ -268,24 +314,57 @@ export function listingRoutes() {
             ne(listings.status, "publishing"),
           ),
         );
+      if (!rows.length) return { queued: 0, blocked: [], runId: null };
       const blocked = rows.flatMap(({ listing: l, rules }) => {
         const hits = findBannedWords(l, rules?.bannedWords);
         return hits.length ? [{ id: l.id, title: l.title, words: hits }] : [];
       });
       const blockedIds = new Set(blocked.map((b) => b.id));
-      const okIds = rows.filter((r) => !blockedIds.has(r.listing.id)).map((r) => r.listing.id);
-      if (okIds.length) {
+      const [run] = await tx
+        .insert(publishRuns)
+        .values({
+          workspaceId,
+          createdBy: userId,
+          listingIds: rows.map((r) => r.listing.id),
+          status: blocked.length === rows.length ? "failed" : "queued",
+        })
+        .returning({ id: publishRuns.id });
+      for (const { listing: l } of rows) {
+        const snapshot = toFieldsSnapshot(l);
+        if (blockedIds.has(l.id)) {
+          const words = blocked.find((b) => b.id === l.id)!.words;
+          await tx.insert(publishAttempts).values({
+            workspaceId,
+            runId: run!.id,
+            listingId: l.id,
+            storeId: l.storeId,
+            status: "failed",
+            error: `发布前检查拦截：含禁售词 ${words.join("、")}`,
+            errorCode: "review_rejected",
+            fieldsSnapshot: snapshot,
+          });
+          continue;
+        }
         await tx
           .update(listings)
           .set({ status: "publishing", lastError: null })
-          .where(inArray(listings.id, okIds));
-        for (const id of okIds) {
-          await enqueue(tx, PUBLISH_LISTING, { listingId: id }, { workspaceId });
-        }
+          .where(eq(listings.id, l.id));
+        const [attempt] = await tx
+          .insert(publishAttempts)
+          .values({
+            workspaceId,
+            runId: run!.id,
+            listingId: l.id,
+            storeId: l.storeId,
+            status: "queued",
+            fieldsSnapshot: snapshot,
+          })
+          .returning({ id: publishAttempts.id });
+        await enqueue(tx, PUBLISH_LISTING, { listingId: l.id, attemptId: attempt!.id }, { workspaceId });
       }
-      return { queued: okIds.length, blocked };
+      return { queued: rows.length - blocked.length, blocked, runId: run!.id };
     });
-    return c.json({ queued, skipped: ids.length - queued - blocked.length, blocked });
+    return c.json({ queued, skipped: ids.length - queued - blocked.length, blocked, runId });
   });
 
   /** 发布预览：不触碰远端，把这次发布会写出去的字段汇总返回
@@ -302,8 +381,11 @@ export function listingRoutes() {
     const { listing, store } = row;
 
     const warnings: string[] = [];
-    const validation = store.platform === "shopify" ? validateForShopify(listing) : null;
-    if (validation) warnings.push(validation);
+    // 预览与发布共用同一份结构化校验（ChannelAdapter.validate）
+    const issues = await adapterFor(store.platform).validate(c.var.deps, store, listing);
+    for (const i of issues) {
+      if ((i.severity ?? "block") === "block") warnings.push(i.message);
+    }
     const banned = findBannedWords(listing, store.rules?.bannedWords);
     if (banned.length) warnings.push(`发布前检查拦截：含禁售词 ${banned.join("、")}`);
     if (!listing.channelCategoryId) warnings.push("类目未映射，发布后需要在店铺后台手动选类目");
@@ -321,6 +403,7 @@ export function listingRoutes() {
     return c.json({
       ok: warnings.length === 0,
       warnings,
+      issues,
       product: input
         ? {
             title: input.title,
@@ -345,6 +428,52 @@ export function listingRoutes() {
           }
         : null,
     });
+  });
+
+  /** 托管详情：列表 DTO 之外补远端快照/漂移/策略/最近自动动作 + 最近发布 attempts（三栏页用）。 */
+  r.get("/:id/managed", async (c) => {
+    const { db } = c.var.deps;
+    const [row] = await db
+      .select()
+      .from(listings)
+      .where(
+        and(
+          eq(listings.id, c.req.param("id")),
+          eq(listings.workspaceId, c.var.auth.workspaceId),
+        ),
+      );
+    if (!row) throw notFound("刊登");
+    const attemptRows = await db
+      .select()
+      .from(publishAttempts)
+      .where(
+        and(
+          eq(publishAttempts.listingId, row.id),
+          eq(publishAttempts.workspaceId, c.var.auth.workspaceId),
+        ),
+      )
+      .orderBy(desc(publishAttempts.createdAt))
+      .limit(20);
+    return c.json({
+      listing: toListingDto(row),
+      attempts: attemptRows.map(toAttemptDto),
+    });
+  });
+
+  /** 审计列表（刊登维度）：发布、远端标记删除、自动库存动作等，全部留痕可查。 */
+  r.get("/:id/audits", async (c) => {
+    const { db } = c.var.deps;
+    const [row] = await db
+      .select({ id: listings.id })
+      .from(listings)
+      .where(
+        and(
+          eq(listings.id, c.req.param("id")),
+          eq(listings.workspaceId, c.var.auth.workspaceId),
+        ),
+      );
+    if (!row) throw notFound("刊登");
+    return c.json({ audits: await listAudits(db, c.var.auth.workspaceId, "listing", row.id) });
   });
 
   /** Queue delist: 已发布 + 有 remoteId 的刊登下架（远端 status→DRAFT，刊登记录保留）。 */

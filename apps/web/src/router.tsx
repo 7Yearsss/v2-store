@@ -1,28 +1,31 @@
-import { createBrowserRouter } from "react-router";
-import { AppLayout } from "./layout/AppLayout";
-import { CategoryMappingsPage } from "./pages/CategoryMappings";
-import { DashboardPage } from "./pages/Dashboard";
+import { createBrowserRouter, Navigate } from "react-router";
+import { Shell } from "./shell/Shell";
 import { JobsPage } from "./pages/Jobs";
-import { CollectBoxPage } from "./pages/CollectBox";
 import { ListingEditPage } from "./pages/ListingEdit";
-import { ListingsPage } from "./pages/Listings";
 import { LoginPage, RegisterPage } from "./pages/Auth";
+import { ProductsPage } from "./pages/Products";
+import { SettingsPage } from "./pages/Settings";
 import { StoresPage } from "./pages/Stores";
+import { WorkbenchPage } from "./pages/Workbench";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
   { path: "/register", element: <RegisterPage /> },
   {
     path: "/",
-    element: <AppLayout />,
+    element: <Shell />,
     children: [
-      { index: true, element: <DashboardPage /> },
-      { path: "collect-box", element: <CollectBoxPage /> },
-      { path: "listings", element: <ListingsPage /> },
-      { path: "listings/:id", element: <ListingEditPage /> },
+      { index: true, element: <WorkbenchPage /> },
+      { path: "products", element: <ProductsPage /> },
       { path: "stores", element: <StoresPage /> },
       { path: "jobs", element: <JobsPage /> },
-      { path: "category-mappings", element: <CategoryMappingsPage /> },
+      { path: "settings", element: <SettingsPage /> },
+      { path: "listings/:id", element: <ListingEditPage /> },
+      // 旧路由兼容重定向（不显示在一级导航）
+      { path: "collect-box", element: <Navigate to="/" replace /> },
+      { path: "listings", element: <Navigate to="/products" replace /> },
+      { path: "category-mappings", element: <Navigate to="/settings" replace /> },
+      { path: "*", element: <Navigate to="/" replace /> },
     ],
   },
 ]);

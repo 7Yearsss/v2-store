@@ -1,10 +1,16 @@
 import type {
   ChannelAttribute,
+  LastAutoAction,
   ListingChannelAttribute,
+  ListingFieldsSnapshot,
   ListingOption,
+  ListingSyncPolicy,
   ListingVariant,
   OfferSku,
   PricingRule,
+  PublishErrorCode,
+  RemoteDriftEntry,
+  RemoteSnapshot,
   RemoteStatus,
   StoreRules,
   StoreSettingsPayload,
@@ -250,6 +256,27 @@ export const listings = pgTable(
     remoteUrl: text("remote_url"),
     /** channel-side status (ACTIVE/DRAFT/ARCHIVED/DELETED…), synced back */
     remoteStatus: text("remote_status").$type<RemoteStatus>(),
+    /** 与远端商品的绑定状态；旧行默认 unlinked（迁移回填 linked/remote_deleted）。 */
+    linkStatus: text("link_status", {
+      enum: ["linked", "unlinked", "remote_deleted"],
+    })
+      .notNull()
+      .default("unlinked"),
+    /** 漂移处理策略：stock 可 auto，content/price 只标记不覆盖。 */
+    syncPolicy: jsonb("sync_policy")
+      .$type<ListingSyncPolicy>()
+      .notNull()
+      .default({ stock: "notify", content: "notify", price: "notify" }),
+    /** 最近一次远端快照（拉取或发布成功后写入）。 */
+    remoteSnapshot: jsonb("remote_snapshot").$type<RemoteSnapshot>(),
+    /** 字段级漂移：只标记，不自动覆盖本地或远端。 */
+    remoteDrift: jsonb("remote_drift")
+      .$type<RemoteDriftEntry[]>()
+      .notNull()
+      .default([]),
+    lastPulledAt: timestamp("last_pulled_at", { withTimezone: true }),
+    /** 最近一次自动动作（库存推送等）；所有自动动作必须落此字段 + audit_logs。 */
+    lastAutoAction: jsonb("last_auto_action").$type<LastAutoAction>(),
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -445,6 +472,98 @@ export const listingTemplates = pgTable(
   (t) => [
     uniqueIndex("listing_templates_ws_name_uq").on(t.workspaceId, t.name),
     index("listing_templates_ws_idx").on(t.workspaceId),
+  ],
+);
+
+// --- 托管：发布批次与审计 ------------------------------------------------------
+
+/** 一次「勾选多条刊登 → 发布」形成的批次；jobs 仍是执行队列，本表是业务记录。 */
+export const publishRuns = pgTable(
+  "publish_runs",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["queued", "running", "partial_success", "succeeded", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    /** 本次覆盖的刊登 id（含被门禁拦截的）。 */
+    listingIds: jsonb("listing_ids").$type<string[]>().notNull().default([]),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("publish_runs_ws_created_idx").on(t.workspaceId, t.createdAt)],
+);
+
+/** run 内每个刊登一条 attempt；重试 = 新 attempt（retryOf 指向旧条），旧条留档。 */
+export const publishAttempts = pgTable(
+  "publish_attempts",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => publishRuns.id, { onDelete: "cascade" }),
+    listingId: uuid("listing_id")
+      .notNull()
+      .references(() => listings.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    status: text("status", {
+      enum: ["queued", "running", "succeeded", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    /** 本次实际发布的刊登字段快照（重试时取当版）。 */
+    fieldsSnapshot: jsonb("fields_snapshot")
+      .$type<ListingFieldsSnapshot>()
+      .notNull(),
+    /** 平台原文错误。 */
+    error: text("error"),
+    errorCode: text("error_code").$type<PublishErrorCode>(),
+    remoteId: text("remote_id"),
+    remoteUrl: text("remote_url"),
+    retryOf: uuid("retry_of"),
+    /** 实际执行这条 attempt 的 jobs 行。 */
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("publish_attempts_run_idx").on(t.runId),
+    index("publish_attempts_listing_idx").on(t.listingId),
+    index("publish_attempts_ws_status_idx").on(t.workspaceId, t.status),
+  ],
+);
+
+/** 审计：用户发布/重试 + 系统自动动作（回扫库存推送、远端删除标记）都落这里。 */
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** "user:<userId>" | "system" | "system:sync"。 */
+    actor: text("actor").notNull().default("system"),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("audit_logs_ws_entity_idx").on(t.workspaceId, t.entityType, t.entityId),
+    index("audit_logs_ws_created_idx").on(t.workspaceId, t.createdAt),
   ],
 );
 

@@ -6,7 +6,7 @@ import { api } from "../api";
 
 function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f5f5f5" }}>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--bg)" }}>
       <Card style={{ width: 380 }}>
         <Typography.Title level={3} style={{ marginTop: 0 }}>
           {title}
@@ -24,7 +24,7 @@ function useAfterAuth() {
   return async () => {
     await qc.invalidateQueries();
     const next = params.get("next");
-    navigate(next?.startsWith("/") ? next : "/collect-box", { replace: true });
+    navigate(next?.startsWith("/") ? next : "/", { replace: true });
   };
 }
 

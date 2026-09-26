@@ -1,5 +1,6 @@
 import type {
   AttributeMapping,
+  AuditLog,
   ChannelAttribute,
   CategoryCandidate,
   CategoryMapping,
@@ -12,6 +13,8 @@ import type {
   Me,
   Page,
   PricingRule,
+  PublishAttempt,
+  PublishRun,
   RemoteStatus,
   SourceItem,
   Store,
@@ -56,6 +59,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    // 会话过期统一回登录页（带 next 回跳），避免静默停在旧页面
+    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+    }
     // zod-validator errors come back as { success:false, error:{...} }
     const message =
       data?.error && typeof data.error === "string"
@@ -140,8 +147,14 @@ export const api = {
   storeCategories: (storeId: string, q: string) =>
     request<{ items: CategoryCandidate[] }>("GET", `/stores/${storeId}/categories${qs({ q })}`),
 
-  listings: (p: { status?: ListingStatus; storeId?: string; q?: string; page?: number; pageSize?: number }) =>
-    request<Page<Listing>>("GET", `/listings${qs(p)}`),
+  listings: (p: {
+    status?: ListingStatus;
+    storeId?: string;
+    sourceItemId?: string;
+    q?: string;
+    page?: number;
+    pageSize?: number;
+  }) => request<Page<Listing>>("GET", `/listings${qs(p)}`),
   overview: () => request<Overview>("GET", "/overview"),
   jobs: (p: { status?: JobStatus; page?: number; pageSize?: number }) =>
     request<Page<Job>>("GET", `/jobs${qs(p)}`),
@@ -150,11 +163,22 @@ export const api = {
   listing: (id: string) => request<Listing>("GET", `/listings/${id}`),
   updateListing: (id: string, body: Partial<Listing>) => request<Listing>("PATCH", `/listings/${id}`, body),
   publish: (ids: string[]) =>
-    request<{ queued: number; skipped: number; blocked: Array<{ id: string; title: string; words: string[] }> }>(
-      "POST",
-      "/listings/publish",
-      { ids },
-    ),
+    request<{
+      queued: number;
+      skipped: number;
+      blocked: Array<{ id: string; title: string; words: string[] }>;
+      runId: string | null;
+    }>("POST", "/listings/publish", { ids }),
+  publishRuns: (p?: { status?: string }) =>
+    request<Page<PublishRun>>("GET", `/publish/runs${qs({ status: p?.status })}`),
+  publishRun: (id: string) =>
+    request<{ run: PublishRun; attempts: PublishAttempt[] }>("GET", `/publish/runs/${id}`),
+  retryPublishRun: (id: string) =>
+    request<{ retried: number }>("POST", `/publish/runs/${id}/retry`, {}),
+  listingManaged: (id: string) =>
+    request<{ listing: Listing; attempts: PublishAttempt[] }>("GET", `/listings/${id}/managed`),
+  listingAudits: (id: string) =>
+    request<{ audits: AuditLog[] }>("GET", `/listings/${id}/audits`),
   deleteListings: (ids: string[]) => request<{ deleted: number }>("POST", "/listings/delete", { ids }),
   delist: (ids: string[]) =>
     request<{ queued: number; skipped: number }>("POST", "/listings/delist", { ids }),

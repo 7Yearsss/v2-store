@@ -32,6 +32,11 @@ export function fakeShopify(
     capturedStock?: Array<Array<Record<string, unknown>>>;
     /** records product ids passed to DelistProduct */
     capturedDelist?: string[];
+    /** remote id → raw Product node for the RemoteSnapshots query (null = deleted);
+     *  precedence over remoteStatuses which only supplies {id,status} */
+    remoteProducts?: Record<string, Record<string, unknown> | null>;
+    /** sku per variant index for the StockData query (sku-matching in pushStock) */
+    stockSkus?: string[];
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -163,6 +168,21 @@ export function fakeShopify(
           data: { productUpdate: { product: { id: variables.id, status: "DRAFT" }, userErrors: [] } },
         });
       }
+      if (query.includes("RemoteSnapshots")) {
+        return json({
+          data: {
+            nodes: variables.ids.map((id: string) => {
+              if (opts.remoteProducts && id in opts.remoteProducts) {
+                const p = opts.remoteProducts[id];
+                return p ? { id, ...p } : null;
+              }
+              const s = opts.remoteStatuses?.[id];
+              if (opts.remoteStatuses && id in opts.remoteStatuses && !s) return null;
+              return { id, status: s ?? "ACTIVE", title: "Remote title", descriptionHtml: "<p>remote</p>", variants: { nodes: [] } };
+            }),
+          },
+        });
+      }
       if (query.includes("ProductStatuses")) {
         return json({
           data: {
@@ -210,6 +230,7 @@ export function fakeShopify(
             product: {
               variants: {
                 nodes: Array.from({ length: variantsCount }, (_, i) => ({
+                  sku: opts.stockSkus?.[i] ?? null,
                   inventoryItem: {
                     id: `gid://shopify/InventoryItem/i${i}`,
                     inventoryLevels: { nodes: [] },

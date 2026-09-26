@@ -78,6 +78,13 @@
       "when": 1790343450684,
       "tag": "0010_charming_guardsmen",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790391915379,
+      "tag": "0011_friendly_hydra",
+      "breakpoints": true
     }
   ]
 }

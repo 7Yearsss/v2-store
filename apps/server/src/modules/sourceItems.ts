@@ -256,6 +256,10 @@ export function sourceItemRoutes() {
               item.attributes,
               term,
             ),
+            // 店铺开了「同步货源库存」的刊登默认自动回推库存（旧行为），其余只标记漂移
+            syncPolicy: rules.trackStock
+              ? { stock: "auto" as const, content: "notify" as const, price: "notify" as const }
+              : undefined,
           },
         ];
       }),

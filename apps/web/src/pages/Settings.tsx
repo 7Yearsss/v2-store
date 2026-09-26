@@ -13,7 +13,9 @@ import {
   Typography,
 } from "antd";
 import { useState } from "react";
+import { Link } from "react-router";
 import { api } from "../api";
+import { ExtensionBadge, useExtension } from "../components/ExtensionBadge";
 
 function CategoryMappingCard() {
   const { message } = App.useApp();
@@ -271,16 +273,46 @@ function AttributeMappingCard() {
   );
 }
 
-/** 映射管理：类目映射 + 术语翻译映射 + 属性映射。 */
-export function CategoryMappingsPage() {
+function AccountCard() {
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const ext = useExtension();
   return (
-    <Tabs
-      defaultActiveKey="category"
-      items={[
-        { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
-        { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
-        { key: "attribute", label: "属性映射", children: <AttributeMappingCard /> },
-      ]}
-    />
+    <Card title="账号与插件" size="small">
+      <Space direction="vertical" size={8}>
+        <div>
+          当前用户：<b>{me.data?.user.name}</b>（{me.data?.user.email}） · 团队：{me.data?.workspace.name}
+        </div>
+        <Space>
+          采集插件：<ExtensionBadge />
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          插件负责在 1688 页面采集商品并回扫货源变化；授权后工作台顶栏可随时重新绑定。
+        </Typography.Text>
+      </Space>
+    </Card>
+  );
+}
+
+/** 设置：类目映射 + 术语翻译映射 + 属性映射 + 账号/插件。 */
+export function SettingsPage() {
+  return (
+    <div className="pg">
+      <div className="pg-head">
+        <h2>设置</h2>
+        <span className="pg-sub">类目/属性/术语映射与各店刊登规则</span>
+      </div>
+      <Tabs
+        defaultActiveKey="category"
+        items={[
+          { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
+          { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
+          { key: "attribute", label: "属性映射", children: <AttributeMappingCard /> },
+          { key: "account", label: "账号与插件", children: <AccountCard /> },
+        ]}
+      />
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        各店的定价 / AI 产线 / 发布前检查规则在<Link to="/stores">店铺页</Link>逐个编辑。
+      </Typography.Text>
+    </div>
   );
 }

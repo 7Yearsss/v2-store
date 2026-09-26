@@ -11,6 +11,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
 import { api } from "../api";
+import { sanitizeHtml } from "../lib/sanitize";
 
 type DraftPatch = Partial<
   Pick<
@@ -36,13 +37,13 @@ const FIELD_LABEL: Record<SuggestionField, string> = {
 };
 
 const cellStyle: React.CSSProperties = {
-  background: "#fafafa",
+  background: "var(--surface-2)",
   borderRadius: 6,
   padding: "8px 12px",
   maxHeight: 220,
   overflow: "auto",
 };
-const newCellStyle: React.CSSProperties = { ...cellStyle, background: "#f6ffed" };
+const newCellStyle: React.CSSProperties = { ...cellStyle, background: "rgba(63,182,139,0.12)" };
 
 function OptionsView({ options }: { options: { name: string; values: string[] }[] }) {
   return (
@@ -101,7 +102,7 @@ function ChannelAttrsTable({ items }: { items: ListingChannelAttribute[] }) {
 
 function ValueView({ field, value }: { field: SuggestionField; value: unknown }) {
   if (field === "descriptionHtml") {
-    return <div dangerouslySetInnerHTML={{ __html: String(value) }} />;
+    return <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(String(value)) }} />;
   }
   if (field === "tags") {
     return (
