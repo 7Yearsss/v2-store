@@ -319,37 +319,56 @@ export function orderRoutes() {
           ),
         );
       // 只复用「所有行项都在本次覆盖集内」的采购单：PO 按货源聚合可能混了
-      // 别的订单/别的货源行，整单置 placed 会把无关行项一并标记
+      // 别的订单/别的货源行，整单置 placed 会把无关行项一并标记。
+      // 已发货（domestic_shipped/intl_shipped）的 PO 不参与复用也不追加行项。
       const coveredIds = new Set(covered.map((i) => i.id));
-      let poId: string | undefined;
-      for (const candId of new Set(existingLinks.map((l) => l.purchase_orders.id))) {
-        const rows = await deps.db
-          .select({ orderItemId: purchaseOrderItems.orderItemId })
-          .from(purchaseOrderItems)
-          .where(eq(purchaseOrderItems.purchaseOrderId, candId));
-        if (rows.length && rows.every((r) => coveredIds.has(r.orderItemId))) {
-          poId = candId;
-          break;
-        }
-      }
-      // 已发货 PO 里的 covered 行项：已经下单在途，不再重复下单/挪单
       const shippedItemIds = new Set(
         existingLinks
           .filter((l) => PO_SHIPPED.has(l.purchase_orders.status))
           .map((l) => l.purchase_order_items.orderItemId),
       );
-      if (!poId) {
-        const freeItems = covered.filter((i) => !shippedItemIds.has(i.id));
-        if (!freeItems.length) {
-          // 覆盖集全部在已发货 PO：只补写 sourceOrderId，不建第二张单
-          poId = existingLinks[0]!.purchase_orders.id;
-        } else {
-        // covered 行项若挂在别的未发货 PO 上（如手工合并进来的），先把链接搬走；
-        // 已发货 PO 的链接不动
+      const freeItems = covered.filter((i) => !shippedItemIds.has(i.id));
+      let poId: string | undefined;
+      let poShipped = false;
+
+      if (!freeItems.length) {
+        // 覆盖集全部在已发货 PO：只确认唯一一张发货单（补单号），跨多张无法归属 → 409
+        const shippedPoIds = [
+          ...new Set(existingLinks.map((l) => l.purchase_orders.id)),
+        ];
+        if (shippedPoIds.length > 1) {
+          throw new HttpError(
+            409,
+            "行项分散在多张已发货采购单，请到采购单分别确认",
+            "ambiguous_shipped_po",
+          );
+        }
+        poId = shippedPoIds[0];
+        poShipped = true;
+      } else {
+        for (const candId of new Set(
+          existingLinks
+            .filter((l) => !PO_SHIPPED.has(l.purchase_orders.status))
+            .map((l) => l.purchase_orders.id),
+        )) {
+          const rows = await deps.db
+            .select({ orderItemId: purchaseOrderItems.orderItemId })
+            .from(purchaseOrderItems)
+            .where(eq(purchaseOrderItems.purchaseOrderId, candId));
+          if (rows.length && rows.every((r) => coveredIds.has(r.orderItemId))) {
+            poId = candId;
+            break;
+          }
+        }
+        // freeItems 挂在别的未发货 PO 上的链接先搬走（不含选中的 poId）
         const stalePoIds = [
           ...new Set(
             existingLinks
-              .filter((l) => !PO_SHIPPED.has(l.purchase_orders.status))
+              .filter(
+                (l) =>
+                  !PO_SHIPPED.has(l.purchase_orders.status) &&
+                  l.purchase_orders.id !== poId,
+              )
               .map((l) => l.purchase_orders.id),
           ),
         ];
@@ -363,39 +382,26 @@ export function orderRoutes() {
               ),
             );
         }
-        const [created] = await deps.db
-          .insert(purchaseOrders)
-          .values({
-            workspaceId,
-            kind: "source_order",
-            sourcePlatform: src.sourcePlatform,
-            sourceSeller: src.sellerName,
-            status: "draft",
-            createdBy: userId,
-          })
-          .returning({ id: purchaseOrders.id });
-        poId = created!.id;
-        for (const it of freeItems) {
-          const sku = srcs
-            .find((s) => s.id === it.sourceItemId)
-            ?.skus.find((s) => s.skuId === it.sourceSkuId);
-          await deps.db.insert(purchaseOrderItems).values({
-            purchaseOrderId: poId,
-            orderItemId: it.id,
-            qty: it.qty,
-            unitPriceCny: sku?.priceCny ?? null,
-          });
+        if (!poId) {
+          const [created] = await deps.db
+            .insert(purchaseOrders)
+            .values({
+              workspaceId,
+              kind: "source_order",
+              sourcePlatform: src.sourcePlatform,
+              sourceSeller: src.sellerName,
+              status: "draft",
+              createdBy: userId,
+            })
+            .returning({ id: purchaseOrders.id });
+          poId = created!.id;
         }
-        }
-      } else {
         const linked = new Set(
           existingLinks
             .filter((l) => l.purchase_orders.id === poId)
             .map((l) => l.purchase_order_items.orderItemId),
         );
-        for (const it of covered.filter(
-          (i) => !linked.has(i.id) && !shippedItemIds.has(i.id),
-        )) {
+        for (const it of freeItems.filter((i) => !linked.has(i.id))) {
           const sku = srcs
             .find((s) => s.id === it.sourceItemId)
             ?.skus.find((s) => s.skuId === it.sourceSkuId);
@@ -407,27 +413,49 @@ export function orderRoutes() {
           });
         }
       }
-      // 状态只前进不后退：已 paid/发货的 PO 只补 sourceOrderId，不回退到 placed
+      // 状态只前进不后退：已发货 PO 只补空的 sourceOrderId，不一致直接冲突；
+      // 非发货态覆盖写 sourceOrderId，仅 draft 前进到 placed
       const [poRow] = await deps.db
-        .select({ status: purchaseOrders.status })
+        .select({
+          status: purchaseOrders.status,
+          sourceOrderId: purchaseOrders.sourceOrderId,
+        })
         .from(purchaseOrders)
         .where(eq(purchaseOrders.id, poId));
-      await deps.db
-        .update(purchaseOrders)
-        .set({
-          sourceOrderId,
-          ...(poRow?.status === "draft" ? { status: "placed" as const } : {}),
-        })
-        .where(eq(purchaseOrders.id, poId));
-      await deps.db
-        .update(orderItems)
-        .set({ procureStatus: "placed" })
-        .where(
-          and(
-            inArray(orderItems.id, covered.map((i) => i.id)),
-            inArray(orderItems.procureStatus, ["none", "queued", "failed"]),
-          ),
-        );
+      if (poRow && (poShipped || PO_SHIPPED.has(poRow.status))) {
+        if (poRow.sourceOrderId && poRow.sourceOrderId !== sourceOrderId) {
+          throw new HttpError(
+            409,
+            `行项已在发货采购单（原单号 ${poRow.sourceOrderId}）`,
+            "already_shipped",
+          );
+        }
+        if (!poRow.sourceOrderId) {
+          await deps.db
+            .update(purchaseOrders)
+            .set({ sourceOrderId })
+            .where(eq(purchaseOrders.id, poId));
+        }
+      } else {
+        await deps.db
+          .update(purchaseOrders)
+          .set({
+            sourceOrderId,
+            ...(poRow?.status === "draft" ? { status: "placed" as const } : {}),
+          })
+          .where(eq(purchaseOrders.id, poId));
+      }
+      if (freeItems.length) {
+        await deps.db
+          .update(orderItems)
+          .set({ procureStatus: "placed" })
+          .where(
+            and(
+              inArray(orderItems.id, freeItems.map((i) => i.id)),
+              inArray(orderItems.procureStatus, ["none", "queued", "failed"]),
+            ),
+          );
+      }
       await audit(deps.db, workspaceId, {
         actor: `user:${userId}`,
         action: "purchase_order.placed",
