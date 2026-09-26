@@ -1,4 +1,4 @@
-import type { CategoryCandidate, Listing, ListingVariant } from "@caiji/shared";
+import type { CategoryCandidate, Listing, ListingStatus, ListingVariant, RemoteStatus } from "@caiji/shared";
 import { DeleteOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,7 +25,21 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, type PublishPreview } from "../api";
 import { acceptedPatch, AiSuggestionsCard } from "../components/AiSuggestions";
-import { REMOTE, STATUS } from "./Listings";
+
+const STATUS: Record<ListingStatus, { label: string; color: string }> = {
+  draft: { label: "草稿", color: "default" },
+  publishing: { label: "发布中", color: "processing" },
+  published: { label: "已发布", color: "success" },
+  failed: { label: "发布失败", color: "error" },
+};
+
+const REMOTE: Record<RemoteStatus, { label: string; color: string }> = {
+  ACTIVE: { label: "在售", color: "green" },
+  DRAFT: { label: "草稿", color: "default" },
+  ARCHIVED: { label: "已归档", color: "default" },
+  UNLISTED: { label: "不公开", color: "default" },
+  DELETED: { label: "已删除", color: "red" },
+};
 
 type PreviewVariant = NonNullable<PublishPreview["product"]>["variants"][number];
 
@@ -385,9 +399,9 @@ export function ListingEditPage() {
           zIndex: 10,
           marginTop: -8,
           padding: "12px 16px",
-          background: "rgba(255,255,255,0.92)",
+          background: "rgba(11,12,14,0.92)",
           backdropFilter: "blur(8px)",
-          borderTop: "1px solid #f0f0f0",
+          borderTop: "1px solid var(--border)",
           display: "flex",
           alignItems: "center",
           gap: 12,
@@ -407,8 +421,8 @@ export function ListingEditPage() {
             有未保存的修改
           </Typography.Text>
         )}
-        <Link to={`/collect-box`} style={{ marginLeft: "auto" }}>
-          <Typography.Text type="secondary">来源：采集箱</Typography.Text>
+        <Link to={`/`} style={{ marginLeft: "auto" }}>
+          <Typography.Text type="secondary">返回铺货工作台</Typography.Text>
         </Link>
       </div>
 

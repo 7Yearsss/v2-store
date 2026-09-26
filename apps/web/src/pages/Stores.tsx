@@ -546,7 +546,12 @@ export function StoresPage() {
   });
 
   return (
-    <Card
+    <div className="pg">
+      <div className="pg-head">
+        <h2>店铺</h2>
+        <span className="pg-sub">店铺授权与刊登规则</span>
+      </div>
+      <Card
       title="店铺授权"
       extra={
         <Button type="primary" onClick={() => setConnectOpen(true)}>
@@ -629,6 +634,7 @@ export function StoresPage() {
       />
       <ConnectShopifyModal open={connectOpen} onClose={() => setConnectOpen(false)} />
       <ListingSettingsModal store={settingsStore} onClose={() => setSettingsStore(undefined)} />
-    </Card>
+      </Card>
+    </div>
   );
 }

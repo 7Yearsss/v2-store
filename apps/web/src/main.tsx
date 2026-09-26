@@ -1,39 +1,44 @@
-import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { App as AntApp, ConfigProvider } from "antd";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { App, ConfigProvider, theme } from "antd";
 import zhCN from "antd/locale/zh_CN";
-import "dayjs/locale/zh-cn";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
-import { ApiError } from "./api";
 import { router } from "./router";
+import "./theme.css";
+import "./wb.css";
 
-const queryClient = new QueryClient({
-  queryCache: new QueryCache({
-    onError: (err) => {
-      // session expired anywhere → back to login
-      if (err instanceof ApiError && err.status === 401 && !location.pathname.startsWith("/login")) {
-        queryClient.clear();
-        router.navigate(`/login?next=${encodeURIComponent(location.pathname)}`);
-      }
-    },
-  }),
+const qc = new QueryClient({
   defaultOptions: {
-    queries: {
-      retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 2,
-      refetchOnWindowFocus: false,
-    },
+    queries: { retry: 1, refetchOnWindowFocus: false },
   },
 });
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#f97316", borderRadius: 6 } }}>
-      <AntApp>
-        <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
-        </QueryClientProvider>
-      </AntApp>
-    </ConfigProvider>
+    <QueryClientProvider client={qc}>
+      <ConfigProvider
+      locale={zhCN}
+      theme={{
+        algorithm: theme.darkAlgorithm,
+        token: {
+          colorPrimary: "#5e6ad2",
+          colorBgBase: "#0b0c0e",
+          colorBgContainer: "#131417",
+          colorBgElevated: "#1a1c20",
+          colorBorder: "#26282e",
+          colorBorderSecondary: "#1e2025",
+          colorTextBase: "#e7e8ea",
+          colorTextSecondary: "#9ca0a8",
+          borderRadius: 6,
+          fontSize: 13,
+        },
+      }}
+    >
+      <App>
+        <RouterProvider router={router} />
+        </App>
+      </ConfigProvider>
+    </QueryClientProvider>
   </StrictMode>,
 );

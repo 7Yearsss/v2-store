@@ -94,6 +94,9 @@ export interface PublishPreview {
 }
 
 export const api = {
+  /** 未纳入 api 的端点直取（如尚未合并的 publish-runs）。 */
+  raw: <T>(path: string) => request<T>("GET", path),
+
   me: () => request<Me>("GET", "/auth/me"),
   login: (body: { email: string; password: string }) => request("POST", "/auth/login", body),
   register: (body: { email: string; password: string; name: string; workspaceName?: string }) =>
