@@ -67,12 +67,21 @@ export function ProductsPage() {
   });
   const sources = useQuery({
     queryKey: ["source-items", "map"],
-    queryFn: () => api.sourceItems({ page: 1, pageSize: 100 }),
+    queryFn: async () => {
+      // 与刊登查询同口径：翻完所有页，货源详情（价格/链接）不因超过一页而缺失
+      const first = await api.sourceItems({ page: 1, pageSize: 100 });
+      const pages = Math.ceil(first.total / 100);
+      if (pages <= 1) return first.items;
+      const rest = await Promise.all(
+        Array.from({ length: pages - 1 }, (_, i) => api.sourceItems({ page: i + 2, pageSize: 100 })),
+      );
+      return [first.items, ...rest.map((r) => r.items)].flat();
+    },
     staleTime: 60_000,
   });
   const srcById = useMemo(() => {
     const m = new Map<string, SourceItem>();
-    for (const i of sources.data?.items ?? []) m.set(i.id, i);
+    for (const i of sources.data ?? []) m.set(i.id, i);
     return m;
   }, [sources.data]);
 

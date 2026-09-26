@@ -231,7 +231,8 @@ export function JobsPage() {
               {j.status === "failed" && j.lastError && <div className="job-err">{j.lastError}</div>}
             </span>
             <span className="job-right">
-              {j.status === "failed" && (
+              {/* 发布 job 的重试走上方 run 级「重试失败店」，行级重试会造成同一刊登两个并发 job */}
+              {j.status === "failed" && j.type !== "listing.publish" && (
                 <button
                   type="button"
                   className="btn sm"

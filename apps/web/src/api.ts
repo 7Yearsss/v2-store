@@ -59,6 +59,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    // 会话过期统一回登录页（带 next 回跳），避免静默停在旧页面
+    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+    }
     // zod-validator errors come back as { success:false, error:{...} }
     const message =
       data?.error && typeof data.error === "string"

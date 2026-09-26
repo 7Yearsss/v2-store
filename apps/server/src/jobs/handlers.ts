@@ -475,7 +475,12 @@ const publishListing: JobHandler = {
         remoteId: result.remoteId,
         remoteUrl: result.remoteUrl,
         linkStatus: "linked",
-        remoteSnapshot: pushedSnapshot(listing, result.remoteId, result.remoteStatus),
+        remoteSnapshot: pushedSnapshot(
+          listing,
+          result.remoteId,
+          // 更新发布时 adapter 不回报状态（远端草稿态保持）——沿用已有记录而不是默认 ACTIVE
+          result.remoteStatus ?? listing.remoteStatus ?? undefined,
+        ),
         remoteDrift: [],
         ...(result.remoteStatus ? { remoteStatus: result.remoteStatus, syncedAt: now } : {}),
         lastError: result.warnings?.length ? result.warnings.join("；") : null,

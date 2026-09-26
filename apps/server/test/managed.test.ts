@@ -223,8 +223,10 @@ describe("managed lifecycle", () => {
     }
     const retry = await ctx.api("POST", `/api/publish/runs/${pub.body.runId}/retry`, {}, t2);
     expect(retry.status).toBe(404);
-    // 自己的 workspace 看不到别的 run
+    // 自己的 workspace 看不到别的 run/attempt
     const runs = await ctx.api("GET", "/api/publish/runs", undefined, t2);
     expect(runs.body.items).toHaveLength(0);
+    const attempts = await ctx.api("GET", "/api/publish/attempts", undefined, t2);
+    expect(attempts.body.items).toHaveLength(0);
   });
 });
