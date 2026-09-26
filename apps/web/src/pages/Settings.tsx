@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { FreightForwarder } from "@caiji/shared";
 import {
   App,
   Button,
@@ -14,7 +15,6 @@ import {
   Typography,
 } from "antd";
 import { useState } from "react";
-import type { FreightForwarder } from "@caiji/shared";
 import { Link } from "react-router";
 import { api } from "../api";
 import { ExtensionBadge, useExtension } from "../components/ExtensionBadge";
@@ -276,146 +276,6 @@ function AttributeMappingCard() {
 }
 
 /** 货代收货地址簿：采购下单时把货代仓地址贴进 1688 订单（仓储 L2 基础数据）。 */
-function FreightForwarderCard() {
-  const { message } = App.useApp();
-  const qc = useQueryClient();
-  const [form] = Form.useForm<Partial<FreightForwarder>>();
-  const [editing, setEditing] = useState<FreightForwarder | null>(null);
-  const [open, setOpen] = useState(false);
-  const query = useQuery({ queryKey: ["freight-forwarders"], queryFn: api.freightForwarders });
-  const save = useMutation({
-    mutationFn: async (v: Partial<FreightForwarder> & { name: string }) =>
-      editing ? api.updateFreightForwarder(editing.id, v) : api.createFreightForwarder(v),
-    onSuccess: () => {
-      message.success("已保存");
-      setOpen(false);
-      setEditing(null);
-      form.resetFields();
-      qc.invalidateQueries({ queryKey: ["freight-forwarders"] });
-    },
-    onError: (e) => message.error(e.message),
-  });
-  const del = useMutation({
-    mutationFn: api.deleteFreightForwarder,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["freight-forwarders"] }),
-    onError: (e) => message.error(e.message),
-  });
-
-  return (
-    <Card
-      title="货代地址簿"
-      extra={
-        <Button
-          type="primary"
-          size="small"
-          onClick={() => {
-            setEditing(null);
-            form.resetFields();
-            setOpen(true);
-          }}
-        >
-          新增地址
-        </Button>
-      }
-    >
-      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
-        货代仓收货信息；采购下单时从这里选收货地址。
-      </Typography.Paragraph>
-      <Table
-        rowKey="id"
-        size="small"
-        loading={query.isLoading}
-        dataSource={query.data?.items ?? []}
-        pagination={{ pageSize: 20, hideOnSinglePage: true }}
-        columns={[
-          { title: "名称", dataIndex: "name" },
-          { title: "收件人", dataIndex: "receiver" },
-          { title: "电话", dataIndex: "phone" },
-          {
-            title: "地址",
-            render: (_, f) =>
-              [f.country, f.province, f.city, f.address, f.zipcode].filter(Boolean).join(" "),
-          },
-          { title: "货代系统", dataIndex: "systemType", width: 110 },
-          {
-            title: "操作",
-            width: 140,
-            render: (_, f) => (
-              <Space>
-                <Button
-                  size="small"
-                  onClick={() => {
-                    setEditing(f);
-                    form.setFieldsValue(f);
-                    setOpen(true);
-                  }}
-                >
-                  编辑
-                </Button>
-                <Popconfirm title="删除该地址？" onConfirm={() => del.mutate(f.id)}>
-                  <Button size="small" danger loading={del.isPending}>
-                    删除
-                  </Button>
-                </Popconfirm>
-              </Space>
-            ),
-          },
-        ]}
-      />
-      <Modal
-        title={editing ? "编辑货代地址" : "新增货代地址"}
-        open={open}
-        onCancel={() => setOpen(false)}
-        confirmLoading={save.isPending}
-        onOk={async () => {
-          const v = (await form.validateFields()) as Partial<FreightForwarder> & { name: string };
-          save.mutate(v);
-        }}
-        destroyOnHidden
-      >
-        <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：深圳仓 / 广州仓" maxLength={100} />
-          </Form.Item>
-          <Space size={12} style={{ display: "flex" }}>
-            <Form.Item name="receiver" label="收件人">
-              <Input style={{ width: 180 }} maxLength={100} />
-            </Form.Item>
-            <Form.Item name="phone" label="电话">
-              <Input style={{ width: 180 }} maxLength={50} />
-            </Form.Item>
-          </Space>
-          <Space size={12} style={{ display: "flex" }}>
-            <Form.Item name="country" label="国家" initialValue="中国">
-              <Input style={{ width: 100 }} maxLength={100} />
-            </Form.Item>
-            <Form.Item name="province" label="省">
-              <Input style={{ width: 120 }} maxLength={100} />
-            </Form.Item>
-            <Form.Item name="city" label="市">
-              <Input style={{ width: 120 }} maxLength={100} />
-            </Form.Item>
-            <Form.Item name="zipcode" label="邮编">
-              <Input style={{ width: 100 }} maxLength={20} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="address" label="详细地址">
-            <Input maxLength={500} />
-          </Form.Item>
-          <Space size={12} style={{ display: "flex" }}>
-            <Form.Item name="systemType" label="货代系统">
-              <Input style={{ width: 180 }} placeholder="如 huoxiaoyi / manual" maxLength={50} />
-            </Form.Item>
-            <Form.Item name="note" label="备注" style={{ flex: 1 }}>
-              <Input style={{ width: 280 }} maxLength={1000} />
-            </Form.Item>
-          </Space>
-        </Form>
-      </Modal>
-    </Card>
-  );
-}
-
 function AccountCard() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const ext = useExtension();
@@ -440,7 +300,168 @@ function AccountCard() {
   );
 }
 
-/** 设置：类目映射 + 术语翻译映射 + 属性映射 + 账号/插件。 */
+function ForwarderCard() {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const query = useQuery({ queryKey: ["freight-forwarders"], queryFn: api.freightForwarders });
+  const [form] = Form.useForm<{
+    name: string;
+    recipient?: string;
+    phone?: string;
+    country?: string;
+    province?: string;
+    city?: string;
+    address1: string;
+    address2?: string;
+    postcode?: string;
+    systemType?: string;
+    note?: string;
+  }>();
+  const [editing, setEditing] = useState<FreightForwarder | null>(null);
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["freight-forwarders"] });
+  const save = useMutation({
+    mutationFn: (v: { name: string; address: Record<string, string | undefined>; systemType?: string; note?: string }) =>
+      editing
+        ? api.updateFreightForwarder(editing.id, v)
+        : api.createFreightForwarder(v as never),
+    onSuccess: () => {
+      message.success(editing ? "已更新货代" : "已添加货代");
+      invalidate();
+      setEditing(null);
+      form.resetFields();
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteFreightForwarder(id),
+    onSuccess: () => {
+      message.success("已删除");
+      invalidate();
+    },
+    onError: (e) => message.error(e.message),
+  });
+  return (
+    <Card
+      title="货代地址簿"
+      size="small"
+      extra={
+        <Button
+          size="small"
+          type="primary"
+          onClick={() => {
+            setEditing({} as FreightForwarder);
+            form.resetFields();
+          }}
+        >
+          新增货代
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+        采购单的收货地址来源：关联货代后，「去采购」卡复制的是货代地址而不是买家地址。
+      </Typography.Paragraph>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={query.isLoading}
+        dataSource={query.data?.items ?? []}
+        pagination={false}
+        columns={[
+          { title: "名称", dataIndex: "name", width: 140 },
+          {
+            title: "地址",
+            render: (_, f) =>
+              [f.address.recipient, f.address.phone, f.address.country, f.address.province, f.address.city, f.address.address1, f.address.address2, f.address.postcode]
+                .filter(Boolean)
+                .join("，"),
+          },
+          { title: "货代系统", dataIndex: "systemType", width: 110, render: (v) => v || "—" },
+          { title: "备注", dataIndex: "note", width: 160 },
+          {
+            title: "操作",
+            width: 140,
+            render: (_, f) => (
+              <Space size={4}>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setEditing(f);
+                    form.setFieldsValue({ name: f.name, systemType: f.systemType ?? undefined, note: f.note ?? undefined, ...f.address });
+                  }}
+                >
+                  编辑
+                </Button>
+                <Popconfirm title="删除该货代？" onConfirm={() => del.mutate(f.id)}>
+                  <Button size="small" danger>
+                    删除
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ),
+          },
+        ]}
+      />
+      <Modal
+        title={editing?.id ? "编辑货代" : "新增货代"}
+        open={!!editing}
+        onCancel={() => setEditing(null)}
+        onOk={() => form.submit()}
+        confirmLoading={save.isPending}
+        destroyOnHidden
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          preserve={false}
+          onFinish={(v) => {
+            const { name, systemType, note, ...addr } = v;
+            save.mutate({ name, systemType, note, address: addr });
+          }}
+        >
+          <Form.Item name="name" label="货代名称" rules={[{ required: true }]}>
+            <Input placeholder="如 XX 转运 / XX 集运" />
+          </Form.Item>
+          <Space size={8} wrap>
+            <Form.Item name="recipient" label="收件人" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 140 }} />
+            </Form.Item>
+            <Form.Item name="phone" label="电话" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 160 }} />
+            </Form.Item>
+          </Space>
+          <Space size={8} wrap style={{ marginTop: 12 }}>
+            <Form.Item name="country" label="国家" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 100 }} placeholder="中国" />
+            </Form.Item>
+            <Form.Item name="province" label="省" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 100 }} />
+            </Form.Item>
+            <Form.Item name="city" label="市" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 100 }} />
+            </Form.Item>
+            <Form.Item name="postcode" label="邮编" style={{ marginBottom: 0 }}>
+              <Input style={{ width: 100 }} />
+            </Form.Item>
+          </Space>
+          <Form.Item name="address1" label="地址行 1" rules={[{ required: true }]} style={{ marginTop: 12 }}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="address2" label="地址行 2">
+            <Input />
+          </Form.Item>
+          <Form.Item name="systemType" label="货代系统">
+            <Input placeholder="如 huoxiaoyi / manual" maxLength={50} />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </Card>
+  );
+}
+
+/** 设置：类目映射 + 术语翻译映射 + 属性映射 + 账号/插件 + 货代地址簿。 */
 export function SettingsPage() {
   return (
     <div className="pg">
@@ -454,7 +475,7 @@ export function SettingsPage() {
           { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
           { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
           { key: "attribute", label: "属性映射", children: <AttributeMappingCard /> },
-          { key: "freight", label: "货代地址簿", children: <FreightForwarderCard /> },
+          { key: "forwarder", label: "货代地址簿", children: <ForwarderCard /> },
           { key: "account", label: "账号与插件", children: <AccountCard /> },
         ]}
       />

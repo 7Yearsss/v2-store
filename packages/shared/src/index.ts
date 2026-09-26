@@ -608,24 +608,6 @@ export interface SourceChange {
   appliedAction: SourceChangeAppliedAction[] | null;
 }
 
-/** 货代收货地址簿（仓储 L2）。 */
-export interface FreightForwarder {
-  id: string;
-  name: string;
-  receiver: string | null;
-  phone: string | null;
-  country: string | null;
-  province: string | null;
-  city: string | null;
-  address: string | null;
-  zipcode: string | null;
-  /** 货代系统类型（huoxiaoyi|manual…）。 */
-  systemType: string | null;
-  note: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /** POST /listings/batch 的单个批量操作。 */
 export type ListingBatchOp =
   | { op: "price_set"; value: number }
@@ -635,3 +617,236 @@ export type ListingBatchOp =
   | { op: "sync_policy"; value: Partial<ListingSyncPolicy> }
   | { op: "publish_at"; value: string | null }
   | { op: "monitor_enable"; value?: boolean };
+
+
+// --- 订单域（订单管理 + 采购 + 履约回传） ---------------------------------------
+
+/** 刊登变体 ↔ 远端变体的稳定映射（productSet 返回值回填；订单行匹配的主键级键）。 */
+export interface RemoteVariantRef {
+  variantId: string;
+  inventoryItemId?: string;
+}
+/** listings.remote_variant_map：{ [本地 variant.sku]: { variantId, inventoryItemId } } */
+export type RemoteVariantMap = Record<string, RemoteVariantRef>;
+
+export type OrderStatus =
+  | "new"
+  | "to_procure"
+  | "procuring"
+  | "to_ship"
+  | "shipped"
+  | "done"
+  | "cancelled"
+  | "exception";
+export type OrderItemMapping = "matched" | "partial" | "unmatched";
+/** 行项采购进度：none 未采购 → queued 已建采购单 → placed 已下单 → shipped 供应商已发货 → done 到货；failed 采购异常。 */
+export type ProcureStatus = "none" | "queued" | "placed" | "shipped" | "done" | "failed";
+export type PurchaseOrderStatus =
+  | "draft"
+  | "placed"
+  | "paid"
+  | "domestic_shipped"
+  | "intl_shipped"
+  | "done"
+  | "exception";
+export type ShipmentStatus = "pending" | "pushed" | "failed";
+
+/** 收货地址（订单域唯一含 PII 的结构；库内只存密文 shipping_address_enc）。 */
+export interface ShippingAddress {
+  recipient?: string;
+  phone?: string;
+  country?: string;
+  province?: string;
+  city?: string;
+  address1?: string;
+  address2?: string;
+  postcode?: string;
+}
+
+export interface OrderCustomer {
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+export interface TrackingEntry {
+  carrier?: string;
+  no: string;
+  url?: string;
+}
+
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  remoteLineItemId: string | null;
+  /** Shopify variant gid —— 映射键①（listings.remote_variant_map）。 */
+  remoteVariantId: string | null;
+  title: string;
+  sku: string | null;
+  qty: number;
+  unitPrice: number | null;
+  listingId: string | null;
+  sourceItemId: string | null;
+  /** 1688 specId（映射键②，经刊登变体 sourceSkuId 或人工绑定）。 */
+  sourceSkuId: string | null;
+  mapping: OrderItemMapping;
+  procureStatus: ProcureStatus;
+  /** 详情接口附带：映射目标的可读信息。 */
+  listingTitle?: string | null;
+  sourceTitle?: string | null;
+  /** 货源 offerId（去采购链接用）。 */
+  offerId?: string | null;
+  sourceSeller?: string | null;
+  /** 货源规格文案（采购卡展示）。 */
+  specText?: string | null;
+  /** 货源单价（CNY，利润粗算）。 */
+  costCny?: number | null;
+  /** 该行来源订单名（采购单视角下填充）。 */
+  orderName?: string | null;
+  /** 采购链：该行所在的采购单（订单详情/行内展开填充）。 */
+  purchaseOrders?: Array<{
+    id: string;
+    status: PurchaseOrderStatus;
+    sourceOrderId: string | null;
+    sourceSeller: string | null;
+  }>;
+}
+
+/** 订单 DTO：地址永远脱敏（明文只在 /orders/:id/address 单点返回）。 */
+export interface Order {
+  id: string;
+  storeId: string;
+  storeName?: string;
+  remoteId: string;
+  name: string | null;
+  financialStatus: string | null;
+  fulfillmentStatus: string | null;
+  status: OrderStatus;
+  /** 脱敏后的买家信息。 */
+  customer: OrderCustomer | null;
+  /** 脱敏后的一行地址摘要（如 "广东 深圳 · 张* · 138****1234"）。 */
+  shippingAddressMasked: string | null;
+  currency: string | null;
+  subtotal: number | null;
+  total: number | null;
+  itemsCount: number | null;
+  placedAt: string | null;
+  syncedAt: string | null;
+  reviewedAt: string | null;
+  items: OrderItem[];
+  shipments: Shipment[];
+  /** 利润粗算（CNY）：售价按店铺汇率折回人民币 − 已匹配行的货源成本合计。 */
+  profit?: { costCny: number; grossCny: number } | null;
+  createdAt: string;
+}
+
+export interface Shipment {
+  id: string;
+  orderId: string;
+  purchaseOrderId: string | null;
+  carrier: string | null;
+  trackingNo: string | null;
+  trackingUrl: string | null;
+  remoteFulfillmentId: string | null;
+  status: ShipmentStatus;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PurchaseOrderItem {
+  purchaseOrderId: string;
+  orderItemId: string;
+  qty: number;
+  unitPriceCny: number | null;
+  /** 附带：行项快照（列表页直接渲染）。 */
+  orderItem?: OrderItem | null;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  kind: "manual" | "source_order" | "forwarder";
+  sourcePlatform: string;
+  sourceSeller: string | null;
+  status: PurchaseOrderStatus;
+  /** 1688 订单号（手工录入或插件「标记已下单」回填）。 */
+  sourceOrderId: string | null;
+  domesticTracking: TrackingEntry[];
+  intlTracking: TrackingEntry[];
+  forwarderId: string | null;
+  forwarder?: FreightForwarder | null;
+  costTotalCny: number | null;
+  note: string | null;
+  items: PurchaseOrderItem[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 货代地址簿（仅地址，不接 API）。 */
+export interface FreightForwarder {
+  id: string;
+  name: string;
+  address: ShippingAddress;
+  /** 货代系统类型（huoxiaoyi|manual…）。 */
+  systemType: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 渠道侧订单的平台中立形态（adapter.fetchOrders 返回；raw 留档原报文）。 */
+export interface RemoteOrderLine {
+  remoteLineItemId: string;
+  remoteVariantId?: string | null;
+  title: string;
+  sku?: string | null;
+  qty: number;
+  unitPrice?: number | null;
+}
+
+export interface RemoteOrder {
+  remoteId: string;
+  name?: string | null;
+  financialStatus?: string | null;
+  fulfillmentStatus?: string | null;
+  cancelledAt?: string | null;
+  customer?: OrderCustomer | null;
+  shippingAddress?: ShippingAddress | null;
+  currency?: string | null;
+  subtotal?: number | null;
+  total?: number | null;
+  itemsCount?: number | null;
+  placedAt?: string | null;
+  /** 远端更新时间：幂等新鲜度键（<= 已存 raw.updatedAt 的重放缓存直接跳过）。 */
+  updatedAt?: string | null;
+  lineItems: RemoteOrderLine[];
+  raw?: unknown;
+}
+
+/** 履约推送入参（fulfillmentOrders → fulfillmentCreate，按 fulfillmentOrder 粒度）。 */
+export interface FulfillPushInput {
+  remoteOrderId: string;
+  tracking: { number: string; company?: string; url?: string };
+  /** 只发这些行项（remoteLineItemId → qty）；缺省 = 发所有剩余未履约行。 */
+  lineItems?: Array<{ remoteLineItemId: string; qty?: number }>;
+  notifyCustomer?: boolean;
+}
+
+/** POST /orders/:id/procure 的返回：插件采购卡数据源（一单一卡可含多个货源行）。 */
+export interface ProcurePayload {
+  orderId: string;
+  orderName: string | null;
+  offers: Array<{
+    offerId: string;
+    sourceItemId: string;
+    title: string | null;
+    image?: string | null;
+    /** 规格文案（1688 spec），无可填项时引导用户手动选规格。 */
+    specText: string | null;
+    qty: number;
+    unitPriceCny?: number | null;
+  }>;
+  /** 明文收货地址（本端点即「复制地址」用途）；货代单时为货代仓地址。 */
+  address: ShippingAddress | null;
+}

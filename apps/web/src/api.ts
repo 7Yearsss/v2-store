@@ -13,15 +13,22 @@ import type {
   ListingSuggestion,
   ListingTemplate,
   Me,
+  Order,
+  OrderStatus,
   Page,
   PricingRule,
+  ProcurePayload,
+  PurchaseOrder,
+  PurchaseOrderStatus,
   PublishAttempt,
   PublishRun,
   RemoteStatus,
   SourceChange,
+  ShippingAddress,
   SourceItem,
   Store,
   StoreRules,
+  TrackingEntry,
   TermMapping,
   StoreSettingsPayload,
 } from "@caiji/shared";
@@ -179,13 +186,6 @@ export const api = {
       "/source-changes/decide",
       { ids, action },
     ),
-  freightForwarders: () => request<{ items: FreightForwarder[] }>("GET", "/freight-forwarders"),
-  createFreightForwarder: (body: Partial<FreightForwarder> & { name: string }) =>
-    request<FreightForwarder>("POST", "/freight-forwarders", body),
-  updateFreightForwarder: (id: string, body: Partial<FreightForwarder>) =>
-    request<FreightForwarder>("PATCH", `/freight-forwarders/${id}`, body),
-  deleteFreightForwarder: (id: string) =>
-    request<{ ok: boolean }>("DELETE", `/freight-forwarders/${id}`),
   overview: () => request<Overview>("GET", "/overview"),
   jobs: (p: { status?: JobStatus; page?: number; pageSize?: number }) =>
     request<Page<Job>>("GET", `/jobs${qs(p)}`),
@@ -269,4 +269,72 @@ export const api = {
   }) => request<AttributeMapping>("PUT", "/attribute-mappings", body),
   deleteAttributeMapping: (id: string) =>
     request<{ ok: boolean }>("DELETE", `/attribute-mappings/${id}`),
+
+  // --- 订单 / 采购 / 货代 ------------------------------------------------------
+  orders: (p: {
+    status?: OrderStatus;
+    storeId?: string;
+    q?: string;
+    page?: number;
+    pageSize?: number;
+  }) => request<Page<Order>>("GET", `/orders${qs(p)}`),
+  orderCounts: () => request<Partial<Record<OrderStatus, number>>>("GET", "/orders/counts"),
+  order: (id: string) => request<{ order: Order; audits: AuditLog[] }>("GET", `/orders/${id}`),
+  /** 收货地址明文：单独端点，服务端留痕 */
+  orderAddress: (id: string) =>
+    request<{ address: ShippingAddress; customer: { name?: string; email?: string; phone?: string } | null }>(
+      "GET",
+      `/orders/${id}/address`,
+    ),
+  reviewOrder: (id: string) => request<Order>("POST", `/orders/${id}/review`, {}),
+  bindOrderItem: (orderId: string, itemId: string, body: { sourceItemId: string; sourceSkuId?: string }) =>
+    request<Order>("POST", `/orders/${orderId}/items/${itemId}/bind`, body),
+  /** 返回采购卡负载；插件在时经 site-bridge 打开详情页浮层 */
+  procureOrder: (id: string) => request<ProcurePayload>("POST", `/orders/${id}/procure`, {}),
+  fulfillOrder: (
+    id: string,
+    body: { trackingNo: string; carrier?: string; trackingUrl?: string; shipmentId?: string },
+  ) => request<Order>("POST", `/orders/${id}/fulfill`, body),
+  syncOrder: (id: string) => request<{ queued: boolean }>("POST", `/orders/${id}/sync-now`, {}),
+  syncStoreOrders: (storeId: string) =>
+    request<{ queued: boolean }>("POST", "/orders/sync", { storeId }),
+
+  purchaseOrders: (status?: PurchaseOrderStatus) =>
+    request<Page<PurchaseOrder>>("GET", `/purchase-orders${qs({ status })}`),
+  createPurchaseOrders: (body: { orderItemIds: string[]; forwarderId?: string; note?: string }) =>
+    request<Page<PurchaseOrder>>("POST", "/purchase-orders", body),
+  updatePurchaseOrder: (
+    id: string,
+    body: {
+      status?: PurchaseOrderStatus;
+      sourceOrderId?: string | null;
+      note?: string | null;
+      forwarderId?: string | null;
+      costTotalCny?: number | null;
+      domesticTracking?: TrackingEntry[];
+      intlTracking?: TrackingEntry[];
+      addItemIds?: string[];
+      removeItemIds?: string[];
+    },
+  ) => request<PurchaseOrder>("PATCH", `/purchase-orders/${id}`, body),
+  deletePurchaseOrder: (id: string) => request<{ ok: boolean }>("DELETE", `/purchase-orders/${id}`),
+
+  freightForwarders: () => request<Page<FreightForwarder>>("GET", "/freight-forwarders"),
+  createFreightForwarder: (body: {
+    name: string;
+    address: ShippingAddress;
+    systemType?: string;
+    note?: string;
+  }) => request<FreightForwarder>("POST", "/freight-forwarders", body),
+  updateFreightForwarder: (
+    id: string,
+    body: Partial<{
+      name: string;
+      address: ShippingAddress;
+      systemType: string;
+      note: string;
+    }>,
+  ) => request<FreightForwarder>("PATCH", `/freight-forwarders/${id}`, body),
+  deleteFreightForwarder: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/freight-forwarders/${id}`),
 };

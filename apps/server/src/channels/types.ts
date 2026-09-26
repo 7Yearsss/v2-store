@@ -1,9 +1,12 @@
 import type {
   CategoryCandidate,
   ChannelAttribute,
+  FulfillPushInput,
   ListingVariant,
+  RemoteOrder,
   RemoteSnapshot,
   RemoteStatus,
+  RemoteVariantMap,
 } from "@caiji/shared";
 import type { Deps } from "../context.js";
 import type { listings, stores } from "../db/schema.js";
@@ -44,6 +47,8 @@ export interface PublishResult {
   remoteUrl: string | null;
   /** set on first publish; undefined = leave the synced value alone */
   remoteStatus?: RemoteStatus;
+  /** 本地变体 sku ↔ 远端 variantId 映射（回填 listings.remote_variant_map，订单行匹配键）。 */
+  remoteVariantMap?: RemoteVariantMap;
   /** published, but something needs attention (e.g. images failed) */
   warnings?: string[];
 }
@@ -141,4 +146,31 @@ export interface ChannelAdapter {
     deps: Deps,
     store: StoreRow,
   ): Promise<Array<{ id: string; name: string; isActive: boolean }>>;
+  /**
+   * OAuth 授权店连接成功后注册订单 webhook（orders/create|updated|cancelled）。
+   * 手动 token 店没有我们的 app secret，验签不了 —— 缺省 = 只能走增量轮询。
+   */
+  registerOrderWebhooks?(
+    deps: Deps,
+    store: StoreRow,
+    callbackUrl: string,
+  ): Promise<{ registered: string[]; errors: string[] }>;
+  /**
+   * 拉渠道订单：remoteId 给定时拉单条，否则按 updatedAfter（ISO 游标）增量拉。
+   * 返回平台中立 RemoteOrder；缺省 = 该平台不支持订单同步。
+   */
+  fetchOrders?(
+    deps: Deps,
+    store: StoreRow,
+    opts: { updatedAfter?: string | null; remoteId?: string },
+  ): Promise<RemoteOrder[]>;
+  /**
+   * 履约回传：fulfillmentOrders → fulfillmentCreate（trackingInfo + notifyCustomer），
+   * 部分发货按 fulfillmentOrder 粒度。返回远端 fulfillment id；缺省 = 不支持。
+   */
+  pushFulfillment?(
+    deps: Deps,
+    store: StoreRow,
+    input: FulfillPushInput,
+  ): Promise<{ remoteFulfillmentId: string }>;
 }

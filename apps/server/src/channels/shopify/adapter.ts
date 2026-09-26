@@ -1,9 +1,12 @@
 import type {
   CategoryCandidate,
   ChannelAttribute,
+  FulfillPushInput,
   ListingVariant,
+  RemoteOrder,
   RemoteSnapshot,
   RemoteStatus,
+  RemoteVariantMap,
 } from "@caiji/shared";
 import { cacheCategoryNodes, TAXONOMY_VERSION } from "../../lib/category.js";
 import { cachedCategoryAttributes } from "../../lib/attributes.js";
@@ -141,10 +144,36 @@ const PRODUCT_BIND_DATA = /* GraphQL */ `
   query BindData($id: ID!) {
     product(id: $id) {
       media(first: 250) { nodes { id } }
-      variants(first: 250) { nodes { id } }
+      variants(first: 250) { nodes { id sku inventoryItem { id } } }
     }
   }
 `;
+
+interface ProductBindData {
+  product: {
+    media: { nodes: Array<{ id: string }> };
+    variants: {
+      nodes: Array<{ id: string; sku?: string | null; inventoryItem?: { id: string } | null }>;
+    };
+  } | null;
+}
+
+async function fetchBindData(deps: Deps, store: StoreRow, productId: string) {
+  return shopifyGraphql<ProductBindData>(deps, store, PRODUCT_BIND_DATA, { id: productId });
+}
+
+/** 本地变体 sku ↔ 远端 variantId/inventoryItemId：sku 对齐，无 sku 退回下标。 */
+function remoteVariantMapFrom(
+  data: ProductBindData,
+  sent: ListingVariant[],
+): RemoteVariantMap {
+  const out: RemoteVariantMap = {};
+  data.product?.variants.nodes.forEach((n, i) => {
+    const key = n.sku ?? sent[i]?.sku;
+    if (key) out[key] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
+  });
+  return out;
+}
 
 const FILE_CREATE = /* GraphQL */ `
   mutation DescFiles($files: [FileCreateInput!]!) {
@@ -367,6 +396,7 @@ async function bindVariantImages(
   productId: string,
   listing: ListingRow,
   allImages: string[],
+  data: ProductBindData,
 ): Promise<string | null> {
   const hasOptions = listing.options.length > 0;
   const sent = hasOptions ? listing.variants : listing.variants.slice(0, 1);
@@ -375,12 +405,6 @@ async function bindVariantImages(
     .filter((w) => w.fileIndex >= 0);
   if (!wanted.length) return null;
   try {
-    const data = await shopifyGraphql<{
-      product: {
-        media: { nodes: Array<{ id: string }> };
-        variants: { nodes: Array<{ id: string }> };
-      } | null;
-    }>(deps, store, PRODUCT_BIND_DATA, { id: productId });
     const mediaNodes = data.product?.media.nodes ?? [];
     const variantNodes = data.product?.variants.nodes ?? [];
     const inputs = wanted
@@ -645,7 +669,15 @@ export const shopifyAdapter: ChannelAdapter = {
     }
     if (!product) throw new ChannelError("Shopify 未返回商品", false);
     const warnings = await checkShopifyMedia(deps, store, product.id);
-    const bindWarning = await bindVariantImages(deps, store, product.id, listing, allImages);
+    // 变体 id 一并在这次拉取里拿到：媒体绑定 + remoteVariantMap 回填共用
+    const bindData = await fetchBindData(deps, store, product.id).catch(() => null);
+    const sentVariants = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
+    const remoteVariantMap = bindData
+      ? remoteVariantMapFrom(bindData, sentVariants)
+      : undefined;
+    const bindWarning = bindData
+      ? await bindVariantImages(deps, store, product.id, listing, allImages, bindData)
+      : "变体图未能绑定（远端变体信息拉取失败）";
     if (bindWarning) warnings.push(bindWarning);
     if (trackStock) {
       const stockWarning = await setVariantStock(deps, store, product.id, listing);
@@ -663,6 +695,7 @@ export const shopifyAdapter: ChannelAdapter = {
       remoteId: product.id,
       remoteUrl: `https://${store.shopDomain}/admin/products/${numericId}`,
       remoteStatus: listing.remoteId ? undefined : publishStatus === "draft" ? "DRAFT" : "ACTIVE",
+      remoteVariantMap,
       warnings,
     };
   },
@@ -878,12 +911,305 @@ export const shopifyAdapter: ChannelAdapter = {
     ].filter(Boolean);
     return parts.join("；") || null;
   },
+
+  /** OAuth 店 connect 后注册订单 webhook（三个 topic 各一次调用，失败收集不抛出）。 */
+  async registerOrderWebhooks(deps, store, callbackUrl) {
+    const registered: string[] = [];
+    const errors: string[] = [];
+    for (const topic of ["ORDERS_CREATE", "ORDERS_UPDATED", "ORDERS_CANCELLED"] as const) {
+      try {
+        const data = await shopifyGraphql<{
+          webhookSubscriptionCreate: {
+            webhookSubscription: { id: string } | null;
+            userErrors: Array<{ field?: string[]; message: string }>;
+          };
+        }>(deps, store, WEBHOOK_SUBSCRIPTION_CREATE, {
+          topic,
+          subscription: { callbackUrl, format: "JSON" },
+        });
+        const errs = data.webhookSubscriptionCreate.userErrors;
+        if (errs.length || !data.webhookSubscriptionCreate.webhookSubscription) {
+          errors.push(`${topic}: ${errs.map((e) => e.message).join("；") || "未返回订阅"}`);
+        } else {
+          registered.push(topic);
+        }
+      } catch (e) {
+        errors.push(`${topic}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return { registered, errors };
+  },
+
+  /** 增量（updated_at 游标）或按 id 拉订单。webhook 到达或手动同步都在 worker 里走这条。 */
+  async fetchOrders(deps, store, opts): Promise<RemoteOrder[]> {
+    if (opts.remoteId) {
+      const id = opts.remoteId.startsWith("gid://")
+        ? opts.remoteId
+        : `gid://shopify/Order/${opts.remoteId}`;
+      const data = await shopifyGraphql<{ order: ShopifyOrderNode | null }>(
+        deps,
+        store,
+        ORDER_ONE,
+        { id },
+      );
+      return data.order ? [toRemoteOrder(data.order)] : [];
+    }
+    const out: RemoteOrder[] = [];
+    let after: string | null = null;
+    // 游标回退 1s：Shopify 的 updated_at:> 是严格大于，边界同刻订单不能丢
+    const query = opts.updatedAfter
+      ? `updated_at:>${new Date(Date.parse(opts.updatedAfter) - 1000).toISOString()}`
+      : undefined;
+    for (let page = 0; page < 20; page++) {
+      const data: {
+        orders: {
+          nodes: ShopifyOrderNode[];
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } = await shopifyGraphql<{
+        orders: {
+          nodes: ShopifyOrderNode[];
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      }>(deps, store, ORDER_LIST, { first: 50, after, query });
+      out.push(...data.orders.nodes.map(toRemoteOrder));
+      if (!data.orders.pageInfo.hasNextPage) break;
+      after = data.orders.pageInfo.endCursor;
+    }
+    return out;
+  },
+
+  /** fulfillmentOrders → fulfillmentCreate：按 fulfillmentOrder 粒度组行（支持部分发货）。 */
+  async pushFulfillment(deps, store, input) {
+    const data = await shopifyGraphql<{
+      order: {
+        fulfillmentOrders: {
+          nodes: Array<{
+            id: string;
+            status: string;
+            lineItems: {
+              nodes: Array<{
+                id: string;
+                remainingQuantity: number;
+                lineItem: { id: string } | null;
+              }>;
+            };
+          }>;
+        };
+      } | null;
+    }>(deps, store, FULFILLMENT_ORDERS, { id: input.remoteOrderId });
+    const order = data.order;
+    if (!order) throw new ChannelError("远端订单不存在");
+    const wanted = input.lineItems
+      ? new Map(input.lineItems.map((l) => [l.remoteLineItemId, l.qty]))
+      : null;
+    const groups: Array<{
+      fulfillmentOrderId: string;
+      fulfillmentOrderLineItems: Array<{ id: string; quantity: number }>;
+    }> = [];
+    for (const fo of order.fulfillmentOrders.nodes) {
+      if (["CLOSED", "CANCELLED", "INCOMPLETE"].includes(fo.status)) continue;
+      const items = fo.lineItems.nodes
+        .map((li) => {
+          if (wanted && li.lineItem?.id && !wanted.has(li.lineItem.id)) return null;
+          const qty = Math.min(
+            li.remainingQuantity,
+            wanted && li.lineItem?.id ? (wanted.get(li.lineItem.id) ?? li.remainingQuantity) : li.remainingQuantity,
+          );
+          return qty > 0 ? { id: li.id, quantity: qty } : null;
+        })
+        .filter((x): x is { id: string; quantity: number } => !!x);
+      if (items.length) {
+        groups.push({ fulfillmentOrderId: fo.id, fulfillmentOrderLineItems: items });
+      }
+    }
+    if (!groups.length) throw new ChannelError("订单没有可履约的剩余行项", true);
+    const res = await shopifyGraphql<{
+      fulfillmentCreate: {
+        fulfillment: { id: string; status: string } | null;
+        userErrors: Array<{ field?: string[]; message: string }>;
+      };
+    }>(deps, store, FULFILLMENT_CREATE, {
+      fulfillment: {
+        lineItemsByFulfillmentOrder: groups,
+        notifyCustomer: input.notifyCustomer ?? true,
+        trackingInfo: {
+          number: input.tracking.number,
+          company: input.tracking.company,
+          url: input.tracking.url,
+        },
+      },
+    });
+    const errs = res.fulfillmentCreate.userErrors;
+    if (errs.length) {
+      throw new ChannelError(errs.map((e) => e.message).join("；"), true);
+    }
+    if (!res.fulfillmentCreate.fulfillment) {
+      throw new ChannelError("Shopify 未返回 fulfillment", false);
+    }
+    return { remoteFulfillmentId: res.fulfillmentCreate.fulfillment.id };
+  },
 };
 
 const VARIANT_IDS = /* GraphQL */ `
   query VariantIds($id: ID!) {
     product(id: $id) {
       variants(first: 250) { nodes { id sku } }
+    }
+  }
+`;
+
+const ORDER_FIELDS = /* GraphQL */ `
+  id
+  name
+  displayFinancialStatus
+  displayFulfillmentStatus
+  cancelledAt
+  createdAt
+  updatedAt
+  currencyCode
+  subtotalPriceSet { shopMoney { amount } }
+  totalPriceSet { shopMoney { amount } }
+  customer { displayName email phone }
+  shippingAddress { name phone country province city address1 address2 zip }
+  lineItems(first: 100) {
+    nodes {
+      id
+      title
+      sku
+      quantity
+      originalUnitPriceSet { shopMoney { amount } }
+      variant { id }
+    }
+  }
+`;
+
+interface ShopifyOrderNode {
+  id: string;
+  name?: string | null;
+  displayFinancialStatus?: string | null;
+  displayFulfillmentStatus?: string | null;
+  cancelledAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  currencyCode?: string | null;
+  subtotalPriceSet?: { shopMoney?: { amount?: string | null } | null } | null;
+  totalPriceSet?: { shopMoney?: { amount?: string | null } | null } | null;
+  customer?: { displayName?: string | null; email?: string | null; phone?: string | null } | null;
+  shippingAddress?: {
+    name?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    province?: string | null;
+    city?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+    zip?: string | null;
+  } | null;
+  lineItems?: {
+    nodes: Array<{
+      id: string;
+      title?: string | null;
+      sku?: string | null;
+      quantity?: number | null;
+      originalUnitPriceSet?: { shopMoney?: { amount?: string | null } | null } | null;
+      variant?: { id: string } | null;
+    }>;
+  } | null;
+}
+
+const num = (v: string | null | undefined) => (v == null || v === "" ? null : Number(v));
+
+function toRemoteOrder(n: ShopifyOrderNode): RemoteOrder {
+  const items = n.lineItems?.nodes ?? [];
+  return {
+    remoteId: n.id,
+    name: n.name ?? null,
+    financialStatus: n.displayFinancialStatus ?? null,
+    fulfillmentStatus: n.displayFulfillmentStatus ?? null,
+    cancelledAt: n.cancelledAt ?? null,
+    customer: n.customer
+      ? {
+          name: n.customer.displayName ?? undefined,
+          email: n.customer.email ?? undefined,
+          phone: n.customer.phone ?? undefined,
+        }
+      : null,
+    shippingAddress: n.shippingAddress
+      ? {
+          recipient: n.shippingAddress.name ?? undefined,
+          phone: n.shippingAddress.phone ?? undefined,
+          country: n.shippingAddress.country ?? undefined,
+          province: n.shippingAddress.province ?? undefined,
+          city: n.shippingAddress.city ?? undefined,
+          address1: n.shippingAddress.address1 ?? undefined,
+          address2: n.shippingAddress.address2 ?? undefined,
+          postcode: n.shippingAddress.zip ?? undefined,
+        }
+      : null,
+    currency: n.currencyCode ?? null,
+    subtotal: num(n.subtotalPriceSet?.shopMoney?.amount),
+    total: num(n.totalPriceSet?.shopMoney?.amount),
+    itemsCount: items.length,
+    placedAt: n.createdAt ?? null,
+    updatedAt: n.updatedAt ?? null,
+    lineItems: items.map((li) => ({
+      remoteLineItemId: li.id,
+      remoteVariantId: li.variant?.id ?? null,
+      title: li.title ?? "",
+      sku: li.sku ?? null,
+      qty: li.quantity ?? 1,
+      unitPrice: num(li.originalUnitPriceSet?.shopMoney?.amount),
+    })),
+    raw: n,
+  };
+}
+
+const ORDER_LIST = /* GraphQL */ `
+  query OrderList($first: Int!, $after: String, $query: String) {
+    orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+      nodes { ${ORDER_FIELDS} }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+const ORDER_ONE = /* GraphQL */ `
+  query OrderOne($id: ID!) {
+    order(id: $id) { ${ORDER_FIELDS} }
+  }
+`;
+
+const FULFILLMENT_ORDERS = /* GraphQL */ `
+  query FulfillmentOrders($id: ID!) {
+    order(id: $id) {
+      fulfillmentOrders(first: 30) {
+        nodes {
+          id
+          status
+          lineItems(first: 100) {
+            nodes { id remainingQuantity lineItem { id } }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const FULFILLMENT_CREATE = /* GraphQL */ `
+  mutation FulfillmentCreate($fulfillment: FulfillmentInput!) {
+    fulfillmentCreate(fulfillment: $fulfillment) {
+      fulfillment { id status }
+      userErrors { field message }
+    }
+  }
+`;
+
+const WEBHOOK_SUBSCRIPTION_CREATE = /* GraphQL */ `
+  mutation WebhookSubCreate($topic: WebhookSubscriptionTopic!, $subscription: WebhookSubscriptionInput!) {
+    webhookSubscriptionCreate(topic: $topic, subscription: $subscription) {
+      webhookSubscription { id }
+      userErrors { field message }
     }
   }
 `;

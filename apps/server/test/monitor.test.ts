@@ -327,7 +327,17 @@ describe("fl-monitor 货源监控", () => {
     const created = await ctx.api(
       "POST",
       "/api/freight-forwarders",
-      { name: "深圳仓", receiver: "张三", phone: "13800000000", address: "宝安区 xx 路 1 号" },
+      {
+        name: "深圳仓",
+        address: {
+          recipient: "张三",
+          phone: "13800000000",
+          country: "中国",
+          city: "深圳市",
+          address1: "宝安区 xx 路 1 号",
+        },
+        systemType: "manual",
+      },
       t1,
     );
     expect(created.status).toBe(201);
@@ -335,18 +345,21 @@ describe("fl-monitor 货源监控", () => {
 
     const list1 = await ctx.api("GET", "/api/freight-forwarders", undefined, t1);
     expect(list1.body.items).toHaveLength(1);
+    expect(list1.body.items[0].address.city).toBe("深圳市");
     const list2 = await ctx.api("GET", "/api/freight-forwarders", undefined, t2);
     expect(list2.body.items).toHaveLength(0);
 
     const upd = await ctx.api(
       "PATCH",
       `/api/freight-forwarders/${id}`,
-      { city: "深圳市" },
+      { address: { ...created.body.address, city: "广州市" } },
       t1,
     );
-    expect(upd.body.city).toBe("深圳市");
+    expect(upd.body.address.city).toBe("广州市");
     // 跨 workspace 读写一律 404
-    expect((await ctx.api("PATCH", `/api/freight-forwarders/${id}`, { city: "x" }, t2)).status).toBe(404);
+    expect(
+      (await ctx.api("PATCH", `/api/freight-forwarders/${id}`, { note: "x" }, t2)).status,
+    ).toBe(404);
     expect((await ctx.api("DELETE", `/api/freight-forwarders/${id}`, undefined, t2)).status).toBe(404);
 
     expect((await ctx.api("DELETE", `/api/freight-forwarders/${id}`, undefined, t1)).status).toBe(200);

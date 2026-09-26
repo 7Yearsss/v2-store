@@ -19,6 +19,9 @@ const JOB_LABELS: Record<string, string> = {
   "listing.pushPrice": "价格推送",
   "listing.delist": "刊登下架",
   "inventory.reconcile": "库存兜底重算",
+  "order.sync": "订单同步",
+  "order.map": "订单映射",
+  "fulfill.push": "履约回传",
 };
 
 function toDto(j: typeof jobs.$inferSelect) {

@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { FreightForwarder } from "@caiji/shared";
@@ -8,61 +8,69 @@ import { freightForwarders } from "../db/schema.js";
 import { notFound } from "../lib/errors.js";
 import { requireAuth } from "./auth.js";
 
-/** 货代收货地址簿（仓储 L2）：采购下单时把货代仓地址贴进 1688 订单。 */
+type Row = typeof freightForwarders.$inferSelect;
+
+const addressSchema = z.object({
+  recipient: z.string().trim().max(64).optional(),
+  phone: z.string().trim().max(32).optional(),
+  country: z.string().trim().max(64).optional(),
+  province: z.string().trim().max(64).optional(),
+  city: z.string().trim().max(64).optional(),
+  address1: z.string().trim().min(1).max(255),
+  address2: z.string().trim().max(255).optional(),
+  postcode: z.string().trim().max(16).optional(),
+});
+
+const createSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  address: addressSchema,
+  /** 货代系统类型：huoxiaoyi（可直连）|manual 等。 */
+  systemType: z.string().trim().max(50).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+const patchSchema = createSchema.partial();
+
+const toDto = (r: Row): FreightForwarder => ({
+  id: r.id,
+  name: r.name,
+  address: r.address,
+  systemType: r.systemType,
+  note: r.note,
+  createdAt: r.createdAt.toISOString(),
+  updatedAt: r.updatedAt.toISOString(),
+});
+
+/** 货代地址簿：采购单收货地址的切换来源。 */
 export function freightForwarderRoutes() {
   const r = new Hono<AppEnv>();
   r.use(requireAuth);
-
-  const bodySchema = z.object({
-    name: z.string().trim().min(1).max(100),
-    receiver: z.string().trim().max(100).nullable().optional(),
-    phone: z.string().trim().max(50).nullable().optional(),
-    country: z.string().trim().max(100).nullable().optional(),
-    province: z.string().trim().max(100).nullable().optional(),
-    city: z.string().trim().max(100).nullable().optional(),
-    address: z.string().trim().max(500).nullable().optional(),
-    zipcode: z.string().trim().max(20).nullable().optional(),
-    systemType: z.string().trim().max(50).nullable().optional(),
-    note: z.string().trim().max(1000).nullable().optional(),
-  });
-
-  const toDto = (f: typeof freightForwarders.$inferSelect): FreightForwarder => ({
-    id: f.id,
-    name: f.name,
-    receiver: f.receiver,
-    phone: f.phone,
-    country: f.country,
-    province: f.province,
-    city: f.city,
-    address: f.address,
-    zipcode: f.zipcode,
-    systemType: f.systemType,
-    note: f.note,
-    createdAt: f.createdAt.toISOString(),
-    updatedAt: f.updatedAt.toISOString(),
-  });
 
   r.get("/", async (c) => {
     const rows = await c.var.deps.db
       .select()
       .from(freightForwarders)
-      .where(eq(freightForwarders.workspaceId, c.var.auth.workspaceId))
-      .orderBy(desc(freightForwarders.createdAt));
-    return c.json({ items: rows.map(toDto) });
+      .where(eq(freightForwarders.workspaceId, c.var.auth.workspaceId));
+    return c.json({ items: rows.map(toDto), total: rows.length });
   });
 
-  r.post("/", zValidator("json", bodySchema), async (c) => {
+  r.post("/", zValidator("json", createSchema), async (c) => {
+    const body = c.req.valid("json");
     const [row] = await c.var.deps.db
       .insert(freightForwarders)
-      .values({ workspaceId: c.var.auth.workspaceId, ...c.req.valid("json") })
+      .values({
+        workspaceId: c.var.auth.workspaceId,
+        name: body.name,
+        address: body.address,
+        note: body.note ?? null,
+      })
       .returning();
     return c.json(toDto(row!), 201);
   });
 
-  r.patch("/:id", zValidator("json", bodySchema.partial()), async (c) => {
+  r.patch("/:id", zValidator("json", patchSchema), async (c) => {
     const [row] = await c.var.deps.db
       .update(freightForwarders)
-      .set({ ...c.req.valid("json"), updatedAt: new Date() })
+      .set(c.req.valid("json"))
       .where(
         and(
           eq(freightForwarders.id, c.req.param("id")),

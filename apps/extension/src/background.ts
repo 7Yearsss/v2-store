@@ -10,6 +10,7 @@ import type {
   BgResponse,
   PendingChanged,
   PendingItem,
+  ProcureOfferTask,
   SubmitPendingResult,
   SubmitResult,
 } from "./lib/messages";
@@ -236,6 +237,58 @@ async function submitPending(offerIds: string[]): Promise<SubmitPendingResult> {
   return { results };
 }
 
+// --- 待采购任务 ---------------------------------------------------------------
+// web 侧订单页「去采购」经 site-bridge 下发采购卡负载；按 (orderId, offerId) 去重。
+// 详情页 content script 按 offerId 取任务渲染采购卡；「标记已下单」回传后剔除。
+
+const PROCURE_KEY = "procures";
+
+async function getProcures(): Promise<ProcureOfferTask[]> {
+  const { [PROCURE_KEY]: items } = await chrome.storage.local.get(PROCURE_KEY);
+  return (items as ProcureOfferTask[] | undefined) ?? [];
+}
+
+async function broadcastProcure() {
+  const tabs = await chrome.tabs.query({ url: ["*://*.1688.com/*", "*://1688.com/*"] });
+  for (const t of tabs) {
+    if (t.id != null) {
+      chrome.tabs.sendMessage(t.id, { type: "V2_PROCURE_CHANGED" }).catch(() => {});
+    }
+  }
+}
+
+async function putProcure(orderId: string, orderName: string | null | undefined, offers: ProcureOfferTask[], address?: unknown) {
+  const items = await getProcures();
+  const drop = new Set(offers.map((o) => `${orderId}:${o.offerId}`));
+  const keep = items.filter((i) => !drop.has(`${i.orderId}:${i.offerId}`));
+  for (const o of offers) {
+    keep.push({ ...o, orderId, orderName: orderName ?? o.orderName, address: (address as never) ?? o.address });
+  }
+  await chrome.storage.local.set({ [PROCURE_KEY]: keep });
+  await broadcastProcure();
+  // 打开第一个货源详情页；多张卡时面板里可逐个跳
+  const first = offers[0]?.offerId;
+  if (first) {
+    await chrome.tabs.create({ url: `https://detail.1688.com/offer/${first}.html` });
+  }
+  return { count: keep.length };
+}
+
+async function removeProcure(orderId: string, offerId?: string) {
+  const keep = (await getProcures()).filter(
+    (i) => !(i.orderId === orderId && (!offerId || i.offerId === offerId)),
+  );
+  await chrome.storage.local.set({ [PROCURE_KEY]: keep });
+  await broadcastProcure();
+}
+
+/** 插件「标记已下单」→ 服务端回填 sourceOrderId + 行项推进 placed。 */
+async function markProcurePlaced(orderId: string, sourceOrderId: string, offerId?: string) {
+  await api(`/orders/${orderId}/procure-confirm`, { offerId, sourceOrderId });
+  await removeProcure(orderId, offerId);
+  return { ok: true };
+}
+
 function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
   p.then(
     (data) => sendResponse({ ok: true, data }),
@@ -266,6 +319,31 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
       return reply(clearPending(), sendResponse);
     case "SUBMIT_PENDING":
       return reply(submitPending(((msg as any).offerIds ?? []) as string[]), sendResponse);
+    case "PROCURE_1688": {
+      const m = msg as any;
+      return reply(
+        putProcure(String(m.orderId), m.orderName, (m.offers ?? []) as ProcureOfferTask[], m.address),
+        sendResponse,
+      );
+    }
+    case "GET_PROCURE": {
+      const offerId = String((msg as any).offerId ?? "");
+      return reply(
+        getProcures().then((items) => ({
+          items: items.filter((i) => i.offerId === offerId),
+        })),
+        sendResponse,
+      );
+    }
+    case "GET_PROCURE_LIST":
+      return reply(getProcures().then((items) => ({ items })), sendResponse);
+    case "PROCURE_PLACED": {
+      const m = msg as any;
+      return reply(
+        markProcurePlaced(String(m.orderId), String(m.sourceOrderId ?? ""), m.offerId),
+        sendResponse,
+      );
+    }
     case "GET_STATUS":
       return reply(
         getAuth().then((auth) => ({

@@ -13,7 +13,9 @@ import { freightForwarderRoutes } from "./modules/freightForwarders.js";
 import { jobRoutes } from "./modules/jobs.js";
 import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
+import { orderRoutes } from "./modules/orders.js";
 import { overviewRoutes } from "./modules/overview.js";
+import { purchaseOrderRoutes } from "./modules/purchaseOrders.js";
 import { publishRoutes } from "./modules/publish.js";
 import { sourceChangeRoutes } from "./modules/sourceChanges.js";
 import { sourceItemRoutes } from "./modules/sourceItems.js";
@@ -45,6 +47,9 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/templates", templateRoutes());
   app.route("/api/attribute-mappings", attributeMappingRoutes());
   app.route("/api/media", mediaRoutes());
+  app.route("/api/orders", orderRoutes());
+  app.route("/api/purchase-orders", purchaseOrderRoutes());
+  app.route("/api/freight-forwarders", freightForwarderRoutes());
   app.route("/api/shopify", shopifyAppRoutes());
 
   app.notFound((c) => c.json({ error: "Not found" }, 404));

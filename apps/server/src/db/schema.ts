@@ -7,13 +7,22 @@ import type {
   ListingSyncPolicy,
   ListingVariant,
   OfferSku,
+  OrderCustomer,
+  OrderItemMapping,
+  OrderStatus,
   PricingRule,
+  ProcureStatus,
   PublishErrorCode,
+  PurchaseOrderStatus,
   RemoteDriftEntry,
   RemoteSnapshot,
   RemoteStatus,
+  RemoteVariantMap,
+  ShipmentStatus,
+  ShippingAddress,
   StoreRules,
   StoreSettingsPayload,
+  TrackingEntry,
 } from "@caiji/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -212,6 +221,8 @@ export const stores = pgTable(
     language: text("language").notNull().default("en"),
     /** 采集预处理 + 发布前检查规则。 */
     rules: jsonb("rules").$type<StoreRules>().notNull().default({}),
+    /** 订单增量拉取游标：已同步到的最大远端 updatedAt（ISO 字符串）。 */
+    ordersCursor: text("orders_cursor"),
     lastError: text("last_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -289,14 +300,14 @@ export const listings = pgTable(
     lastPulledAt: timestamp("last_pulled_at", { withTimezone: true }),
     /** 最近一次自动动作（库存推送等）；所有自动动作必须落此字段 + audit_logs。 */
     lastAutoAction: jsonb("last_auto_action").$type<LastAutoAction>(),
-    // --- fl-monitor（与 fl-pipeline 并行；集成时按 plan §9 归属去重） ---
     /** 最近一次货源（1688）发生变化的检测时间；关注页的「货源有变化」黄标。 */
     sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
     /** 内部标记（不上渠道），批量分组/筛选用。 */
     internalTags: text("internal_tags").array().notNull().default([]),
     /** 定时发布时间（fl-pipeline 的排程器消费，集成去重）。 */
     publishAt: timestamp("publish_at", { withTimezone: true }),
-    // ---
+    /** 本地变体 sku ↔ 远端 variantId/inventoryItemId（productSet 回填；订单行映射键）。 */
+    remoteVariantMap: jsonb("remote_variant_map").$type<RemoteVariantMap>(),
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -351,33 +362,6 @@ export const sourceChanges = pgTable(
       .on(t.workspaceId, t.sourceItemId)
       .where(sql`${t.appliedAt} is null`),
   ],
-);
-
-// --- 仓储 L2：货代地址簿（fl-monitor） -------------------------------------------
-
-export const freightForwarders = pgTable(
-  "freight_forwarders",
-  {
-    id: id(),
-    workspaceId: uuid("workspace_id")
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    /** 收件人写法（货代仓收货人），含客户代码注释。 */
-    receiver: text("receiver"),
-    phone: text("phone"),
-    country: text("country"),
-    province: text("province"),
-    city: text("city"),
-    address: text("address"),
-    zipcode: text("zipcode"),
-    /** 货代系统类型：huoxiaoyi（可直连）|manual 等。 */
-    systemType: text("system_type"),
-    note: text("note"),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [index("freight_forwarders_ws_idx").on(t.workspaceId)],
 );
 
 // --- AI suggestions ------------------------------------------------------------
@@ -655,6 +639,195 @@ export const auditLogs = pgTable(
   (t) => [
     index("audit_logs_ws_entity_idx").on(t.workspaceId, t.entityType, t.entityId),
     index("audit_logs_ws_created_idx").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+// --- 订单域（订单管理 + 采购 + 履约回传） ---------------------------------------
+
+/** 订单：渠道侧订单的本地副本；地址明文只进 shipping_address_enc（SecretBox）。 */
+export const orders = pgTable(
+  "orders",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    /** 平台单号 gid（幂等键之一：store_id+remote_id 唯一）。 */
+    remoteId: text("remote_id").notNull(),
+    name: text("name"),
+    financialStatus: text("financial_status"),
+    fulfillmentStatus: text("fulfillment_status"),
+    status: text("status").$type<OrderStatus>().notNull().default("new"),
+    customer: jsonb("customer").$type<OrderCustomer>(),
+    /** 收货地址密文（SecretBox）；列表/详情只出脱敏摘要。 */
+    shippingAddressEnc: text("shipping_address_enc"),
+    currency: text("currency"),
+    subtotal: real("subtotal"),
+    total: real("total"),
+    itemsCount: integer("items_count"),
+    placedAt: timestamp("placed_at", { withTimezone: true }),
+    /** 人工审核时间（new → to_procure 的人工闸）。 */
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }),
+    /** 原始报文留档（含远端 updatedAt，作为幂等新鲜度键）。 */
+    raw: jsonb("raw"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("orders_store_remote_uq").on(t.storeId, t.remoteId),
+    index("orders_ws_status_idx").on(t.workspaceId, t.status),
+    index("orders_ws_created_idx").on(t.workspaceId, t.createdAt),
+  ],
+);
+
+/** 订单行项：映射（listingId+sourceItemId+sourceSkuId）与采购进度挂在行上。 */
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: id(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    remoteLineItemId: text("remote_line_item_id"),
+    remoteVariantId: text("remote_variant_id"),
+    title: text("title").notNull(),
+    sku: text("sku"),
+    qty: integer("qty").notNull().default(1),
+    unitPrice: real("unit_price"),
+    listingId: uuid("listing_id").references(() => listings.id, {
+      onDelete: "set null",
+    }),
+    sourceItemId: uuid("source_item_id").references(() => sourceItems.id, {
+      onDelete: "set null",
+    }),
+    /** 1688 specId（规格 id，采购卡定位规格用）。 */
+    sourceSkuId: text("source_sku_id"),
+    mapping: text("mapping").$type<OrderItemMapping>().notNull().default("unmatched"),
+    procureStatus: text("procure_status")
+      .$type<ProcureStatus>()
+      .notNull()
+      .default("none"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("order_items_order_line_uq").on(t.orderId, t.remoteLineItemId),
+    index("order_items_order_idx").on(t.orderId),
+    index("order_items_source_idx").on(t.sourceItemId),
+  ],
+);
+
+/** 货代地址簿：只做收货地址，不接 API（预留 fl-monitor 集成对齐）。 */
+export const freightForwarders = pgTable(
+  "freight_forwarders",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    address: jsonb("address").$type<ShippingAddress>().notNull().default({}),
+    /** 货代系统类型：huoxiaoyi（可直连）|manual 等。 */
+    systemType: text("system_type"),
+    note: text("note"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("freight_forwarders_ws_idx").on(t.workspaceId)],
+);
+
+/** 采购单：一单一供应商（自动按 source_seller 拆单）；状态人工推进。 */
+export const purchaseOrders = pgTable(
+  "purchase_orders",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["manual", "source_order", "forwarder"] })
+      .notNull()
+      .default("manual"),
+    sourcePlatform: text("source_platform").notNull().default("1688"),
+    sourceSeller: text("source_seller"),
+    status: text("status")
+      .$type<PurchaseOrderStatus>()
+      .notNull()
+      .default("draft"),
+    /** 1688 订单号（人工录入或插件「标记已下单」回填）。 */
+    sourceOrderId: text("source_order_id"),
+    domesticTracking: jsonb("domestic_tracking")
+      .$type<TrackingEntry[]>()
+      .notNull()
+      .default([]),
+    intlTracking: jsonb("intl_tracking")
+      .$type<TrackingEntry[]>()
+      .notNull()
+      .default([]),
+    forwarderId: uuid("forwarder_id").references(() => freightForwarders.id, {
+      onDelete: "set null",
+    }),
+    costTotalCny: real("cost_total_cny"),
+    note: text("note"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("purchase_orders_ws_status_idx").on(t.workspaceId, t.status)],
+);
+
+/** 采购单 ↔ 订单行项（勾选行项生成采购单；一行项同时在一张采购单内）。 */
+export const purchaseOrderItems = pgTable(
+  "purchase_order_items",
+  {
+    purchaseOrderId: uuid("purchase_order_id")
+      .notNull()
+      .references(() => purchaseOrders.id, { onDelete: "cascade" }),
+    orderItemId: uuid("order_item_id")
+      .notNull()
+      .references(() => orderItems.id, { onDelete: "cascade" }),
+    qty: integer("qty").notNull().default(1),
+    unitPriceCny: real("unit_price_cny"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.purchaseOrderId, t.orderItemId] }),
+    index("purchase_order_items_item_idx").on(t.orderItemId),
+  ],
+);
+
+/** 履约回传：一票 shipment = 一次 fulfillmentCreate；状态只 pending|pushed|failed。 */
+export const shipments = pgTable(
+  "shipments",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    purchaseOrderId: uuid("purchase_order_id").references(
+      () => purchaseOrders.id,
+      { onDelete: "set null" },
+    ),
+    carrier: text("carrier"),
+    trackingNo: text("tracking_no"),
+    trackingUrl: text("tracking_url"),
+    remoteFulfillmentId: text("remote_fulfillment_id"),
+    status: text("status").$type<ShipmentStatus>().notNull().default("pending"),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("shipments_order_idx").on(t.orderId),
+    index("shipments_ws_status_idx").on(t.workspaceId, t.status),
   ],
 );
 
