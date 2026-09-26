@@ -312,7 +312,13 @@ export const api = {
   procureOrder: (id: string) => request<ProcurePayload>("POST", `/orders/${id}/procure`, {}),
   fulfillOrder: (
     id: string,
-    body: { trackingNo: string; carrier?: string; trackingUrl?: string; shipmentId?: string },
+    body: {
+      trackingNo: string;
+      carrier?: string;
+      trackingUrl?: string;
+      shipmentId?: string;
+      lineItems?: { remoteLineItemId: string; qty?: number }[];
+    },
   ) => request<Order>("POST", `/orders/${id}/fulfill`, body),
   syncOrder: (id: string) => request<{ queued: boolean }>("POST", `/orders/${id}/sync-now`, {}),
   syncStoreOrders: (storeId: string) =>

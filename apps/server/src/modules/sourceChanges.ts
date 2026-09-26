@@ -40,7 +40,7 @@ function toDto(r: ChangeRow): SourceChange {
  *  返回落到 applied_action 的 action 名。 */
 type PushIntent = { type: string; payload: Record<string, unknown> };
 
-async function applyChangeToListing(
+export async function applyChangeToListing(
   db: Db,
   workspaceId: string,
   change: ChangeRow,

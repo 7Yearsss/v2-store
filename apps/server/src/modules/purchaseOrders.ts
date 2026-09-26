@@ -430,6 +430,10 @@ export function purchaseOrderRoutes() {
     const actor = `user:${userId}`;
 
     if (body.removeItemIds?.length) {
+      // 非草稿 PO 摘行会把行项重置回未采购 → 可被重复并入别的采购单；已下单的请先标记异常
+      if (po.status !== "draft") {
+        throw new HttpError(409, "只有草稿采购单可移除行项；已下单的请标记异常", "po_not_draft");
+      }
       await detachItems(deps, workspaceId, po.id, body.removeItemIds, actor);
     }
     if (body.addItemIds?.length) {
@@ -473,6 +477,10 @@ export function purchaseOrderRoutes() {
           : [],
       );
       for (const { item } of rows) {
+        // 未匹配货源的行没有采购对象，并入会凭空继承 placed/done 状态
+        if (!item.sourceItemId) {
+          throw new HttpError(400, "存在未绑定货源的行项，请先在订单里完成匹配", "unbound_line");
+        }
         const sku = srcMap.get(item.sourceItemId!)?.skus.find(
           (s) => s.skuId === item.sourceSkuId,
         );

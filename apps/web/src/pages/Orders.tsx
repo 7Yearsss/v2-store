@@ -11,9 +11,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   App,
   Button,
+  Checkbox,
   Descriptions,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -147,9 +149,37 @@ function FulfillModal({
   const [retryId, setRetryId] = useState<string | null>(null);
   const retryShipment = retryId ? order.shipments?.find((s) => s.id === retryId) : undefined;
 
+  // 部分发货：每行剩余 = 下单量 - 已在 pending/pushed 运单里的量
+  const remainingByLine = useMemo(() => {
+    const inflight = new Map<string, number>();
+    for (const s of order.shipments ?? []) {
+      if (s.status !== "pending" && s.status !== "pushed") continue;
+      for (const li of s.lineItems ?? []) {
+        inflight.set(li.remoteLineItemId, (inflight.get(li.remoteLineItemId) ?? 0) + (li.qty ?? 0));
+      }
+    }
+    return new Map(
+      order.items
+        .filter((i) => i.remoteLineItemId)
+        .map((i) => [i.id, i.qty - (inflight.get(i.remoteLineItemId!) ?? 0)]),
+    );
+  }, [order]);
+  const fulfillable = order.items.filter(
+    (i) => i.remoteLineItemId && (remainingByLine.get(i.id) ?? 0) > 0,
+  );
+  const [picked, setPicked] = useState<Record<string, number>>({});
+  const effectivePicked = { ...Object.fromEntries(fulfillable.map((i) => [i.id, remainingByLine.get(i.id) ?? 1])), ...picked };
+
   const fulfill = useMutation({
-    mutationFn: (v: { trackingNo: string; carrier?: string; trackingUrl?: string }) =>
-      api.fulfillOrder(order.id, { ...v, shipmentId: retryId ?? undefined }),
+    mutationFn: (v: { trackingNo: string; carrier?: string; trackingUrl?: string }) => {
+      const lineItems = retryId
+        ? undefined
+        : fulfillable
+            .filter((i) => effectivePicked[i.id] && effectivePicked[i.id]! > 0)
+            .map((i) => ({ remoteLineItemId: i.remoteLineItemId!, qty: effectivePicked[i.id] }));
+      if (!retryId && !lineItems?.length) return Promise.reject(new Error("请选择要发货的行项"));
+      return api.fulfillOrder(order.id, { ...v, shipmentId: retryId ?? undefined, lineItems });
+    },
     onSuccess: () => {
       message.success("已提交履约回传");
       qc.invalidateQueries({ queryKey: ["orders"] });
@@ -207,6 +237,44 @@ function FulfillModal({
           </Descriptions.Item>
         </Descriptions>
       ) : null}
+      {!retryId && fulfillable.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            发货行项（默认全部剩余，取消勾选即部分发货）
+          </Typography.Text>
+          <Space direction="vertical" size={4} style={{ width: "100%", marginTop: 6 }}>
+            {fulfillable.map((i) => {
+              const remaining = remainingByLine.get(i.id) ?? 0;
+              const checked = (effectivePicked[i.id] ?? 0) > 0;
+              return (
+                <Space key={i.id} size={8} style={{ display: "flex" }}>
+                  <Checkbox
+                    checked={checked}
+                    onChange={(e) =>
+                      setPicked((p) => ({ ...p, [i.id]: e.target.checked ? remaining : 0 }))
+                    }
+                  />
+                  <Typography.Text ellipsis style={{ maxWidth: 260 }} title={i.title}>
+                    {i.title}
+                    {i.sku ? ` · ${i.sku}` : ""}
+                  </Typography.Text>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    max={remaining}
+                    disabled={!checked}
+                    value={effectivePicked[i.id] ?? remaining}
+                    onChange={(v) => setPicked((p) => ({ ...p, [i.id]: v ?? remaining }))}
+                  />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    / 剩余 {remaining}
+                  </Typography.Text>
+                </Space>
+              );
+            })}
+          </Space>
+        </div>
+      )}
       <Form form={form} layout="vertical" onFinish={(v) => fulfill.mutate(v)} preserve={false}>
         <Form.Item name="trackingNo" label="运单号" rules={[{ required: true }]}>
           <Input placeholder="国际段运单号" />

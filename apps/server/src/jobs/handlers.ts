@@ -1647,6 +1647,17 @@ const orderMap: JobHandler = {
           listing =
             storeListings.find((l) => l.id === it.listingId) ??
             storeListings.find((l) => l.sourceItemId === it.sourceItemId);
+          // partial 映射（有货源缺规格）：刊登回填 remoteVariantMap 后重跑可补全 SKU
+          if (listing && !sourceSkuId && (it.remoteVariantId || it.sku)) {
+            const vmap = listing.remoteVariantMap;
+            const lv = it.remoteVariantId
+              ? listing.variants.find(
+                  (v) => vmap?.[v.sku ?? ""]?.variantId === it.remoteVariantId,
+                ) ??
+                (it.sku ? listing.variants.find((v) => v.sku === it.sku) : undefined)
+              : listing.variants.find((v) => v.sku === it.sku);
+            if (lv?.sourceSkuId) sourceSkuId = lv.sourceSkuId;
+          }
         } else {
           listing =
             (it.remoteVariantId ? byVariant.get(it.remoteVariantId) : undefined) ??

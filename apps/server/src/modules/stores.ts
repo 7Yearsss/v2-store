@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { PricingRule, Store, StoreRules } from "@caiji/shared";
@@ -11,12 +11,13 @@ import {
 } from "../channels/shopify/client.js";
 import { ChannelError, type StoreRow } from "../channels/types.js";
 import type { AppEnv, Deps } from "../context.js";
-import { stores } from "../db/schema.js";
+import { listings, sourceChanges, stores } from "../db/schema.js";
 import { DEFAULT_PRICING } from "../lib/draft.js";
 import { HttpError, notFound } from "../lib/errors.js";
 import { enqueue } from "../jobs/queue.js";
 import { enqueueCategorySync, enqueueStoreSync, RECONCILE_INVENTORY } from "../jobs/handlers.js";
 import { cachedCategoryAttributes } from "../lib/attributes.js";
+import { applyChangeToListing } from "./sourceChanges.js";
 import { searchCachedCategories } from "../lib/category.js";
 import { requireAuth } from "./auth.js";
 
@@ -255,7 +256,50 @@ export function storeRoutes() {
     // 监控由关转开：立即排一次库存核对——监控关闭期间本地库存照刷但远端没推，
     // 等下一次每日兜底才有 reconcile 会漏掉这一段
     if (!prev.rules?.monitor?.enabled && row.rules?.monitor?.enabled) {
-      await enqueue(c.var.deps.db, RECONCILE_INVENTORY, { storeId: row.id }, { workspaceId: c.var.auth.workspaceId });
+      const deps = c.var.deps;
+      const workspaceId = c.var.auth.workspaceId;
+      await enqueue(deps.db, RECONCILE_INVENTORY, { storeId: row.id }, { workspaceId });
+      // 监控关着时攒下的 price/stock 变更也一并补应用（留 pending 的新 SKU 照样跳过）
+      const pendingChanges = await deps.db
+        .select()
+        .from(sourceChanges)
+        .where(
+          and(
+            eq(sourceChanges.workspaceId, workspaceId),
+            inArray(sourceChanges.changeType, ["price", "stock"]),
+            isNull(sourceChanges.appliedAt),
+          ),
+        );
+      if (pendingChanges.length) {
+        const linked = await deps.db
+          .select({ listing: listings, storeRules: stores.rules, pricing: stores.pricing })
+          .from(listings)
+          .innerJoin(stores, eq(stores.id, listings.storeId))
+          .where(eq(stores.id, row.id));
+        const bySource = new Map<string, typeof linked>();
+        for (const l of linked) {
+          if (!l.listing.sourceItemId) continue;
+          bySource.set(l.listing.sourceItemId, [...(bySource.get(l.listing.sourceItemId) ?? []), l]);
+        }
+        const pushQueue = new Map<string, { type: string; payload: Record<string, unknown> }>();
+        const now = new Date();
+        for (const ch of pendingChanges) {
+          const ls = bySource.get(ch.sourceItemId) ?? [];
+          const acts = [];
+          for (const l of ls) {
+            acts.push(await applyChangeToListing(deps.db, workspaceId, ch, l.listing, l.storeRules, l.pricing, pushQueue));
+          }
+          if (acts.length && !acts.every((a) => a.action === "new_sku_pending")) {
+            await deps.db
+              .update(sourceChanges)
+              .set({ appliedAt: now, appliedAction: acts })
+              .where(eq(sourceChanges.id, ch.id));
+          }
+        }
+        for (const intent of pushQueue.values()) {
+          await enqueue(deps.db, intent.type, intent.payload, { workspaceId });
+        }
+      }
     }
     return c.json(toStoreDto(row));
   });
