@@ -131,6 +131,63 @@ export interface ReplaceRule {
   to: string;
 }
 
+/**
+ * 一键链路自动化策略（店铺级，stores.rules.pipeline）。
+ * 链路：采集 → 认领 → AI stage → 卡点 → 发布前检查 → 发布（pace/scheduled）。
+ */
+export interface PipelinePolicy {
+  /** 采集成功即自动认领到本店（collect → listing.claim）。 */
+  autoClaim?: boolean;
+  /** 可自动接受的 AI 建议字段白名单。 */
+  autoAcceptFields?: SuggestionField[];
+  /**
+   * 审核卡点：
+   * after_ai       — AI 跑完就停，人工放行进 precheck
+   * after_precheck — precheck 跑完再人工放行发布
+   * auto           — 全程自动（仍过禁售词/平台校验门禁）
+   */
+  holdPoint?: "after_ai" | "after_precheck" | "auto";
+  /** precheck 通过即自动发布（否则停在可发布态等手工点）。 */
+  autoPublish?: boolean;
+  /**
+   * 发布节奏：
+   * now       — 立即发布
+   * scheduled — 到点发布（publishAt）
+   * paced     — 同店相邻两件发布至少隔 paceMinutes 分钟
+   */
+  publishMode?: "now" | "scheduled" | "paced";
+  /** scheduled 模式的发布时间（ISO）。 */
+  publishAt?: string;
+  /** paced 模式的发布间隔分钟数。 */
+  paceMinutes?: number;
+  /** precheck 有 warn 也卡住人工确认（block 级永远拦）。 */
+  holdOnWarning?: boolean;
+  /** 关闭的 AI stage key（stage 注册表里的 key）。 */
+  disabledStages?: string[];
+}
+
+/** 库存推送策略（stores.rules.inventory；消费判定由 fl-monitor 实现）。 */
+export interface InventoryRules {
+  /** mirror=跟随货源 | fixed=固定 | percent=货源×percent | cap=封顶 cap。 */
+  strategy?: "mirror" | "fixed" | "percent" | "cap";
+  fixedQty?: number;
+  percent?: number;
+  cap?: number;
+  /** 安全库存：低于 buffer 视为缺货。 */
+  buffer?: number;
+  /** 缺货动作：zero=推 0 | unpublish=下架 | notify=仅通知。 */
+  oosAction?: "zero" | "unpublish" | "notify";
+}
+
+/** 货源监控配置（stores.rules.monitor；回扫由插件 alarm 驱动，fl-monitor 实现）。 */
+export interface MonitorRules {
+  enabled?: boolean;
+  /** 低于 minStock 视为缺货（与 inventory.buffer 共同判定）。 */
+  minStock?: number | null;
+  /** 价格变化是否自动同步到刊登。 */
+  priceAuto?: boolean;
+}
+
 /** 采集预处理 + 发布前检查规则（店铺级，认领/发布时应用）。 */
 export interface StoreRules {
   /** 认领时加到标题前/后（空格自动补）。 */
@@ -158,28 +215,13 @@ export interface StoreRules {
   defaultProductType?: string;
   /** 货源没有重量字段时的默认重量（kg），发布写入变体 measurement。 */
   defaultWeightKg?: number;
-  /** 货源监控总开关（fl-monitor）。默认关：重扫只落 source_changes，不自动改刊登。
-   *  enabled 后再叠加刊登级 syncPolicy / 下面的 priceAuto 判定。 */
-  monitor?: {
-    enabled?: boolean;
-    /** 货源库存 ≤ 该值时按售罄处理（走 oosAction）；不填不启用。 */
-    minStock?: number | null;
-    /** 货源改价时自动按定价规则重算并推送渠道价（另需刊登 syncPolicy.price='auto'）。 */
-    priceAuto?: boolean;
-  };
+  /** 一键链路自动化策略。 */
+  pipeline?: PipelinePolicy;
   /** 库存推送规则（仓储 L1）：货源库存 → 写入渠道的数量变换。 */
-  inventory?: {
-    /** mirror=原样 | fixed=固定值 | percent=按比例 | cap=封顶。缺省 mirror。 */
-    strategy?: "mirror" | "fixed" | "percent" | "cap";
-    fixedQty?: number;
-    /** percent 策略系数（0-1）。 */
-    percent?: number;
-    cap?: number;
-    /** 安全余量：推送量再减 buffer。 */
-    buffer?: number;
-    /** 货源售罄动作：zero=推 0 | unpublish=下架 | notify=只提醒。缺省 notify。 */
-    oosAction?: "zero" | "unpublish" | "notify";
-  };
+  inventory?: InventoryRules;
+  /** 货源监控总开关。默认关：重扫只落 source_changes，不自动改刊登；
+   *  enabled 后再叠加刊登级 syncPolicy / priceAuto 判定。 */
+  monitor?: MonitorRules;
 }
 
 /** 术语翻译映射：变体选项名/值、属性名/值的源词 → 目标语译文，按刊登语言分桶。 */
@@ -310,6 +352,22 @@ export interface LastAutoAction {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * 一键链路阶段（listings.pipeline_stage；null = 非链路刊登）。
+ * claimed → ai_running → (hold_ai) → precheck → (hold_precheck) →
+ * queued → publishing → published；任意阶段失败 → failed。
+ */
+export type PipelineStage =
+  | "claimed"
+  | "ai_running"
+  | "hold_ai"
+  | "precheck"
+  | "hold_precheck"
+  | "queued"
+  | "publishing"
+  | "published"
+  | "failed";
+
 /** 刊登草稿：采集箱条目认领到某个店铺后的平台侧商品。 */
 export interface Listing {
   id: string;
@@ -359,6 +417,14 @@ export interface Listing {
   syncedAt: string | null;
   lastError: string | null;
   publishedAt: string | null;
+  /** 链路阶段；null = 不在链路里（手工认领未开自动化）。 */
+  pipelineStage: PipelineStage | null;
+  /** 链路暂停/卡住的机器可读原因。 */
+  pipelineHoldReason: string | null;
+  /** 链路进入时的策略快照。 */
+  policySnapshot?: PipelinePolicy | null;
+  /** 发布回填的远端变体映射：本地 sku → {variantId, inventoryItemId}（订单/库存链路用）。 */
+  remoteVariantMap: RemoteVariantMap | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -474,6 +540,8 @@ export interface ListingSuggestion {
   id: string;
   listingId: string;
   field: SuggestionField;
+  /** 产出该建议的 stage key（ai/stages 注册表；旧数据为 'ai'）。 */
+  stage: string;
   value: unknown;
   status: SuggestionStatus;
   createdAt: string;

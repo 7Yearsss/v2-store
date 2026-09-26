@@ -169,7 +169,8 @@ function remoteVariantMapFrom(
 ): RemoteVariantMap {
   const out: RemoteVariantMap = {};
   data.product?.variants.nodes.forEach((n, i) => {
-    const key = n.sku ?? sent[i]?.sku;
+    // 键用本地 sku（订单映射查本地 sku）；远端 sku 兜底
+    const key = sent[i]?.sku ?? n.sku;
     if (key) out[key] = { variantId: n.id, inventoryItemId: n.inventoryItem?.id };
   });
   return out;
@@ -247,6 +248,7 @@ const STOCK_DATA = /* GraphQL */ `
     product(id: $id) {
       variants(first: 250) {
         nodes {
+          id
           sku
           inventoryItem {
             id
@@ -280,6 +282,7 @@ interface StockDataResult {
   product: {
     variants: {
       nodes: Array<{
+        id: string;
         sku?: string | null;
         inventoryItem: {
           id: string;

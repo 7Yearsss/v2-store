@@ -113,7 +113,8 @@ describe("类目映射", () => {
     const { listing } = await storeAndClaim(ctx, t, "o1");
 
     let jobs = await ctx.deps.db.query.jobs.findMany();
-    expect(jobs.some((j) => j.type === "listing.categorySuggest")).toBe(true);
+    // stage 注册表：claim 后统一排 listing.aiEnhance（内部跑 enhance+categorySuggest）
+    expect(jobs.some((j) => j.type === "listing.aiEnhance")).toBe(true);
     expect(listing.channelCategoryId).toBeNull();
 
     await drain(ctx);
@@ -171,9 +172,6 @@ describe("类目映射", () => {
       t,
     );
 
-    const jobsBefore = (await ctx.deps.db.query.jobs.findMany()).filter(
-      (j) => j.type === "listing.categorySuggest" && ["queued", "running"].includes(j.status),
-    );
     const item = await ctx.api("POST", "/api/collect", offerWithCategory("o3"), t);
     await ctx.api(
       "POST",
@@ -189,10 +187,12 @@ describe("类目映射", () => {
     expect(second.channelCategoryId).toBe("gid://shopify/TaxonomyCategory/c2");
     expect(second.channelCategoryName).toBe("Apparel > Outerwear > Jackets");
 
-    const jobsAfter = (await ctx.deps.db.query.jobs.findMany()).filter(
-      (j) => j.type === "listing.categorySuggest" && ["queued", "running"].includes(j.status),
-    );
-    expect(jobsAfter.length).toBe(jobsBefore.length);
+    // 已映射 → category stage 不再产出建议（enhance 仍可能产出其他字段）
+    await drain(ctx);
+    const sug2 = (
+      await ctx.api("GET", `/api/listings/${second.id}/suggestions`, undefined, t)
+    ).body.items.find((s: any) => s.field === "category");
+    expect(sug2).toBeUndefined();
   });
 
   it("发布时 productSet 带上已映射的 category", async () => {
@@ -290,14 +290,12 @@ describe("类目映射", () => {
     const list = await ctx.api("GET", "/api/listings", undefined, t);
     const second = list.body.items.find((l: any) => l.id !== listing.id);
     expect(second.channelCategoryId).toBe("gid://shopify/TaxonomyCategory/c3");
-    // 已映射 → 不应再排建议任务
-    const pending = (await ctx.deps.db.query.jobs.findMany()).filter(
-      (j) =>
-        j.type === "listing.categorySuggest" &&
-        j.status === "queued" &&
-        String(j.payload?.listingId) === second.id,
-    );
-    expect(pending.length).toBe(0);
+    // 已映射 → drain 后不产出类目建议
+    await drain(ctx);
+    const sug3 = (
+      await ctx.api("GET", `/api/listings/${second.id}/suggestions`, undefined, t)
+    ).body.items.find((s: any) => s.field === "category");
+    expect(sug3).toBeUndefined();
   });
 
   it("删除映射后同来源类目重新走 AI 建议；跨工作区不可见", async () => {
@@ -339,9 +337,21 @@ describe("类目映射", () => {
       },
       t,
     );
+    const second = (await ctx.api("GET", "/api/listings", undefined, t)).body.items.find(
+      (l: any) => l.id !== listing.id,
+    );
     const jobs = (await ctx.deps.db.query.jobs.findMany()).filter(
-      (j) => j.type === "listing.categorySuggest" && j.status === "queued",
+      (j) =>
+        j.type === "listing.aiEnhance" &&
+        j.status === "queued" &&
+        String(j.payload?.listingId) === second.id,
     );
     expect(jobs.length).toBeGreaterThan(0);
+    // stage 重跑确实产出新的类目建议
+    await drain(ctx);
+    const sugNew = (
+      await ctx.api("GET", `/api/listings/${second.id}/suggestions`, undefined, t)
+    ).body.items.find((s: any) => s.field === "category");
+    expect(sugNew).toBeTruthy();
   });
 });

@@ -4,18 +4,15 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { SourceItem, SourcePlatform } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
-import { categoryMappings, listings, sourceItems, stores } from "../db/schema.js";
-import { applyAttrMappings, loadAttrMappings } from "../lib/attributes.js";
-import { attributesToHtml, buildVariants, parseWeightKg } from "../lib/draft.js";
+import { listings, sourceItems, stores } from "../db/schema.js";
+import { claimItems } from "../lib/claim.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { advancePolicy } from "../lib/pipeline.js";
 import {
-  applyAttrRules,
-  applyImageLimit,
-  applyTitleRules,
-  filterSkusByPrice,
-} from "../lib/rules.js";
-import { enqueueAiEnhance, enqueueCategorySuggest } from "../jobs/handlers.js";
-import { applyTerm, loadTermMap } from "../lib/terms.js";
+  enqueueAiEnhance,
+  enqueuePipelineAdvance,
+  enterPipeline,
+} from "../jobs/handlers.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
@@ -64,6 +61,8 @@ const idsSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
 const claimSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   storeIds: z.array(z.string().uuid()).min(1).max(20),
+  /** 认领并发布：以「策略全开」快照进入链路（holdPoint/autoPublish 强制全开，其余沿用店铺配置）。 */
+  advance: z.boolean().optional(),
 });
 
 export function sourceItemRoutes() {
@@ -153,7 +152,7 @@ export function sourceItemRoutes() {
   r.post("/claim", zValidator("json", claimSchema), async (c) => {
     const { db } = c.var.deps;
     const { workspaceId } = c.var.auth;
-    const { ids, storeIds } = c.req.valid("json");
+    const { ids, storeIds, advance } = c.req.valid("json");
 
     const targetStores = await db
       .select()
@@ -166,138 +165,46 @@ export function sourceItemRoutes() {
       .where(and(eq(sourceItems.workspaceId, workspaceId), inArray(sourceItems.id, ids)));
     if (!items.length) throw new HttpError(400, "没有可认领的商品");
 
-    // 已确认的来源类目映射：同来源类目认领时直接套用
-    const catIds = new Set(
-      items.map((i) => i.sourceCategoryId).filter((v): v is string => !!v),
-    );
-    const mappings = catIds.size
-      ? await db
-          .select()
-          .from(categoryMappings)
-          .where(
-            and(
-              eq(categoryMappings.workspaceId, workspaceId),
-              inArray(categoryMappings.sourceCategoryId, [...catIds]),
-            ),
-          )
-      : [];
-    const mappingOf = (item: (typeof items)[number], store: (typeof targetStores)[number]) =>
-      mappings.find(
-        (m) =>
-          m.sourceCategoryId === item.sourceCategoryId &&
-          m.sourcePlatform === item.sourcePlatform &&
-          m.channel === store.platform,
-      );
-
-    // 术语翻译映射：每种刊登语言一份，认领时预翻选项名/值与属性
-    const termMaps = new Map<string, Map<string, string>>();
-    for (const store of targetStores) {
-      if (!termMaps.has(store.language)) {
-        termMaps.set(store.language, await loadTermMap(db, workspaceId, store.language));
-      }
-    }
-    const termOf = (store: (typeof targetStores)[number]) => {
-      const map = termMaps.get(store.language)!;
-      return (s: string) => applyTerm(map, s);
-    };
-
-    // 已确认的属性映射：按店铺平台加载一次，认领时自动套用
-    const attrMaps = new Map<string, Awaited<ReturnType<typeof loadAttrMappings>>>();
-    for (const store of targetStores) {
-      if (!attrMaps.has(store.platform)) {
-        attrMaps.set(store.platform, await loadAttrMappings(db, workspaceId, store.platform));
-      }
-    }
-
-    const values = targetStores.flatMap((store) =>
-      items.flatMap((item) => {
-        const rules = store.rules ?? {};
-        // 采集预处理：价格区间过滤 SKU；全部被滤掉则不建这条刊登。
-        const skus = filterSkusByPrice(item.skus, rules, item.priceText);
-        if (item.skus.length && !skus.length) return [];
-        const term = termOf(store);
-        const { options, variants } = buildVariants(skus, {
-          skuPrefix: item.sourceItemId ?? item.id.slice(0, 8),
-          priceText: item.priceText,
-          pricing: store.pricing,
-          termMap: term,
-        });
-        const mapping = mappingOf(item, store);
-        const weightKg =
-          parseWeightKg(applyAttrRules(item.attributes, rules)) ??
-          rules.defaultWeightKg ??
-          null;
-        // 属性名译文撞名时保留原名消歧，避免两个属性合成一条丢值
-        const attrSeen = new Map<string, number>();
-        const attrs = Object.fromEntries(
-          Object.entries(applyAttrRules(item.attributes, rules)).map(([k, v]) => {
-            const tk = term(k);
-            const n = (attrSeen.get(tk) ?? 0) + 1;
-            attrSeen.set(tk, n);
-            return [n > 1 ? `${tk}（${k}）` : tk, term(v)];
-          }),
-        );
-        return [
-          {
-            workspaceId,
-            storeId: store.id,
-            sourceItemId: item.id,
-            title: applyTitleRules(item.title, rules),
-            descriptionHtml: attributesToHtml(attrs),
-            images: applyImageLimit(item.images, rules),
-            descImages: item.descImages.slice(0, 30),
-            options,
-            variants,
-            tags: rules.defaultTags ?? [],
-            productType: rules.defaultProductType ?? "",
-            weightKg,
-            // never expose the supplier as the brand
-            vendor: store.vendor,
-            channelCategoryId: mapping?.channelCategoryId ?? null,
-            channelCategoryName: mapping?.channelCategoryName ?? null,
-            channelAttributes: applyAttrMappings(
-              attrMaps.get(store.platform) ?? new Map(),
-              item.attributes,
-              term,
-            ),
-            // 店铺开了「同步货源库存」的刊登默认自动回推库存（旧行为），其余只标记漂移
-            syncPolicy: rules.trackStock
-              ? { stock: "auto" as const, content: "notify" as const, price: "notify" as const }
-              : undefined,
-          },
-        ];
-      }),
-    );
-    const created = values.length
-      ? await db
-          .insert(listings)
-          .values(values)
-          .onConflictDoNothing({ target: [listings.storeId, listings.sourceItemId] })
-          .returning({
-            id: listings.id,
-            storeId: listings.storeId,
-            sourceItemId: listings.sourceItemId,
-          })
-      : [];
-    // 认领即入 AI 产线（店铺设置可关、服务端需配 AI）；建议出现在刊登编辑页，接受前不改草稿。
+    const created = await claimItems(db, workspaceId, items, targetStores);
+    // 认领即入 AI 产线（店铺设置可关、服务端需配 AI）；aiEnhance job 是 stage 注册表入口，
+    // enhance 与类目建议都由它按序跑。建议出现在刊登编辑页，接受前不改草稿。
     if (c.var.deps.config.ai) {
       const aiStoreIds = new Set(
         targetStores.filter((s) => s.aiEnhance === "on").map((s) => s.id),
       );
-      const aiListingIds = created
-        .filter((l) => aiStoreIds.has(l.storeId))
-        .map((l) => l.id);
-      await enqueueAiEnhance(db, aiListingIds, workspaceId);
-      // 未套用映射的来源类目 → 类目建议产线（AI Top-3 → 用户确认）
-      const noCategoryIds = created
-        .filter((l) => aiStoreIds.has(l.storeId))
-        .filter((l) => {
-          const item = items.find((i) => i.id === l.sourceItemId);
-          const store = targetStores.find((s) => s.id === l.storeId);
-          return item?.sourceCategoryId && store && !mappingOf(item, store);
-        })
-        .map((l) => l.id);
-      await enqueueCategorySuggest(db, noCategoryIds, workspaceId);
+      await enqueueAiEnhance(
+        db,
+        created.filter((l) => aiStoreIds.has(l.storeId)).map((l) => l.id),
+        workspaceId,
+      );
+    }
+    // 认领并发布：新建刊登进入链路（策略全开快照）；已有刊登推进或补入场
+    if (advance) {
+      for (const store of targetStores) {
+        const policy = advancePolicy(store.rules?.pipeline);
+        for (const item of items) {
+          const createdRow = created.find(
+            (l) => l.storeId === store.id && l.sourceItemId === item.id,
+          );
+          if (createdRow) {
+            await enterPipeline(db, createdRow.id, policy);
+            continue;
+          }
+          const [l] = await db
+            .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+            .from(listings)
+            .where(
+              and(eq(listings.storeId, store.id), eq(listings.sourceItemId, item.id)),
+            );
+          if (!l) continue; // 被认领规则过滤掉：没刊登可发
+          if (l.pipelineStage) {
+            // 已在链路：等同人工推进（暂停/卡点放行）
+            await enqueuePipelineAdvance(db, l.id, workspaceId, { manual: true });
+          } else {
+            await enterPipeline(db, l.id, policy);
+          }
+        }
+      }
     }
     return c.json({
       created: created.length,

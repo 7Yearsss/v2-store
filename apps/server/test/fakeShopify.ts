@@ -51,6 +51,7 @@ export function fakeShopify(
 ): FakeFetch {
   let filesCount = 0;
   let variantsCount = 0;
+  let variantSkus: Array<string | null> = [];
   let metaobjectCount = 0;
   return (url, init) => {
     const img = opts.sourceImages?.[url];
@@ -427,10 +428,29 @@ export function fakeShopify(
           },
         });
       }
+      if (query.includes("VariantMap")) {
+        return json({
+          data: {
+            product: {
+              variants: {
+                nodes: Array.from({ length: variantsCount }, (_, i) => ({
+                  id: `gid://shopify/ProductVariant/v${i}`,
+                  sku: variantSkus[i] ?? opts.stockSkus?.[i] ?? null,
+                  inventoryItem: { id: `gid://shopify/InventoryItem/i${i}` },
+                })),
+              },
+            },
+          },
+        });
+      }
+
       if (query.includes("productSet")) {
         filesCount = variables.input?.files?.length ?? 0;
         if (opts.capturedProductSet) opts.capturedProductSet.push(variables.input);
         variantsCount = variables.input?.variants?.length ?? 0;
+        variantSkus = (variables.input?.variants ?? []).map(
+          (v: { sku?: string }) => v.sku ?? null,
+        );
         return json({
           data: {
             productSet: opts.productSetErrors?.length

@@ -10,6 +10,7 @@ import type {
   OrderCustomer,
   OrderItemMapping,
   OrderStatus,
+  PipelinePolicy,
   PricingRule,
   ProcureStatus,
   PublishErrorCode,
@@ -311,6 +312,28 @@ export const listings = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    /**
+     * 一键链路阶段：claimed → ai_running → (hold_ai) → precheck →
+     * (hold_precheck) → queued → publishing → published；失败 → failed。
+     * null = 非链路刊登（手工认领、店铺未开链路）。
+     */
+    pipelineStage: text("pipeline_stage", {
+      enum: [
+        "claimed",
+        "ai_running",
+        "hold_ai",
+        "precheck",
+        "hold_precheck",
+        "queued",
+        "publishing",
+        "published",
+        "failed",
+      ],
+    }),
+    /** 链路暂停/卡住原因（'manual' = 用户手动暂停）。 */
+    pipelineHoldReason: text("pipeline_hold_reason"),
+    /** 链路进入时的策略快照（审计「为什么自动发了」）。 */
+    policySnapshot: jsonb("policy_snapshot").$type<PipelinePolicy>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -318,6 +341,7 @@ export const listings = pgTable(
     uniqueIndex("listings_store_source_uq").on(t.storeId, t.sourceItemId),
     index("listings_ws_status_idx").on(t.workspaceId, t.status),
     index("listings_ws_source_changed_idx").on(t.workspaceId, t.sourceChangedAt),
+    index("listings_ws_pipeline_idx").on(t.workspaceId, t.pipelineStage),
   ],
 );
 
@@ -388,6 +412,8 @@ export const listingSuggestions = pgTable(
         "attributes",
       ],
     }).notNull(),
+    /** 产出该建议的 stage key（ai/stages 注册表；迁移前旧行为 'ai'）。 */
+    stage: text("stage").notNull().default("ai"),
     /** proposed value; for `options` it's {options, variantOptionValues}. */
     value: jsonb("value").notNull(),
     status: text("status", { enum: ["pending", "accepted", "rejected"] })

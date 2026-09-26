@@ -39,16 +39,18 @@ import {
 import { listAudits } from "../lib/audit.js";
 import { toFieldsSnapshot } from "../lib/drift.js";
 import { HttpError, notFound } from "../lib/errors.js";
-import { upsertAttrMappings } from "../lib/attributes.js";
 import { TAXONOMY_VERSION, upsertCategoryMapping } from "../lib/category.js";
 import { findBannedWords } from "../lib/rules.js";
-import { upsertTermPairs } from "../lib/terms.js";
+import { acceptSuggestion } from "../lib/suggestions.js";
 import {
   AI_ENHANCE_LISTING,
   CATEGORY_SUGGEST,
   DELIST_LISTING,
+  dequeueQueuedPublish,
   enqueueAiEnhance,
   enqueueAiImage,
+  enqueuePipelineAdvance,
+  enterPipeline,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
 import { toProductSetInput } from "../channels/shopify/adapter.js";
@@ -99,6 +101,10 @@ export function toListingDto(
     syncedAt: r.syncedAt?.toISOString() ?? null,
     lastError: r.lastError,
     publishedAt: r.publishedAt?.toISOString() ?? null,
+    pipelineStage: r.pipelineStage,
+    pipelineHoldReason: r.pipelineHoldReason,
+    policySnapshot: r.policySnapshot ?? null,
+    remoteVariantMap: r.remoteVariantMap ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -106,6 +112,19 @@ export function toListingDto(
 
 const listQuery = z.object({
   status: z.enum(["draft", "publishing", "published", "failed"]).optional(),
+  pipelineStage: z
+    .enum([
+      "claimed",
+      "ai_running",
+      "hold_ai",
+      "precheck",
+      "hold_precheck",
+      "queued",
+      "publishing",
+      "published",
+      "failed",
+    ])
+    .optional(),
   storeId: z.string().uuid().optional(),
   sourceItemId: z.string().uuid().optional(),
   /** 内部标记过滤（text[] 包含）。 */
@@ -155,7 +174,8 @@ const patchSchema = z
         price: z.enum(["auto", "notify", "off"]),
       })
       .partial(),
-    internalTags: z.array(z.string().trim().min(1).max(100)).max(50),
+    /** 内部运营标签（不上渠道）。 */
+    internalTags: z.array(z.string().trim().min(1).max(64)).max(50),
     publishAt: z.string().datetime().nullable(),
   })
   .partial()
@@ -188,47 +208,11 @@ function toSuggestionDto(r: typeof listingSuggestions.$inferSelect): ListingSugg
     id: r.id,
     listingId: r.listingId,
     field: r.field,
+    stage: r.stage,
     value: r.value,
     status: r.status,
     createdAt: r.createdAt.toISOString(),
   };
-}
-
-/** Write an accepted suggestion into the listing row (must run inside the caller's tx). */
-function applySuggestion(
-  listing: ListingRow,
-  s: typeof listingSuggestions.$inferSelect,
-): Partial<ListingRow> {
-  switch (s.field) {
-    case "title":
-      return { title: String(s.value).slice(0, 255) };
-    case "descriptionHtml":
-      return { descriptionHtml: String(s.value).slice(0, 200_000) };
-    case "productType":
-      return { productType: String(s.value).slice(0, 255) };
-    case "tags":
-      return { tags: (s.value as string[]).slice(0, 250) };
-    case "options": {
-      const v = s.value as OptionsSuggestionValue;
-      const variants = listing.variants.map((vr, i) => ({
-        ...vr,
-        optionValues: v.variantOptionValues[i] ?? vr.optionValues,
-      }));
-      return { options: v.options, variants };
-    }
-    case "attributes": {
-      const v = s.value as AttributesSuggestionValue;
-      return {
-        channelAttributes: v.attributes.map((a) => ({
-          attrId: a.attrId,
-          name: a.attrName,
-          value: a.value,
-        })),
-      };
-    }
-    default:
-      return {};
-  }
 }
 
 export function listingRoutes() {
@@ -238,11 +222,12 @@ export function listingRoutes() {
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
     const workspaceId = c.var.auth.workspaceId;
-    const { status, storeId, sourceItemId, tag, watch, q, page, pageSize } =
+    const { status, pipelineStage, storeId, sourceItemId, tag, watch, q, page, pageSize } =
       c.req.valid("query");
     const where = and(
       eq(listings.workspaceId, workspaceId),
       status ? eq(listings.status, status) : undefined,
+      pipelineStage ? eq(listings.pipelineStage, pipelineStage) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
       sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
       tag ? sql`${tag} = any(${listings.internalTags})` : undefined,
@@ -817,9 +802,15 @@ export function listingRoutes() {
 
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
-        .select({ listing: listings, storePlatform: stores.platform, storeLanguage: stores.language })
+        .select({
+          listing: listings,
+          storePlatform: stores.platform,
+          storeLanguage: stores.language,
+          sourcePlatform: sourceItems.sourcePlatform,
+        })
         .from(listings)
         .innerJoin(stores, eq(stores.id, listings.storeId))
+        .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
         .where(
           and(
             eq(listings.id, listingId),
@@ -849,56 +840,19 @@ export function listingRoutes() {
         const s = byId.get(d.id);
         if (!s) continue;
         if (d.action === "accept") {
-          if (s.field === "category") {
-            const v = s.value as CategorySuggestionValue;
-            const cand =
-              v.candidates.find((cd) => cd.id === d.choice) ?? v.candidates[0];
-            if (!cand) throw new HttpError(400, "类目建议没有可选候选");
-            Object.assign(listingPatch, {
-              channelCategoryId: cand.id,
-              channelCategoryName: cand.fullName || cand.name,
-            });
-            // 用户确认即记住：同来源类目以后自动套用
-            await upsertCategoryMapping(tx, {
+          // apply + 学习钩子（类目映射/术语对/属性映射）都在 acceptSuggestion 里，
+          // 与链路 autoAccept 完全同一套。
+          Object.assign(
+            listingPatch,
+            await acceptSuggestion(tx, listing, s, {
               workspaceId,
-              sourcePlatform: "1688",
-              sourceCategoryId: v.sourceCategoryId ?? "",
-              sourceCategoryName: v.sourceCategoryName,
-              channel: row.storePlatform,
-              candidate: cand,
-              confidence: 100,
+              storePlatform: row.storePlatform,
+              storeLanguage: row.storeLanguage,
+              sourcePlatform: row.sourcePlatform,
               confirmedBy: "user",
-              version: TAXONOMY_VERSION,
-            });
-          } else {
-            Object.assign(listingPatch, applySuggestion(listing, s));
-            if (s.field === "options") {
-              const v = s.value as OptionsSuggestionValue;
-              // 接受即学习：以建议生成时的选项快照为准（用户可能已改过草稿），按位成对存术语映射
-              const pairs: Array<[string, string]> = [];
-              (v.sourceOptions ?? listing.options).forEach((o, i) => {
-                pairs.push([o.name, v.options[i]?.name ?? o.name]);
-                o.values.forEach((sv, j) => {
-                  pairs.push([sv, v.options[i]?.values[j] ?? sv]);
-                });
-              });
-              await upsertTermPairs(tx, workspaceId, row.storeLanguage, pairs);
-            }
-            // 接受属性提案即记住 源属性名→平台属性 映射
-            if (s.field === "attributes") {
-              const v = s.value as AttributesSuggestionValue;
-              await upsertAttrMappings(
-                tx,
-                workspaceId,
-                row.storePlatform,
-                v.attributes.map((a) => ({
-                  sourceName: a.sourceName,
-                  attrId: a.attrId,
-                  attrName: a.attrName,
-                })),
-              );
-            }
-          }
+              choice: d.choice,
+            }),
+          );
           accepted++;
         } else rejected++;
         await tx
@@ -912,6 +866,119 @@ export function listingRoutes() {
       return { accepted, rejected };
     });
     return c.json(result);
+  });
+
+  /** 链路进度：手工推进（越过所有卡点/熔断；queued 时提前放行发布）。
+   *  未入链路的刊登带上策略进入（链路从此刻开始）。 */
+  r.post(
+    "/:id/pipeline/advance",
+    zValidator(
+      "json",
+      z
+        .object({
+          /** 本次推进同时覆盖 autoAccept 白名单（写进策略快照）。 */
+          fields: z
+            .array(
+              z.enum([
+                "title",
+                "descriptionHtml",
+                "productType",
+                "tags",
+                "options",
+                "category",
+                "attributes",
+              ]),
+            )
+            .max(7)
+            .optional(),
+        })
+        .optional(),
+    ),
+    async (c) => {
+      const { db } = c.var.deps;
+      const { workspaceId } = c.var.auth;
+      const listingId = c.req.param("id");
+      const body = c.req.valid("json") ?? {};
+      const [row] = await db
+        .select({ listing: listings, store: stores })
+        .from(listings)
+        .innerJoin(stores, eq(stores.id, listings.storeId))
+        .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+      if (!row) throw notFound("刊登");
+      const { listing, store } = row;
+      if (listing.pipelineStage == null) {
+        // 链外刊登：按店铺策略入场（fields 覆盖进快照）
+        await enterPipeline(db, listingId, {
+          ...(store.rules?.pipeline ?? {}),
+          ...(body.fields ? { autoAcceptFields: body.fields } : {}),
+        });
+        return c.json({ ok: true, stage: "claimed" });
+      }
+      if (body.fields) {
+        await db
+          .update(listings)
+          .set({
+            policySnapshot: {
+              ...(listing.policySnapshot ?? store.rules?.pipeline ?? {}),
+              autoAcceptFields: body.fields,
+            },
+          })
+          .where(eq(listings.id, listingId));
+      }
+      await enqueuePipelineAdvance(db, listingId, workspaceId, { manual: true });
+      return c.json({ ok: true, stage: listing.pipelineStage });
+    },
+  );
+
+  /** 链路暂停：在途自动推进停下（stage 保留在原地）；queued 时撤销排队发布。 */
+  r.post("/:id/pipeline/pause", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const [listing] = await db
+      .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+    if (!listing) throw notFound("刊登");
+    if (!listing.pipelineStage) throw new HttpError(409, "刊登不在链路里");
+    if (listing.pipelineStage === "queued") {
+      // 排队发布撤回到卡点；失败态/发布态没什么好暂停的
+      await dequeueQueuedPublish(db, listingId);
+    }
+    const [cur] = await db
+      .update(listings)
+      .set({
+        pipelineHoldReason: "manual",
+        pipelineStage: sql`case when ${listings.pipelineStage} = 'queued' then 'hold_precheck' else ${listings.pipelineStage} end`,
+      })
+      .where(and(eq(listings.id, listingId), ne(listings.pipelineStage, "published")))
+      .returning({ pipelineStage: listings.pipelineStage });
+    return c.json({ ok: true, stage: cur?.pipelineStage ?? listing.pipelineStage });
+  });
+
+  /** 退出链路：清 stage/快照/排定时间，撤销排队发布（发布中/已发布不动）。 */
+  r.post("/:id/pipeline/cancel", async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const listingId = c.req.param("id");
+    const [listing] = await db
+      .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(and(eq(listings.id, listingId), eq(listings.workspaceId, workspaceId)));
+    if (!listing) throw notFound("刊登");
+    if (!listing.pipelineStage) throw new HttpError(409, "刊登不在链路里");
+    if (listing.pipelineStage === "queued") await dequeueQueuedPublish(db, listingId);
+    // publishing/published 由发布 job 收尾时自己置终态，这里只清快照
+    await db
+      .update(listings)
+      .set({
+        pipelineStage: sql`case when ${listings.pipelineStage} in ('publishing','published') then ${listings.pipelineStage} else null end`,
+        pipelineHoldReason: null,
+        policySnapshot: null,
+        publishAt: null,
+      })
+      .where(eq(listings.id, listingId));
+    return c.json({ ok: true });
   });
 
   /** Manually re-run the AI pass (fresh suggestions supersede pending ones). */
