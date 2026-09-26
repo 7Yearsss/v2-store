@@ -1,6 +1,8 @@
 import type {
   CategoryCandidate,
   ChannelAttribute,
+  ListingVariant,
+  RemoteSnapshot,
   RemoteStatus,
 } from "@caiji/shared";
 import { cacheCategoryNodes, TAXONOMY_VERSION } from "../../lib/category.js";
@@ -9,6 +11,7 @@ import type { Deps } from "../../context.js";
 import {
   ChannelError,
   type ChannelAdapter,
+  type ChannelIssue,
   type ListingRow,
   type PublishResult,
   type ShopInfo,
@@ -104,14 +107,34 @@ export function toProductSetInput(
   };
 }
 
+/** Shopify 平台校验规则（结构化）：预览与发布共用同一份判定。 */
+export function validateListing(listing: ListingRow): ChannelIssue[] {
+  const issues: ChannelIssue[] = [];
+  if (!listing.title.trim())
+    issues.push({ code: "required", field: "title", message: "标题不能为空" });
+  if (listing.title.length > 255)
+    issues.push({ code: "too_long", field: "title", message: "标题超过 255 字符" });
+  if (!listing.variants.length)
+    issues.push({ code: "required", field: "variants", message: "至少需要一个变体" });
+  if (listing.variants.length > 2048)
+    issues.push({ code: "too_long", field: "variants", message: "变体超过 2048 个" });
+  if (listing.options.length > 3)
+    issues.push({ code: "too_long", field: "options", message: "选项最多 3 个" });
+  if (listing.variants.some((v) => !(v.price > 0)))
+    issues.push({
+      code: "invalid_value",
+      field: "variants.price",
+      message: "存在价格为 0 的变体",
+    });
+  return issues;
+}
+
+/** 兼容旧签名：返回第一条阻塞问题文案。 */
 export function validateForShopify(listing: ListingRow): string | null {
-  if (!listing.title.trim()) return "标题不能为空";
-  if (listing.title.length > 255) return "标题超过 255 字符";
-  if (!listing.variants.length) return "至少需要一个变体";
-  if (listing.variants.length > 2048) return "变体超过 2048 个";
-  if (listing.options.length > 3) return "选项最多 3 个";
-  if (listing.variants.some((v) => !(v.price > 0))) return "存在价格为 0 的变体";
-  return null;
+  return (
+    validateListing(listing).find((i) => (i.severity ?? "block") === "block")
+      ?.message ?? null
+  );
 }
 
 const PRODUCT_BIND_DATA = /* GraphQL */ `
@@ -195,6 +218,7 @@ const STOCK_DATA = /* GraphQL */ `
     product(id: $id) {
       variants(first: 250) {
         nodes {
+          sku
           inventoryItem {
             id
             inventoryLevels(first: 10) {
@@ -223,43 +247,48 @@ const SET_STOCK = /* GraphQL */ `
   }
 `;
 
-/** 货源库存 → Shopify 变体库存：inventoryQuantities 只能对已建好的
- *  inventoryItem 生效，所以发布后按变体顺序精确写入主地点。失败只警告。 */
-async function setVariantStock(
+interface StockDataResult {
+  product: {
+    variants: {
+      nodes: Array<{
+        sku?: string | null;
+        inventoryItem: {
+          id: string;
+          inventoryLevels: {
+            nodes: Array<{ location: { id: string }; quantities: Array<{ quantity: number }> }>;
+          };
+        };
+      }>;
+    };
+  } | null;
+  locations: { nodes: Array<{ id: string; name?: string; isActive: boolean }> };
+}
+
+/**
+ * 库存写入共用核心：按远端变体下标把 quantities 写进选中的库存地点。
+ * variants 是本地变体数组 + 各自对应的远端变体下标（sku 对齐或顺序兜底）。
+ * 返回警告文案或 null；外部异常同样收敛为文案（库存失败不阻塞主流程）。
+ */
+async function writeStock(
   deps: Deps,
   store: StoreRow,
   productId: string,
-  listing: ListingRow,
+  data: StockDataResult,
+  sent: ListingVariant[],
+  remoteIndexOf: (v: ListingVariant, i: number) => number,
 ): Promise<string | null> {
-  const sent = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
   try {
-    const data = await shopifyGraphql<{
-      product: {
-        variants: {
-          nodes: Array<{
-            inventoryItem: {
-              id: string;
-              inventoryLevels: {
-                nodes: Array<{ location: { id: string }; quantities: Array<{ quantity: number }> }>;
-              };
-            };
-          }>;
-        };
-      } | null;
-      locations: { nodes: Array<{ id: string; name?: string; isActive: boolean }> };
-    }>(deps, store, STOCK_DATA, { id: productId });
     const wanted = store.rules?.inventoryLocationId;
     const configured = wanted ? data.locations.nodes.find((l) => l.id === wanted) : undefined;
-    const location = configured ?? data.locations.nodes.find((l) => l.isActive) ?? data.locations.nodes[0];
+    const location =
+      configured ?? data.locations.nodes.find((l) => l.isActive) ?? data.locations.nodes[0];
     if (!location) return "未能写入库存：店铺没有可用仓库地点";
     const locationWarning =
-      wanted && !configured
-        ? "配置的库存地点已失效，库存写到了第一个可用地点"
-        : null;
+      wanted && !configured ? "配置的库存地点已失效，库存写到了第一个可用地点" : null;
     // changeFromQuantity 是必填的库存基线：取该地点当前 available，首次发布为 0
     const quantities = sent
       .map((v, i) => {
-        const item = data.product?.variants.nodes[i]?.inventoryItem;
+        const item = data.product?.variants.nodes[remoteIndexOf(v, i)]?.inventoryItem;
         const level = item?.inventoryLevels.nodes.find((l) => l.location.id === location.id);
         return {
           inventoryItemId: item?.id,
@@ -290,6 +319,45 @@ async function setVariantStock(
     return `库存写入失败：${e instanceof Error ? e.message : String(e)}`;
   }
 }
+
+/** 发布后写库存：变体刚按顺序建好，下标一一对应。失败只警告。 */
+async function setVariantStock(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+  listing: ListingRow,
+): Promise<string | null> {
+  let data: StockDataResult;
+  try {
+    data = await shopifyGraphql<StockDataResult>(deps, store, STOCK_DATA, { id: productId });
+  } catch (e) {
+    return `库存写入失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+  const sent = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
+  return writeStock(deps, store, productId, data, sent, (_v, i) => i);
+}
+
+const REMOTE_SNAPSHOTS = /* GraphQL */ `
+  query RemoteSnapshots($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Product {
+        id
+        status
+        title
+        descriptionHtml
+        variants(first: 250) {
+          nodes {
+            sku
+            price
+            compareAtPrice
+            inventoryQuantity
+            selectedOptions { name value }
+          }
+        }
+      }
+    }
+  }
+`;
 
 /** 变体图绑定：规格图已随 files 进 product media，按文件顺序取 mediaId 写回变体。
  *  绑定失败不阻塞发布——商品本体已建好，退化为只有主图。 */
@@ -525,6 +593,11 @@ export const shopifyAdapter: ChannelAdapter = {
     };
   },
 
+  /** 结构化校验：发布预览与 publish 内部门禁共用。 */
+  validate(_deps: Deps, _store: StoreRow, listing: ListingRow): ChannelIssue[] {
+    return validateListing(listing);
+  },
+
   async publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult> {
     const invalid = validateForShopify(listing);
     if (invalid) throw new ChannelError(invalid);
@@ -675,6 +748,73 @@ export const shopifyAdapter: ChannelAdapter = {
       data.nodes.forEach((n, k) => out.set(ids[k]!, n?.status ?? "DELETED"));
     }
     return out;
+  },
+
+  /** 拉远端商品快照（内容+变体价格库存），远端不存在 → null。 */
+  async fetchRemoteSnapshots(deps, store, remoteIds) {
+    const out = new Map<string, RemoteSnapshot | null>();
+    const fetchedAt = new Date().toISOString();
+    for (let i = 0; i < remoteIds.length; i += 100) {
+      const ids = remoteIds.slice(i, i + 100);
+      const data = await shopifyGraphql<{
+        nodes: Array<{
+          id: string;
+          status: RemoteStatus;
+          title: string;
+          descriptionHtml: string;
+          variants: {
+            nodes: Array<{
+              sku: string | null;
+              price: string;
+              compareAtPrice: string | null;
+              inventoryQuantity: number | null;
+              selectedOptions: Array<{ name: string; value: string }>;
+            }>;
+          };
+        } | null>;
+      }>(deps, store, REMOTE_SNAPSHOTS, { ids });
+      data.nodes.forEach((n, k) => {
+        if (!n) {
+          out.set(ids[k]!, null);
+          return;
+        }
+        out.set(ids[k]!, {
+          remoteId: n.id,
+          status: n.status,
+          title: n.title,
+          descriptionHtml: n.descriptionHtml,
+          variants: (n.variants?.nodes ?? []).map((v) => ({
+            sku: v.sku,
+            optionValues: (v.selectedOptions ?? []).map((o) => o.value),
+            price: v.price,
+            compareAtPrice: v.compareAtPrice ?? undefined,
+            stock: v.inventoryQuantity,
+          })),
+          fetchedAt,
+        });
+      });
+    }
+    return out;
+  },
+
+  /**
+   * 库存专用同步：只调 inventorySetQuantities，不动标题/描述/价格。
+   * 远端变体按 sku 对齐本地变体（无 sku 按下标兜底），未匹配上的变体跳过。
+   */
+  async pushStock(deps, store, remoteId, variants) {
+    const data = await shopifyGraphql<StockDataResult>(deps, store, STOCK_DATA, {
+      id: remoteId,
+    });
+    if (!data.product) throw new ChannelError("远端商品不存在", true);
+    const remoteNodes = data.product.variants.nodes;
+    const skuIndex = new Map<string, number>();
+    remoteNodes.forEach((v, i) => {
+      if (v.sku) skuIndex.set(v.sku, i);
+    });
+    const sent = variants.length > 1 ? variants : variants.slice(0, 1);
+    return writeStock(deps, store, remoteId, data, sent, (v, i) =>
+      v.sku ? (skuIndex.get(v.sku) ?? i) : i,
+    );
   },
 };
 

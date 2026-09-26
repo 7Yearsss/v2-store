@@ -1,6 +1,8 @@
 import type {
   CategoryCandidate,
   ChannelAttribute,
+  ListingVariant,
+  RemoteSnapshot,
   RemoteStatus,
 } from "@caiji/shared";
 import type { Deps } from "../context.js";
@@ -26,6 +28,17 @@ export interface ShopInfo {
   shopDomain: string;
 }
 
+/** 结构化校验问题：发布预览与发布门禁共用同一套判定（所见=所判）。 */
+export interface ChannelIssue {
+  /** 稳定机器码：required / too_long / invalid_value / platform_rule… */
+  code: string;
+  /** 出问题的字段（title / variants / variants.price…）。 */
+  field?: string;
+  message: string;
+  /** block（缺省）挡发布；warn 只是平台建议。 */
+  severity?: "block" | "warn";
+}
+
 export interface PublishResult {
   remoteId: string;
   remoteUrl: string | null;
@@ -41,10 +54,40 @@ export interface PublishResult {
  */
 export interface ChannelAdapter {
   verify(deps: Deps, store: StoreRow): Promise<ShopInfo>;
+  /**
+   * 结构化发布校验：预览接口与发布 job 共用，平台规则差异只写在实现里。
+   * 店铺级规则（禁售词等）不属于平台校验，由调用方另行叠加。
+   */
+  validate(
+    deps: Deps,
+    store: StoreRow,
+    listing: ListingRow,
+  ): ChannelIssue[] | Promise<ChannelIssue[]>;
   /** Create or fully sync the remote product (idempotent on listing.remoteId). */
   publish(deps: Deps, store: StoreRow, listing: ListingRow): Promise<PublishResult>;
   /** Channel-side status per remote id; missing products map to DELETED. */
   fetchStatuses(deps: Deps, store: StoreRow, remoteIds: string[]): Promise<Map<string, RemoteStatus>>;
+  /**
+   * 拉远端商品的平台中立快照（id/status/title/description/variants 价格库存），
+   * 用于漂移计算与发布前确认；map 值 null = 远端不存在。可选能力：缺省时
+   * 同步链路退回 fetchStatuses 只拉状态。
+   */
+  fetchRemoteSnapshots?(
+    deps: Deps,
+    store: StoreRow,
+    remoteIds: string[],
+  ): Promise<Map<string, RemoteSnapshot | null>>;
+  /**
+   * 只更新远端库存（不动标题/描述/价格）。用于货源库存变化的同步路径，
+   * 避免全量 publish 覆盖商家在平台上改过的内容。返回警告文案或 null；
+   * 可选能力：缺省时同步链路用全量发布兜底（会记审计标明是兜底覆盖）。
+   */
+  pushStock?(
+    deps: Deps,
+    store: StoreRow,
+    remoteId: string,
+    variants: ListingVariant[],
+  ): Promise<string | null>;
   /** Unpublish a remote product without deleting it (Shopify status → DRAFT).
    *  Absent = delisting unsupported on this channel. */
   delistProduct?(deps: Deps, store: StoreRow, remoteId: string): Promise<void>;

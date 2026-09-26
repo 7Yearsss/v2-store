@@ -219,6 +219,64 @@ export type ListingStatus = "draft" | "publishing" | "published" | "failed";
 /** Product status on the channel, synced back periodically. */
 export type RemoteStatus = "ACTIVE" | "DRAFT" | "ARCHIVED" | "UNLISTED" | "DELETED";
 
+// --- 托管（在线商品回拉 / 漂移 / 自动动作） -------------------------------------
+
+/** 刊登与远端商品的绑定状态。 */
+export type LinkStatus = "linked" | "unlinked" | "remote_deleted";
+
+/** 库存同步策略：auto = 回扫发现差异时自动推送本地库存；notify = 只标记漂移；off = 不管。 */
+export type StockSyncPolicy = "auto" | "notify" | "off";
+/** 内容/价格漂移策略：只标记（notify）或忽略（off）；不会自动覆盖远端。 */
+export type FlagSyncPolicy = "notify" | "off";
+
+export interface ListingSyncPolicy {
+  stock: StockSyncPolicy;
+  content: FlagSyncPolicy;
+  price: FlagSyncPolicy;
+}
+
+export const DEFAULT_SYNC_POLICY: ListingSyncPolicy = {
+  stock: "notify",
+  content: "notify",
+  price: "notify",
+};
+
+/** 远端变体的平台中立快照（价格保留平台字符串原样）。 */
+export interface RemoteVariantSnapshot {
+  sku?: string | null;
+  /** 远端选项值（与产品选项同序）。 */
+  optionValues?: string[];
+  price?: string;
+  compareAtPrice?: string;
+  stock?: number | null;
+}
+
+/** 一次远端拉取得到的平台中立商品快照。 */
+export interface RemoteSnapshot {
+  remoteId: string;
+  status: RemoteStatus;
+  title?: string;
+  descriptionHtml?: string;
+  variants?: RemoteVariantSnapshot[];
+  /** ISO；本次拉取时间（本地缓存快照时是写入时间）。 */
+  fetchedAt: string;
+}
+
+/** 字段级漂移条目：本地期望 vs 远端实际。 */
+export interface RemoteDriftEntry {
+  field: "title" | "descriptionHtml" | "price" | "stock" | string;
+  local: unknown;
+  remote: unknown;
+}
+
+/** 最近一次自动动作（回扫/来源变更触发），无痕自动动作不允许存在。 */
+export interface LastAutoAction {
+  action: string;
+  /** ISO 时间。 */
+  at: string;
+  detail?: Record<string, unknown>;
+}
+
 /** 刊登草稿：采集箱条目认领到某个店铺后的平台侧商品。 */
 export interface Listing {
   id: string;
@@ -245,6 +303,16 @@ export interface Listing {
   remoteId: string | null;
   remoteUrl: string | null;
   remoteStatus: RemoteStatus | null;
+  /** 与远端商品的绑定状态（linked / unlinked / remote_deleted）。 */
+  linkStatus: LinkStatus;
+  /** 漂移处理策略（旧数据全部为 notify 安全默认）。 */
+  syncPolicy: ListingSyncPolicy;
+  /** 最近一次远端拉取的快照（推送成功后则为我们写入的内容）。 */
+  remoteSnapshot: RemoteSnapshot | null;
+  /** 字段级漂移：本地与远端不一致的字段列表，只标记不自动覆盖。 */
+  remoteDrift: RemoteDriftEntry[];
+  lastPulledAt: string | null;
+  lastAutoAction: LastAutoAction | null;
   syncedAt: string | null;
   lastError: string | null;
   publishedAt: string | null;
@@ -385,4 +453,83 @@ export interface Job {
   updatedAt: string;
   listingId: string | null;
   storeId: string | null;
+}
+
+// --- 发布批次（run/attempt）与审计 -------------------------------------------
+
+/** 可归一化的发布错误码；error 字段保留平台原文。 */
+export type PublishErrorCode =
+  | "auth_expired"
+  | "rate_limited"
+  | "review_rejected"
+  | "remote_deleted"
+  | "unknown";
+
+export type PublishRunStatus =
+  | "queued"
+  | "running"
+  | "partial_success"
+  | "succeeded"
+  | "failed";
+
+export type PublishAttemptStatus = "queued" | "running" | "succeeded" | "failed";
+
+/** 发布时冻结的刊登字段快照（attempt 级；重试时取当版字段）。 */
+export interface ListingFieldsSnapshot {
+  title: string;
+  descriptionHtml: string;
+  images: string[];
+  descImages: string[];
+  options: ListingOption[];
+  variants: ListingVariant[];
+  tags: string[];
+  productType: string;
+  vendor: string;
+  weightKg: number | null;
+  channelCategoryId: string | null;
+  channelCategoryName: string | null;
+  channelAttributes: ListingChannelAttribute[];
+}
+
+/** 一次「勾选多条刊登发布」形成的批次。 */
+export interface PublishRun {
+  id: string;
+  status: PublishRunStatus;
+  listingIds: string[];
+  /** 该 run 内 attempt 状态计数（任务页列表用）。 */
+  counts: { total: number; queued: number; running: number; succeeded: number; failed: number } | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** run 内每个刊登一条 attempt；重试产生新 attempt（retryOf 指向上一条）。 */
+export interface PublishAttempt {
+  id: string;
+  runId: string;
+  listingId: string;
+  storeId: string;
+  status: PublishAttemptStatus;
+  /** 平台原文错误。 */
+  error: string | null;
+  /** 归一化错误码。 */
+  errorCode: PublishErrorCode | null;
+  fieldsSnapshot: ListingFieldsSnapshot;
+  remoteId: string | null;
+  remoteUrl: string | null;
+  retryOf: string | null;
+  jobId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditLog {
+  id: string;
+  /** "user:<id>" | "system" | "system:sync" 等。 */
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }

@@ -92,15 +92,22 @@ describe("collect", () => {
     expect(res.body.republished).toBe(1);
 
     const done = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
-    expect(done.body.status).toBe("publishing");
+    // 库存变化只走「只推库存」job，刊登不进入 publishing，不覆盖远端标题
+    expect(done.body.status).toBe("published");
     expect(done.body.variants[0]).toMatchObject({ stock: 3, costCny: 9 });
     // 价格保持商家设定，不被货源价覆盖
     expect(done.body.variants[0].price).toBe(listing.variants[0].price);
 
     while (await runOnce(ctx.deps, jobHandlers)) {
-      /* drain republish */
+      /* drain pushStock */
     }
     const res2 = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
     expect(res2.body.status).toBe("published");
+    // 自动库存动作必须留痕：lastAutoAction + audit
+    expect(res2.body.lastAutoAction?.action).toBe("stock_push");
+    const audits = await ctx.api("GET", `/api/listings/${listing.id}/audits`, undefined, t);
+    expect(audits.body.audits.map((a: { action: string }) => a.action)).toContain(
+      "listing.auto_stock_push",
+    );
   });
 });
