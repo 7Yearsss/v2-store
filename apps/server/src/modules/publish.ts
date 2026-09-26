@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { PublishAttempt, PublishRun } from "@caiji/shared";
@@ -71,24 +71,27 @@ export function publishRoutes() {
         .limit(100),
       db.select({ total: count() }).from(publishRuns).where(and(...conds)),
     ]);
-    // 单查询聚合：每个 attempt status 计数按 runId 分组
+    // 聚合计数只看每刊登最新 attempt（重试留档的旧 attempt 不计入，与 run 状态口径一致）
     const runIds = rows.map((r) => r.id);
     const countsByRun = new Map<string, { total: number; queued: number; running: number; succeeded: number; failed: number }>();
     if (runIds.length) {
-      const grouped = await db
+      const attemptRows = await db
         .select({
           runId: publishAttempts.runId,
+          listingId: publishAttempts.listingId,
           status: publishAttempts.status,
-          n: count(),
         })
         .from(publishAttempts)
         .where(and(eq(publishAttempts.workspaceId, workspaceId), inArray(publishAttempts.runId, runIds)))
-        .groupBy(publishAttempts.runId, publishAttempts.status);
-      for (const g of grouped) {
-        const c0 = countsByRun.get(g.runId) ?? { total: 0, queued: 0, running: 0, succeeded: 0, failed: 0 };
-        c0.total += g.n;
-        c0[g.status as keyof Omit<typeof c0, "total">] += g.n;
-        countsByRun.set(g.runId, c0);
+        .orderBy(asc(publishAttempts.createdAt));
+      const latest = new Map<string, string>();
+      for (const a of attemptRows) latest.set(`${a.runId}:${a.listingId}`, a.status);
+      for (const [key, status] of latest) {
+        const runId = key.split(":")[0]!;
+        const c0 = countsByRun.get(runId) ?? { total: 0, queued: 0, running: 0, succeeded: 0, failed: 0 };
+        c0.total += 1;
+        c0[status as keyof Omit<typeof c0, "total">] += 1;
+        countsByRun.set(runId, c0);
       }
     }
     return c.json({
@@ -181,7 +184,8 @@ export function publishRoutes() {
           .where(
             and(eq(listings.id, a.listingId), eq(listings.workspaceId, workspaceId)),
           );
-        if (!cur) continue;
+        // 刊登正被另一个 run/job 发布中 → 跳过（避免两个 job 重叠写远端）
+        if (!cur || cur.status === "publishing") continue;
         const [next] = await tx
           .insert(publishAttempts)
           .values({

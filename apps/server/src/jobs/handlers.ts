@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import type { RemoteSnapshot, SourcePlatform } from "@caiji/shared";
 import { runCategorySuggest } from "../ai/category.js";
 import { runAiEnhance } from "../ai/enhance.js";
@@ -254,12 +254,17 @@ async function applyRemoteSnapshot(
     if (!warn) {
       drift = drift.filter((d) => d.field !== "stock");
       patch.remoteDrift = drift;
+      // 快照回写用与 pushStock 相同的 SKU 对齐（位置对齐会在远端重排时记错变体库存）
       patch.remoteSnapshot = {
         ...snap,
-        variants: snap.variants?.map((rv, i) => ({
-          ...rv,
-          stock: listing.variants[i]?.stock ?? rv.stock,
-        })),
+        variants: snap.variants?.map((rv, ri) => {
+          const lv = rv.sku
+            ? listing.variants.find((v) => v.sku === rv.sku)
+            : listing.variants[ri]?.sku
+              ? undefined
+              : listing.variants[ri];
+          return lv ? { ...rv, stock: lv.stock ?? rv.stock } : rv;
+        }),
       };
     }
   }
@@ -359,6 +364,27 @@ const publishListing: JobHandler = {
     if (!row) throw new PermanentJobError("刊登记录已删除");
     if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
     if (attemptId) {
+      // 同一刊登同时只允许一个发布 job：重试/重复派发不与在跑的另一个 job 重叠写远端
+      const [conflict] = await deps.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.type, PUBLISH_LISTING),
+            inArray(jobs.status, ["queued", "running"]),
+            sql`${jobs.payload}->>'listingId' = ${listingId}`,
+            ne(jobs.id, job.id),
+          ),
+        )
+        .limit(1);
+      if (conflict) {
+        await finishAttempt(deps.db, attemptId, {
+          status: "failed",
+          error: "该刊登已有另一个发布任务在执行，本次发布已跳过",
+          jobId: job.id,
+        });
+        return;
+      }
       await deps.db
         .update(publishAttempts)
         .set({ status: "running", jobId: job.id, updatedAt: new Date() })

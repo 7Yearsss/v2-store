@@ -50,17 +50,23 @@ export function pushedSnapshot(
   };
 }
 
-/** 远端变体按 sku 对齐本地变体（无 sku 时按下标兜底）。 */
+/** 远端变体按 sku 对齐本地变体（仅本地无 sku 才按下标兜底；
+ *  本地有 sku 但远端找不到 → 返回 undefined，不拿别的变体比）。 */
 function remoteVariantFor(
   snap: NonNullable<RemoteSnapshot["variants"]>,
   local: ListingRow["variants"][number],
   index: number,
 ) {
   if (local.sku) {
-    const hit = snap.find((v) => v.sku === local.sku);
-    if (hit) return hit;
+    return snap.find((v) => v.sku === local.sku);
   }
   return snap[index];
+}
+
+/** 描述比较前剥离媒体块：发布时会把 descImages 追加进远端 body_html（CDN 地址），
+ *  与本地 descriptionHtml 的字面差异不算漂移。 */
+function normDesc(s: string): string {
+  return norm(s.replace(/<img\b[^>]*>/gi, "").replace(/<p>\s*<\/p>/gi, ""));
 }
 
 /**
@@ -75,7 +81,7 @@ export function computeDrift(l: ListingRow, snap: RemoteSnapshot): RemoteDriftEn
   }
   if (
     snap.descriptionHtml !== undefined &&
-    norm(snap.descriptionHtml) !== norm(l.descriptionHtml)
+    normDesc(snap.descriptionHtml) !== normDesc(l.descriptionHtml)
   ) {
     drift.push({
       field: "descriptionHtml",
