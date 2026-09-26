@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import type { PipelinePolicy, StoreRules } from "@caiji/shared";
-import { jobHandlers } from "../src/jobs/handlers.js";
+import { enqueuePipelineAdvance, jobHandlers } from "../src/jobs/handlers.js";
 import { enqueue, runOnce } from "../src/jobs/queue.js";
-import { publishAttempts, publishRuns } from "../src/db/schema.js";
+import { jobs, listings, publishAttempts, publishRuns } from "../src/db/schema.js";
 import { fakeShopify } from "./fakeShopify.js";
 import { json, setup, type FakeFetch } from "./helpers.js";
 
@@ -126,6 +127,46 @@ async function drainUntilAdvanceQueued(c: Awaited<ReturnType<typeof setup>>) {
 const AUTO: PipelinePolicy = { holdPoint: "auto", autoPublish: true, publishMode: "now" };
 
 describe("一键链路", () => {
+  it("advance 终止守卫：published 不再推进；running 中手动放行另排 manual job", async () => {
+    ctx = await setup(fakeAll());
+    const t = await ctx.register();
+    enableAi(ctx);
+    await makeStore(ctx, t, {
+      pipeline: { autoClaim: true, autoPublish: true, publishMode: "now", holdPoint: "auto" },
+    });
+    const listing = await collectPipeline(ctx, t, "o-guard-1");
+    expect(listing.pipelineStage).toBe("published");
+    const [lrow] = await ctx.deps.db
+      .select()
+      .from(listings)
+      .where(eq(listings.id, listing.id));
+    const ws = lrow!.workspaceId;
+    const runsBefore = (await ctx.deps.db.select().from(publishRuns)).length;
+
+    // published 后再 advance（含手动放行）不得重复发布——覆盖商家远端编辑
+    await enqueuePipelineAdvance(ctx.deps.db, listing.id, ws, { manual: true });
+    await drain(ctx);
+    expect((await ctx.deps.db.select().from(publishRuns)).length).toBe(runsBefore);
+    const cur = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(cur.body.pipelineStage).toBe("published");
+
+    // 运行中的 advance 已读旧 payload：手动放行要另排一个 manual job
+    await ctx.deps.db.insert(jobs).values({
+      workspaceId: ws,
+      type: "pipeline.advance",
+      payload: { listingId: listing.id },
+      status: "running",
+    });
+    await enqueuePipelineAdvance(ctx.deps.db, listing.id, ws, { manual: true });
+    const advs = await ctx.deps.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.type, "pipeline.advance"));
+    const queued = advs.filter((j) => j.status === "queued");
+    expect(queued.length).toBe(1);
+    expect(queued[0]!.payload.manual).toBe(true);
+  });
+
   it("认领并发布：advance=true → 策略全开跑完 published（autoAccept 全字段 + 学习映射）", async () => {
     ctx = await setup(fakeAll());
     enableAi(ctx);

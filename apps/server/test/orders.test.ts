@@ -13,7 +13,7 @@ import {
   stores,
 } from "../src/db/schema.js";
 import { jobHandlers } from "../src/jobs/handlers.js";
-import { runOnce } from "../src/jobs/queue.js";
+import { enqueue, runOnce } from "../src/jobs/queue.js";
 import { fakeShopify } from "./fakeShopify.js";
 import { harvest, setup } from "./helpers.js";
 
@@ -256,6 +256,30 @@ describe("order.sync", () => {
     await runJobs("order.sync");
     const row = await ctx.deps.db.select().from(stores).where(eq(stores.id, storeId));
     expect(row[0]!.ordersCursor).toBe("2026-09-03T00:00:00.000Z");
+  });
+
+  it("ordersCursor 单调推进：并发慢同步不能回退新游标", async () => {
+    const gid = "gid://shopify/Order/1009";
+    ctx = await setup(
+      fakeShopify({
+        orders: { [gid]: orderNode("1009", { updatedAt: "2026-09-05T00:00:00Z" }) },
+      }),
+    );
+    const t = await ctx.register();
+    const storeId = await makeStore(t);
+    // 模拟更快的并发同步已把游标推到 09-10
+    await ctx.deps.db
+      .update(stores)
+      .set({ ordersCursor: "2026-09-10T00:00:00Z" })
+      .where(eq(stores.id, storeId));
+    // 慢的旧窗口同步拉到更早的单：单子照常入，游标不能回退
+    const st = await ctx.api("POST", "/api/orders/sync", { storeId }, t);
+    expect(st.status).toBe(200);
+    await runJobs("order.sync");
+    const [row] = await ctx.deps.db.select().from(stores).where(eq(stores.id, storeId));
+    expect(row!.ordersCursor).toBe("2026-09-10T00:00:00Z");
+    const list = await ctx.api("GET", "/api/orders", undefined, t);
+    expect(list.body.total).toBe(1);
   });
 });
 
