@@ -17,7 +17,7 @@ import {
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 import dayjs from "dayjs";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useExtension } from "../components/ExtensionBadge";
@@ -25,13 +25,7 @@ import { collectOfferById } from "../extensionBridge";
 import { useStoreScope } from "../shell/storeScope";
 import { EmptyState, Err, Loading, Modal, St, Thumb } from "../ui";
 
-/** Listing 可能携带但后端尚未合并的可选字段 — 缺省一律优雅降级。 */
-type ListingExt = Listing & {
-  /** 货源侧最近变化时间（重采覆盖草稿内容） */
-  sourceChangedAt?: string | null;
-  /** 最近一次自动动作说明（如自动改价/自动下架） */
-  lastAutoAction?: string | null;
-};
+type ListingExt = Listing;
 
 const FIELD_LABEL: Record<SuggestionField, string> = {
   title: "标题",
@@ -58,6 +52,11 @@ const REMOTE_TEXT: Record<string, string> = {
   DELETED: "店铺已删除",
 };
 
+const AUTO_ACTION_TEXT: Record<string, string> = {
+  stock_push: "自动同步库存到店铺",
+  stock_push_fallback_publish: "库存变化触发全量重发",
+};
+
 function extractOfferId(input: string): string | null {
   const t = input.trim();
   return (
@@ -65,21 +64,15 @@ function extractOfferId(input: string): string | null {
   );
 }
 
-/** 全量刊登（聚合用；分页拉完为止）。 */
-function useAllListings(storeScope?: string | null) {
+/** 当前选中货源的各店刊登（服务端按 sourceItemId 过滤）。 */
+function useSourceListings(sourceItemId: string | null, storeScope?: string | null) {
   return useQuery({
-    queryKey: ["listings", "all", storeScope ?? "*"],
-    queryFn: async () => {
-      const first = await api.listings({ pageSize: 100, page: 1, storeId: storeScope ?? undefined });
-      const pages = Math.ceil(first.total / 100);
-      if (pages <= 1) return first.items as ListingExt[];
-      const rest = await Promise.all(
-        Array.from({ length: pages - 1 }, (_, i) =>
-          api.listings({ pageSize: 100, page: i + 2, storeId: storeScope ?? undefined }),
-        ),
-      );
-      return [first.items, ...rest.map((r) => r.items)].flat() as ListingExt[];
-    },
+    queryKey: ["listings", "source", sourceItemId, storeScope ?? "*"],
+    enabled: !!sourceItemId,
+    queryFn: () =>
+      api
+        .listings({ sourceItemId: sourceItemId!, storeId: storeScope ?? undefined, pageSize: 100 })
+        .then((r) => r.items as ListingExt[]),
     refetchInterval: (q) => (q.state.data?.some((l) => l.status === "publishing") ? 2000 : false),
   });
 }
@@ -220,6 +213,9 @@ function SourceColumn({
   const unclaimed = items.filter((i) => i.claimedStoreIds.length === 0);
   const claimed = items.filter((i) => i.claimedStoreIds.length > 0);
   const shown = tab === "unclaimed" ? unclaimed : claimed;
+  useEffect(() => {
+    if (!selectedId && shown.length) onSelect(shown[0].id);
+  }, [selectedId, shown, onSelect]);
 
   return (
     <section className="col">
@@ -733,16 +729,28 @@ function MiddleColumn({
                 </Link>
               </span>
             </div>
-            {activeListing.sourceChangedAt && (
+            {activeListing.linkStatus === "remote_deleted" && (
               <div className="chk-issue">
-                <span className="chk-issue-f">货源</span>
-                <span>内容有更新 · {dayjs(activeListing.sourceChangedAt).format("MM-DD HH:mm")}</span>
+                <span className="chk-issue-f">远端</span>
+                <span>店铺侧商品已删除，重新发布会新建</span>
+              </div>
+            )}
+            {activeListing.remoteDrift.length > 0 && (
+              <div className="chk-issue">
+                <span className="chk-issue-f">漂移</span>
+                <span>
+                  与店铺不一致：{[...new Set(activeListing.remoteDrift.map((d) => d.field))].join("、")}
+                  （下次发布会以本地为准覆盖）
+                </span>
               </div>
             )}
             {activeListing.lastAutoAction && (
               <div className="chk-issue">
                 <span className="chk-issue-f">自动</span>
-                <span>{activeListing.lastAutoAction}</span>
+                <span>
+                  {AUTO_ACTION_TEXT[activeListing.lastAutoAction.action] ?? activeListing.lastAutoAction.action}
+                  {" · "}{dayjs(activeListing.lastAutoAction.at).format("MM-DD HH:mm")}
+                </span>
               </div>
             )}
             <DraftSummary listing={activeListing} />
@@ -908,11 +916,8 @@ export function WorkbenchPage() {
     queryFn: () => api.sourceItems({ page: 1, pageSize: 100 }),
   });
   const selected = itemsQ.data?.items.find((i) => i.id === selectedId) ?? null;
-  const listings = useAllListings();
-  const mine = useMemo(
-    () => (listings.data ?? []).filter((l) => l.sourceItemId === selectedId),
-    [listings.data, selectedId],
-  );
+  const listings = useSourceListings(selectedId, scope.storeId);
+  const mine = listings.data ?? [];
   const pendingQueries = useQueries({
     queries: mine.map((l) => ({
       queryKey: ["suggestions", l.id] as const,

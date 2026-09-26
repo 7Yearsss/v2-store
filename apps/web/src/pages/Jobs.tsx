@@ -1,11 +1,11 @@
-import type { Job, JobStatus } from "@caiji/shared";
+import type { Job, JobStatus, PublishRun } from "@caiji/shared";
 import { RedoOutlined } from "@ant-design/icons";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 import dayjs from "dayjs";
 import { useState } from "react";
 import { Link } from "react-router";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { useStoreScope } from "../shell/storeScope";
 import { EmptyState, Err, Loading, St } from "../ui";
 
@@ -26,64 +26,128 @@ const JSTATUS: Record<JobStatus, { st: string; label: string }> = {
   failed: { st: "failed", label: "失败" },
 };
 
-/** 预留：若服务端上线 publishRuns（一次铺店 = 一次 run，逐店 attempt），
- *  此区块自动出现；接口 404 时静默不渲染，不伪造数据。 */
-interface PublishRunAttempt {
-  id: string;
-  storeId: string;
-  status: string;
-  error?: string | null;
-  remoteUrl?: string | null;
-}
-interface PublishRun {
-  id: string;
-  status: string;
-  createdAt: string;
-  attempts?: PublishRunAttempt[];
+const RUN_STATUS: Record<PublishRun["status"], string> = {
+  queued: "排队中",
+  running: "进行中",
+  partial_success: "部分成功",
+  succeeded: "成功",
+  failed: "失败",
+};
+
+const ATTEMPT_STATUS: Record<string, { st: string; label: string }> = {
+  queued: { st: "queued", label: "排队中" },
+  running: { st: "running", label: "发布中" },
+  succeeded: { st: "success", label: "成功" },
+  failed: { st: "failed", label: "失败" },
+};
+
+/** 单个 run 展开：每店一条 attempt（失败原因 + 店铺链接 + 刊登跳转）。 */
+function RunAttempts({ runId }: { runId: string }) {
+  const scope = useStoreScope();
+  const detail = useQuery({
+    queryKey: ["publish-run", runId],
+    queryFn: () => api.publishRun(runId),
+    refetchInterval: (q) =>
+      q.state.data?.attempts.some((a) => a.status === "queued" || a.status === "running") ? 2000 : false,
+  });
+  const storeName = (id: string) => scope.stores.find((s) => s.id === id)?.name ?? id.slice(0, 8);
+  if (detail.isLoading) return <Loading />;
+  if (detail.isError) return <Err error={detail.error} onRetry={() => detail.refetch()} />;
+  return (
+    <>
+      {(detail.data?.attempts ?? []).map((a) => (
+        <div key={a.id} className="rowline" style={{ paddingLeft: 12 }}>
+          <span className="att-shop">{storeName(a.storeId)}</span>
+          <St st={ATTEMPT_STATUS[a.status]?.st ?? a.status}>
+            {ATTEMPT_STATUS[a.status]?.label ?? a.status}
+          </St>
+          <Link to={`/listings/${a.listingId}`} className="t-link">
+            刊登 ↗
+          </Link>
+          {a.retryOf && <span className="job-sub">重试</span>}
+          {a.error && <span className="job-err">{a.error}</span>}
+          {a.remoteUrl && (
+            <a href={a.remoteUrl} target="_blank" rel="noreferrer">
+              店铺 ↗
+            </a>
+          )}
+        </div>
+      ))}
+    </>
+  );
 }
 
+/** 铺货批次：一次「铺到 N 家店」= 一个 run，逐店 attempt。失败可整批只重试失败店。 */
 function PublishRunsSection() {
-  const scope = useStoreScope();
+  const qc = useQueryClient();
+  const { message } = App.useApp();
+  const [open, setOpen] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const runs = useQuery({
     queryKey: ["publish-runs"],
-    queryFn: async () => {
-      try {
-        return await api.raw<unknown>("/publish-runs");
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 404) return null;
-        throw e;
-      }
-    },
-    staleTime: 15_000,
-    retry: 0,
+    queryFn: () => api.publishRuns(),
+    refetchInterval: (q) =>
+      q.state.data?.items.some((r) => r.status === "queued" || r.status === "running") ? 2000 : false,
   });
-  if (!runs.data) return null;
-  const items = (runs.data as { items?: PublishRun[] }).items ?? (runs.data as PublishRun[]);
-  if (!Array.isArray(items) || items.length === 0) return null;
-  const storeName = (id: string) => scope.stores.find((s) => s.id === id)?.name ?? id.slice(0, 8);
+  const items = runs.data?.items ?? [];
+  if (!runs.isLoading && items.length === 0) return null;
+
+  const retry = async (id: string) => {
+    setRetrying(id);
+    try {
+      const r = await api.retryPublishRun(id);
+      message.success(r.retried ? `已重试 ${r.retried} 个失败店铺` : "没有失败的店铺需要重试");
+      qc.invalidateQueries({ queryKey: ["publish-runs"] });
+      qc.invalidateQueries({ queryKey: ["publish-run", id] });
+      qc.invalidateQueries({ queryKey: ["listings"] });
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setRetrying(null);
+    }
+  };
+
   return (
     <div className="fld">
       <div className="fld-label">铺货批次</div>
-      {items.map((r) => (
-        <div key={r.id} className="job-card" style={{ flexDirection: "column", alignItems: "stretch" }}>
-          <div className="rowline">
-            <St st={r.status}>{r.status}</St>
-            <span className="job-sub">{dayjs(r.createdAt).format("MM-DD HH:mm:ss")}</span>
-          </div>
-          {(r.attempts ?? []).map((a) => (
-            <div key={a.id} className="rowline" style={{ paddingLeft: 12 }}>
-              <span className="att-shop">{storeName(a.storeId)}</span>
-              <St st={a.status}>{a.status}</St>
-              {a.error && <span className="job-err">{a.error}</span>}
-              {a.remoteUrl && (
-                <a href={a.remoteUrl} target="_blank" rel="noreferrer">
-                  店铺 ↗
-                </a>
-              )}
+      {runs.isLoading ? (
+        <Loading />
+      ) : (
+        items.map((r) => {
+          const c = r.counts;
+          return (
+            <div key={r.id} className="job-card" style={{ flexDirection: "column", alignItems: "stretch" }}>
+              <div className="rowline">
+                <St st={r.status}>{RUN_STATUS[r.status] ?? r.status}</St>
+                <span className="job-sub">
+                  {c ? `${c.succeeded}/${c.total} 店成功${c.failed ? ` · ${c.failed} 失败` : ""}${c.queued + c.running ? ` · ${c.queued + c.running} 进行中` : ""}` : ""}
+                  {dayjs(r.createdAt).format(" MM-DD HH:mm")}
+                </span>
+                <span style={{ marginLeft: "auto" }} className="rowline">
+                  {c && c.failed > 0 && r.status !== "running" && r.status !== "queued" && (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={retrying === r.id}
+                      onClick={() => retry(r.id)}
+                    >
+                      <RedoOutlined /> {retrying === r.id ? "排队中…" : "重试失败店"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    onClick={() => setOpen(open === r.id ? null : r.id)}
+                  >
+                    {open === r.id ? "收起" : "逐店明细"}
+                  </button>
+                </span>
+              </div>
+              {open === r.id && <RunAttempts runId={r.id} />}
             </div>
-          ))}
-        </div>
-      ))}
+          );
+        })
+      )}
     </div>
   );
 }

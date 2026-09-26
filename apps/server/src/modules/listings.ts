@@ -85,6 +85,7 @@ export function toListingDto(
 const listQuery = z.object({
   status: z.enum(["draft", "publishing", "published", "failed"]).optional(),
   storeId: z.string().uuid().optional(),
+  sourceItemId: z.string().uuid().optional(),
   q: z.string().trim().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
@@ -204,11 +205,12 @@ export function listingRoutes() {
 
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
-    const { status, storeId, q, page, pageSize } = c.req.valid("query");
+    const { status, storeId, sourceItemId, q, page, pageSize } = c.req.valid("query");
     const where = and(
       eq(listings.workspaceId, c.var.auth.workspaceId),
       status ? eq(listings.status, status) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
+      sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
       q ? ilike(listings.title, `%${q}%`) : undefined,
     );
     const [rows, [total]] = await Promise.all([

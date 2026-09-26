@@ -13,9 +13,11 @@ import { api } from "../api";
 import { useStoreScope } from "../shell/storeScope";
 import { EmptyState, Err, Loading, St, Thumb } from "../ui";
 
-type ListingExt = Listing & {
-  sourceChangedAt?: string | null;
-  lastAutoAction?: string | null;
+type ListingExt = Listing;
+
+const AUTO_ACTION_TEXT: Record<string, string> = {
+  stock_push: "自动同步库存到店铺",
+  stock_push_fallback_publish: "库存变化触发全量重发",
 };
 
 const LSTATUS: Record<Listing["status"], { st: string; label: string }> = {
@@ -210,10 +212,17 @@ export function ProductsPage() {
                     <td style={{ width: 100 }}>{priceRange(l)}</td>
                     <td>
                       {l.lastError && <div className="job-err">{l.lastError}</div>}
-                      {l.sourceChangedAt && (
-                        <div className="job-sub">货源已更新 · {dayjs(l.sourceChangedAt).format("MM-DD HH:mm")}</div>
+                      {l.remoteDrift.length > 0 && (
+                        <div className="job-sub">
+                          与店铺不一致：{[...new Set(l.remoteDrift.map((d) => d.field))].join("、")}
+                        </div>
                       )}
-                      {l.lastAutoAction && <div className="job-sub">自动：{l.lastAutoAction}</div>}
+                      {l.lastAutoAction && (
+                        <div className="job-sub">
+                          自动：{AUTO_ACTION_TEXT[l.lastAutoAction.action] ?? l.lastAutoAction.action} ·{" "}
+                          {dayjs(l.lastAutoAction.at).format("MM-DD HH:mm")}
+                        </div>
+                      )}
                       {!l.lastError && <div className="job-sub">{l.title}</div>}
                     </td>
                     <td style={{ width: 120, color: "var(--text-tertiary)" }}>

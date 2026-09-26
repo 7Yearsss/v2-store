@@ -56,7 +56,7 @@ export function toAttempt(r: AttemptRow): PublishJobDetail["attempts"][number] {
     externalId: r.externalId,
     remoteUrl: r.remoteUrl,
     retryOf: r.retryOf,
-    fieldsSnapshot: r.fieldsSnapshot,
+    fieldsSnapshot: r.fieldsSnapshot ?? undefined,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
