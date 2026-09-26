@@ -6,6 +6,7 @@ import type { PublishAttempt, PublishRun } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
 import { listings, publishAttempts, publishRuns } from "../db/schema.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import { toFieldsSnapshot } from "../lib/drift.js";
 import { PUBLISH_LISTING } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
@@ -159,6 +160,7 @@ export function publishRoutes() {
             eq(publishAttempts.status, "failed"),
           ),
         );
+      let inserted = 0;
       for (const a of failed) {
         // 已被更新的重试 attempt 取代过的失败行不再重试（取每刊登最新 attempt）
         const [newer] = await tx
@@ -173,6 +175,13 @@ export function publishRoutes() {
           .orderBy(desc(publishAttempts.createdAt))
           .limit(1);
         if (newer && newer.id !== a.id) continue;
+        const [cur] = await tx
+          .select()
+          .from(listings)
+          .where(
+            and(eq(listings.id, a.listingId), eq(listings.workspaceId, workspaceId)),
+          );
+        if (!cur) continue;
         const [next] = await tx
           .insert(publishAttempts)
           .values({
@@ -181,7 +190,8 @@ export function publishRoutes() {
             listingId: a.listingId,
             storeId: a.storeId,
             status: "queued",
-            fieldsSnapshot: a.fieldsSnapshot,
+            // 快照按当版字段重新冻结——job 读的是当前刊登，快照必须一致
+            fieldsSnapshot: toFieldsSnapshot(cur),
             retryOf: a.id,
           })
           .returning({ id: publishAttempts.id });
@@ -195,14 +205,16 @@ export function publishRoutes() {
             ),
           );
         await enqueue(tx, PUBLISH_LISTING, { listingId: a.listingId, attemptId: next!.id }, { workspaceId });
+        inserted++;
       }
-      if (failed.length) {
+      // 全部被更新的 attempt 取代时保持原状态（不能标 running——没有 job 会把它收敛回来）
+      if (inserted) {
         await tx
           .update(publishRuns)
           .set({ status: "running", updatedAt: new Date() })
           .where(eq(publishRuns.id, runId));
       }
-      return failed.length;
+      return inserted;
     });
     return c.json({ retried });
   });

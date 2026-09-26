@@ -17,6 +17,7 @@ import { audit } from "../lib/audit.js";
 import { resolveCategoryMapping } from "../lib/category.js";
 import {
   computeDrift,
+  filterDriftByPolicy,
   normalizePublishError,
   pushedSnapshot,
 } from "../lib/drift.js";
@@ -209,7 +210,8 @@ async function applyRemoteSnapshot(
     return;
   }
 
-  let drift = computeDrift(listing, snap);
+  // 策略 off 的类别不记录漂移（如 price=off 的商家在 Shopify 改价不算"不一致"）
+  let drift = filterDriftByPolicy(computeDrift(listing, snap), listing.syncPolicy);
   const patch: Partial<typeof listings.$inferSelect> = {
     remoteStatus: snap.status,
     linkStatus: "linked",
@@ -219,11 +221,13 @@ async function applyRemoteSnapshot(
     syncedAt: now,
   };
 
-  // 库存自动推送：唯一的自动写远端路径，必须有痕（lastAutoAction + audit）
+  // 库存自动推送：唯一的自动写远端路径，必须有痕（lastAutoAction + audit）；
+  // 需店铺开启「同步货源库存」（未开启的变体没有 tracked inventoryItem，写了也失败）
   const adapter = adapterFor(store.platform);
   if (
     drift.some((d) => d.field === "stock") &&
     listing.syncPolicy.stock === "auto" &&
+    store.rules?.trackStock &&
     adapter.pushStock
   ) {
     const at = new Date().toISOString();
@@ -402,7 +406,7 @@ const publishListing: JobHandler = {
               remoteStatus: snap.status,
               linkStatus: "linked",
               remoteSnapshot: snap,
-              remoteDrift: computeDrift(listing, snap),
+              remoteDrift: filterDriftByPolicy(computeDrift(listing, snap), listing.syncPolicy),
               lastPulledAt: now,
               syncedAt: now,
             })
@@ -527,6 +531,8 @@ const pushStockJob: JobHandler = {
     const { listing, store } = row;
     if (store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
     if (!listing.remoteId || listing.remoteStatus === "DELETED") return;
+    // 已入队的也尊重当前策略：店铺未追踪库存或刊登 stock 策略非 auto 时跳过
+    if (!store.rules?.trackStock || listing.syncPolicy.stock !== "auto") return;
     const adapter = adapterFor(store.platform);
     const at = new Date().toISOString();
     if (!adapter.pushStock) {

@@ -799,7 +799,8 @@ export const shopifyAdapter: ChannelAdapter = {
 
   /**
    * 库存专用同步：只调 inventorySetQuantities，不动标题/描述/价格。
-   * 远端变体按 sku 对齐本地变体（无 sku 按下标兜底），未匹配上的变体跳过。
+   * 远端变体按 sku 对齐本地变体；有 SKU 但远端找不到的跳过并告警
+   * （不按下标兜底——远端变体顺序/成员可能与本地不同，会写错变体库存）。
    */
   async pushStock(deps, store, remoteId, variants) {
     const data = await shopifyGraphql<StockDataResult>(deps, store, STOCK_DATA, {
@@ -812,9 +813,22 @@ export const shopifyAdapter: ChannelAdapter = {
       if (v.sku) skuIndex.set(v.sku, i);
     });
     const sent = variants.length > 1 ? variants : variants.slice(0, 1);
-    return writeStock(deps, store, remoteId, data, sent, (v, i) =>
-      v.sku ? (skuIndex.get(v.sku) ?? i) : i,
-    );
+    const skipped: string[] = [];
+    const warn = await writeStock(deps, store, remoteId, data, sent, (v, i) => {
+      if (v.sku) {
+        const hit = skuIndex.get(v.sku);
+        if (hit === undefined) {
+          skipped.push(v.sku);
+          return -1;
+        }
+        return hit;
+      }
+      return i;
+    });
+    const skippedWarn = skipped.length
+      ? `${skipped.length} 个变体在远端找不到对应 SKU，库存未写入：${skipped.slice(0, 5).join("、")}`
+      : null;
+    return [skippedWarn, warn].filter(Boolean).join("；") || null;
   },
 };
 

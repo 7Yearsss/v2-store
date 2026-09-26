@@ -14,13 +14,14 @@ import {
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { useExtension } from "../components/ExtensionBadge";
+import { sanitizeHtml } from "../lib/sanitize";
 import { collectOfferById } from "../extensionBridge";
 import { useStoreScope } from "../shell/storeScope";
 import { EmptyState, Err, Loading, Modal, St, Thumb } from "../ui";
@@ -198,23 +199,28 @@ function SourceColumn({
 }: {
   onClaim: () => void;
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (item: SourceItem) => void;
 }) {
   const { stores } = useStoreScope();
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [tab, setTab] = useState<"unclaimed" | "claimed">("unclaimed");
-  const list = useQuery({
+  // 分页加载：超过一页的货源可用「加载更多」浏览，刷新时已加载页一起更新
+  const list = useInfiniteQuery({
     queryKey: ["source-items", q],
-    queryFn: () => api.sourceItems({ q, page: 1, pageSize: 100 }),
+    queryFn: ({ pageParam }) => api.sourceItems({ q, page: pageParam, pageSize: 50 }),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) =>
+      pages.reduce((n, p) => n + p.items.length, 0) < last.total ? pages.length + 1 : undefined,
     refetchInterval: 60_000,
   });
-  const items = list.data?.items ?? [];
+  const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const total = list.data?.pages[0]?.total ?? 0;
   const unclaimed = items.filter((i) => i.claimedStoreIds.length === 0);
   const claimed = items.filter((i) => i.claimedStoreIds.length > 0);
   const shown = tab === "unclaimed" ? unclaimed : claimed;
   useEffect(() => {
-    if (!selectedId && shown.length) onSelect(shown[0].id);
+    if (!selectedId && shown.length) onSelect(shown[0]);
   }, [selectedId, shown, onSelect]);
 
   return (
@@ -276,9 +282,20 @@ function SourceColumn({
               item={item}
               stores={stores}
               active={item.id === selectedId}
-              onSelect={() => onSelect(item.id)}
+              onSelect={() => onSelect(item)}
             />
           ))
+        )}
+        {list.hasNextPage && (
+          <button
+            type="button"
+            className="btn sm ghost"
+            style={{ margin: "4px auto" }}
+            disabled={list.isFetchingNextPage}
+            onClick={() => list.fetchNextPage()}
+          >
+            {list.isFetchingNextPage ? "加载中…" : `加载更多（还有 ${total - items.length} 条）`}
+          </button>
         )}
       </div>
       <div className="col-foot">
@@ -301,7 +318,7 @@ function SuggestionValue({ s }: { s: ListingSuggestion }) {
       <div
         className="ai-diff-new"
         style={{ maxHeight: 160, overflow: "auto" }}
-        dangerouslySetInnerHTML={{ __html: String(s.value) }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml(String(s.value)) }}
       />
     );
   }
@@ -905,17 +922,13 @@ export function WorkbenchPage() {
   const { message } = App.useApp();
   const qc = useQueryClient();
   const scope = useStoreScope();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<SourceItem | null>(null);
+  const selectedId = selected?.id ?? null;
   const [claimOpen, setClaimOpen] = useState(false);
   const [checkedStores, setCheckedStores] = useState<Set<string>>(new Set());
   const [busyStores, setBusyStores] = useState(false);
   const lastAction = useRef<string | null>(null);
 
-  const itemsQ = useQuery({
-    queryKey: ["source-items", ""],
-    queryFn: () => api.sourceItems({ page: 1, pageSize: 100 }),
-  });
-  const selected = itemsQ.data?.items.find((i) => i.id === selectedId) ?? null;
   const listings = useSourceListings(selectedId, scope.storeId);
   const mine = listings.data ?? [];
   const pendingQueries = useQueries({
@@ -987,7 +1000,7 @@ export function WorkbenchPage() {
     <>
       <div className="narrow-hint">工作台按 ≥1280px 宽设计，当前窗口较窄，三栏会纵向堆叠。</div>
       <div className="pub">
-        <SourceColumn selectedId={selectedId} onSelect={setSelectedId} onClaim={() => setClaimOpen(true)} />
+        <SourceColumn selectedId={selectedId} onSelect={setSelected} onClaim={() => setClaimOpen(true)} />
         <MiddleColumn item={selected} listings={listings.data ?? []} listingsLoading={listings.isLoading} />
         <section className="col">
           <div className="col-head">

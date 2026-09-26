@@ -6,7 +6,7 @@ import type { CollectedOffer, CollectHarvest } from "@caiji/shared";
 import { findInitData, normalizeOffer } from "@caiji/shared";
 import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
-import { listings, sourceItems } from "../db/schema.js";
+import { listings, sourceItems, stores } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
 import { FETCH_MISSING_MEDIA, PUSH_STOCK } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
@@ -110,10 +110,10 @@ export async function ingestOffer(
   return { item: row!, duplicated: false };
 }
 
-/** 重复采集 = 货源刷新：把最新 SKU 库存/成本同步到该条目的所有刊登，
- *  已发布的排队「只推库存」（listing.pushStock → adapter.pushStock），
- *  不再全量重发覆盖远端标题；adapter 不支持时 job 内退回全量并审计标注。
- *  价格不覆盖（商家可能改过售价）。 */
+/** 重复采集 = 货源刷新：把最新 SKU 库存/成本同步到该条目的所有刊登。
+ *  仅库存变化且店铺开了「同步货源库存」+ 刊登 syncPolicy.stock=auto 才排队
+ *  「只推库存」（listing.pushStock → adapter.pushStock）；adapter 不支持时
+ *  job 内退回全量并审计标注。价格不覆盖（商家可能改过售价）。 */
 async function propagateToListings(
   db: Db,
   workspaceId: string,
@@ -122,25 +122,34 @@ async function propagateToListings(
 ) {
   if (!skus.length) return { updated: 0, republished: 0 };
   const rows = await db
-    .select()
+    .select({ listing: listings, storeRules: stores.rules })
     .from(listings)
+    .innerJoin(stores, eq(stores.id, listings.storeId))
     .where(and(eq(listings.workspaceId, workspaceId), eq(listings.sourceItemId, sourceItemId)));
   let updated = 0;
   let republished = 0;
-  for (const l of rows) {
-    let changed = false;
+  for (const { listing: l, storeRules } of rows) {
+    let stockChanged = false;
+    let costChanged = false;
     const variants = l.variants.map((v, i) => {
       const sku =
         (v.sourceSkuId ? skus.find((s) => s.skuId === v.sourceSkuId) : undefined) ??
         skus[i];
       if (!sku) return v;
       const next = { ...v, stock: sku.stock, costCny: sku.priceCny };
-      if (next.stock !== v.stock || next.costCny !== v.costCny) changed = true;
+      if (next.stock !== v.stock) stockChanged = true;
+      if (next.costCny !== v.costCny) costChanged = true;
       return next;
     });
-    if (!changed) continue;
+    if (!stockChanged && !costChanged) continue;
     updated++;
-    const republish = l.status === "published" && !!l.remoteId;
+    // 只有库存差异才推远端（成本只是本地数据）；库存自动写受店铺 trackStock + 刊登策略双重控制
+    const republish =
+      l.status === "published" &&
+      !!l.remoteId &&
+      stockChanged &&
+      !!storeRules?.trackStock &&
+      l.syncPolicy.stock === "auto";
     await db
       .update(listings)
       .set({ variants, updatedAt: new Date() })

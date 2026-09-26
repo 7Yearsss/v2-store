@@ -1,5 +1,6 @@
 import type {
   ListingFieldsSnapshot,
+  ListingSyncPolicy,
   PublishErrorCode,
   RemoteDriftEntry,
   RemoteSnapshot,
@@ -107,6 +108,22 @@ export function computeDrift(l: ListingRow, snap: RemoteSnapshot): RemoteDriftEn
     }
   }
   return drift;
+}
+
+/** drift 字段 → syncPolicy 类别（title/descriptionHtml 都归 content）。 */
+const DRIFT_POLICY: Record<string, keyof ListingSyncPolicy> = {
+  title: "content",
+  descriptionHtml: "content",
+  price: "price",
+  stock: "stock",
+};
+
+/** 按刊登的 syncPolicy 过滤漂移：策略为 off 的类别不记录、不提示。 */
+export function filterDriftByPolicy(
+  drift: RemoteDriftEntry[],
+  policy: ListingSyncPolicy,
+): RemoteDriftEntry[] {
+  return drift.filter((d) => policy[DRIFT_POLICY[d.field] ?? "content"] !== "off");
 }
 
 /** 平台原文错误 → 可归一化 code（attempt.errorCode）。 */

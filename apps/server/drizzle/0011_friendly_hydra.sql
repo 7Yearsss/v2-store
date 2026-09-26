@@ -59,4 +59,7 @@ CREATE INDEX "publish_attempts_ws_status_idx" ON "publish_attempts" USING btree 
 CREATE INDEX "publish_runs_ws_created_idx" ON "publish_runs" USING btree ("workspace_id","created_at");--> statement-breakpoint
 -- 回填：已有 remoteId 的刊登视为已链接；已标 DELETED 的视为远端已删
 UPDATE "listings" SET "link_status" = 'linked' WHERE "remote_id" IS NOT NULL AND "remote_status" IS DISTINCT FROM 'DELETED';--> statement-breakpoint
-UPDATE "listings" SET "link_status" = 'remote_deleted' WHERE "remote_status" = 'DELETED';
+UPDATE "listings" SET "link_status" = 'remote_deleted' WHERE "remote_status" = 'DELETED';--> statement-breakpoint
+-- 回填：开启「同步货源库存」店铺下的刊登，库存策略默认 auto（延续此前自动重发库存的行为）
+UPDATE "listings" SET "sync_policy" = jsonb_set("sync_policy", '{stock}', '"auto"')
+FROM "stores" WHERE "listings"."store_id" = "stores"."id" AND "stores"."rules"->>'trackStock' = 'true';

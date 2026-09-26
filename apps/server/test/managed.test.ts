@@ -172,6 +172,8 @@ describe("managed lifecycle", () => {
     );
     const t = await ctx.register();
     const store = await connectStore(t);
+    // 库存自动推要求：店铺开「同步货源库存」且刊登 stock 策略为 auto
+    await ctx.api("PATCH", `/api/stores/${store.id}`, { rules: { trackStock: true } }, t);
     const listing = await collectAndClaim(t, store.id, "777");
     await publishListing(t, listing.id);
     await ctx.api("PATCH", `/api/listings/${listing.id}`, { syncPolicy: { stock: "auto" } }, t);

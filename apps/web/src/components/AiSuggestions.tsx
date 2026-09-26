@@ -11,6 +11,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Col, Row, Space, Spin, Table, Tag, Typography } from "antd";
 import { api } from "../api";
+import { sanitizeHtml } from "../lib/sanitize";
 
 type DraftPatch = Partial<
   Pick<
@@ -101,7 +102,7 @@ function ChannelAttrsTable({ items }: { items: ListingChannelAttribute[] }) {
 
 function ValueView({ field, value }: { field: SuggestionField; value: unknown }) {
   if (field === "descriptionHtml") {
-    return <div dangerouslySetInnerHTML={{ __html: String(value) }} />;
+    return <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(String(value)) }} />;
   }
   if (field === "tags") {
     return (

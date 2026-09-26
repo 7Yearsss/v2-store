@@ -51,7 +51,7 @@ export function ProductsPage() {
   const [statusFilter, setStatusFilter] = useState<Listing["status"] | "all">("all");
 
   const listings = useQuery({
-    queryKey: ["listings", "all", scope.storeId ?? "*"],
+    queryKey: ["listings", "all", scope.storeId ?? "*", q],
     queryFn: async () => {
       const first = await api.listings({ pageSize: 100, page: 1, storeId: scope.storeId ?? undefined, q: q || undefined });
       const pages = Math.ceil(first.total / 100);
