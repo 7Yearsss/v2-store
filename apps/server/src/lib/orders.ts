@@ -232,6 +232,43 @@ export async function upsertRemoteOrder(
     };
     if (prev) {
       await deps.db.update(orderItems).set(fields).where(eq(orderItems.id, prev.id));
+      // 远端改数量：草稿采购单跟随；已下单的采购单不动，落审计提示人工核对
+      if (prev.qty !== li.qty) {
+        const links = await deps.db
+          .select({
+            poId: purchaseOrderItems.purchaseOrderId,
+            status: purchaseOrders.status,
+          })
+          .from(purchaseOrderItems)
+          .innerJoin(
+            purchaseOrders,
+            eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId),
+          )
+          .where(eq(purchaseOrderItems.orderItemId, prev.id));
+        let placedConflict = false;
+        for (const l of links) {
+          if (l.status === "draft") {
+            await deps.db
+              .update(purchaseOrderItems)
+              .set({ qty: li.qty })
+              .where(
+                and(
+                  eq(purchaseOrderItems.purchaseOrderId, l.poId),
+                  eq(purchaseOrderItems.orderItemId, prev.id),
+                ),
+              );
+          } else placedConflict = true;
+        }
+        if (placedConflict) {
+          await audit(deps.db, store.workspaceId, {
+            actor: "system:sync",
+            action: "order.qty_conflict",
+            entityType: "orderItem",
+            entityId: prev.id,
+            payload: { from: prev.qty, to: li.qty },
+          });
+        }
+      }
     } else {
       await deps.db.insert(orderItems).values({
         orderId,

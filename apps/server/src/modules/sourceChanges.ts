@@ -38,6 +38,8 @@ function toDto(r: ChangeRow): SourceChange {
 
 /** 变更应用到一条刊登（人工「应用」是显式指令，不再复核监控开关）；
  *  返回落到 applied_action 的 action 名。 */
+type PushIntent = { type: string; payload: Record<string, unknown> };
+
 async function applyChangeToListing(
   db: Db,
   workspaceId: string,
@@ -45,6 +47,7 @@ async function applyChangeToListing(
   listing: ListingRow,
   storeRules: StoreRulesRow,
   pricing: PricingRow,
+  pushQueue: Map<string, PushIntent>,
 ): Promise<SourceChangeAppliedAction> {
   const published = listing.status === "published" && !!listing.remoteId;
   const patch: Partial<ListingRow> = {};
@@ -66,7 +69,10 @@ async function applyChangeToListing(
       );
       patch.variants = variants;
       if (published) {
-        await enqueue(db, PUSH_PRICE, { listingId: listing.id, manual: true }, { workspaceId });
+        pushQueue.set(`${listing.id}:${PUSH_PRICE}`, {
+          type: PUSH_PRICE,
+          payload: { listingId: listing.id, manual: true },
+        });
         action = "price_push_queued";
       } else {
         action = "price_recalculated";
@@ -82,7 +88,10 @@ async function applyChangeToListing(
       });
       patch.variants = variants;
       if (published) {
-        await enqueue(db, PUSH_STOCK, { listingId: listing.id, manual: true }, { workspaceId });
+        pushQueue.set(`${listing.id}:${PUSH_STOCK}`, {
+          type: PUSH_STOCK,
+          payload: { listingId: listing.id, manual: true },
+        });
         action = "stock_push_queued";
       } else {
         action = "stock_updated";
@@ -118,19 +127,20 @@ async function applyChangeToListing(
       if (oosAction === "zero") {
         patch.variants = listing.variants.map((v) => ({ ...v, stock: 0 }));
         if (published && storeRules?.trackStock) {
-          await enqueue(
-            db,
-            PUSH_STOCK,
-            { listingId: listing.id, force: true },
-            { workspaceId },
-          );
+          pushQueue.set(`${listing.id}:${PUSH_STOCK}`, {
+            type: PUSH_STOCK,
+            payload: { listingId: listing.id, force: true },
+          });
           action = "oos_zero_queued";
         } else {
           action = "oos_zero";
         }
       } else if (oosAction === "unpublish") {
         if (published) {
-          await enqueue(db, DELIST_LISTING, { listingId: listing.id }, { workspaceId });
+          pushQueue.set(`${listing.id}:${DELIST_LISTING}`, {
+            type: DELIST_LISTING,
+            payload: { listingId: listing.id },
+          });
           action = "oos_unpublish_queued";
         } else {
           action = "oos_unpublish_draft";
@@ -220,6 +230,8 @@ export function sourceChangeRoutes() {
       let applied = 0;
       let ignored = 0;
       const touchedItems = new Set<string>();
+      // 推送意图先收集后入队：批量应用同一刊登的多个变更时只推最终态
+      const pushQueue = new Map<string, PushIntent>();
       for (const change of rows) {
         if (action === "ignore") {
           await db
@@ -249,6 +261,7 @@ export function sourceChangeRoutes() {
               listing,
               storeRules,
               pricing,
+              pushQueue,
             ),
           );
         }
@@ -261,6 +274,9 @@ export function sourceChangeRoutes() {
           .where(eq(sourceChanges.id, change.id));
         touchedItems.add(change.sourceItemId);
         applied++;
+      }
+      for (const intent of pushQueue.values()) {
+        await enqueue(db, intent.type, intent.payload, { workspaceId });
       }
       for (const sid of touchedItems) {
         await audit(db, workspaceId, {

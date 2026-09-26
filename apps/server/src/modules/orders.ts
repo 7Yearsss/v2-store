@@ -1,3 +1,4 @@
+import { openFwAddress } from "./freightForwarders.js";
 import { zValidator } from "@hono/zod-validator";
 import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { Hono } from "hono";
@@ -262,7 +263,7 @@ export function orderRoutes() {
         .select()
         .from(freightForwarders)
         .where(eq(freightForwarders.id, po.forwarderId));
-      if (fw) address = fw.address;
+      if (fw) address = openFwAddress(deps, fw.addressEnc);
     }
     return c.json({
       orderId: order.id,

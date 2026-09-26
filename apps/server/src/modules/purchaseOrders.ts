@@ -1,3 +1,4 @@
+import { openFwAddress } from "./freightForwarders.js";
 import { zValidator } from "@hono/zod-validator";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { Hono } from "hono";
@@ -91,7 +92,7 @@ async function toPoDto(
   const toFwDto = (f: FwRow) => ({
     id: f.id,
     name: f.name,
-    address: f.address,
+    address: openFwAddress(deps, f.addressEnc),
     systemType: f.systemType,
     note: f.note,
     createdAt: f.createdAt.toISOString(),

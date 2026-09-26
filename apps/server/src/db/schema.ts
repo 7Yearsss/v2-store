@@ -760,7 +760,8 @@ export const freightForwarders = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    address: jsonb("address").$type<ShippingAddress>().notNull().default({}),
+    /** 收货地址密文（与订单 shippingAddressEnc 同一 SecretBox）。 */
+    addressEnc: text("address_enc"),
     /** 货代系统类型：huoxiaoyi（可直连）|manual 等。 */
     systemType: text("system_type"),
     note: text("note"),

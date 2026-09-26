@@ -837,6 +837,9 @@ export function listingRoutes() {
       let accepted = 0;
       let rejected = 0;
       const listingPatch: Partial<ListingRow> = {};
+      // workingListing 带累计补丁再喂下一条：options 类建议基于变体矩阵整体重写，
+      // 用原始 listing 会让后一条覆盖前一条的 optionValues
+      let workingListing = listing;
       for (const d of decisions) {
         const s = byId.get(d.id);
         if (!s) continue;
@@ -845,7 +848,7 @@ export function listingRoutes() {
           // 与链路 autoAccept 完全同一套。
           Object.assign(
             listingPatch,
-            await acceptSuggestion(tx, listing, s, {
+            await acceptSuggestion(tx, workingListing, s, {
               workspaceId,
               storePlatform: row.storePlatform,
               storeLanguage: row.storeLanguage,
@@ -854,6 +857,7 @@ export function listingRoutes() {
               choice: d.choice,
             }),
           );
+          workingListing = { ...workingListing, ...listingPatch };
           accepted++;
         } else rejected++;
         await tx

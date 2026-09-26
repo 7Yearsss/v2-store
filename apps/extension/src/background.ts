@@ -30,13 +30,16 @@ async function getAuth(): Promise<ExtAuth | null> {
   return (auth as ExtAuth | undefined) ?? null;
 }
 
-/** First dashboard origin the build trusts (site-bridge content-script match). */
-function defaultAppOrigin(): string | null {
+/** 构建期信任的 dashboard origin 集合（site-bridge content-script matches）。 */
+function trustedAppOrigins(): string[] {
   const cs = chrome.runtime
     .getManifest()
     .content_scripts?.find((c) => c.js?.includes("site-bridge.js"));
-  const pattern = cs?.matches?.[0];
-  return pattern ? pattern.replace(/\/\*$/, "") : null;
+  return (cs?.matches ?? []).map((m) => m.replace(/\/\*$/, ""));
+}
+
+function defaultAppOrigin(): string | null {
+  return trustedAppOrigins()[0] ?? null;
 }
 
 class NotAuthorizedError extends Error {
@@ -414,8 +417,13 @@ chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: strin
     case "SITE_SET_AUTH": {
       const origin = sender.origin ?? (sender.url ? new URL(sender.url).origin : "");
       const { apiBase, token } = msg as any;
-      // only accept credentials for the origin that is handing them over
-      if (!token || typeof token !== "string" || apiBase !== origin) {
+      // 凭据只能由工作台 origin 下发：采集站点的 content script 达不到这个检查
+      if (
+        !token ||
+        typeof token !== "string" ||
+        apiBase !== origin ||
+        !trustedAppOrigins().includes(origin)
+      ) {
         sendResponse({ ok: false, error: "授权来源不匹配" });
         return false;
       }

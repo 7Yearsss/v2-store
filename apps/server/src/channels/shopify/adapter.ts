@@ -1005,15 +1005,17 @@ export const shopifyAdapter: ChannelAdapter = {
 
   /** fulfillmentOrders → fulfillmentCreate：按 fulfillmentOrder 粒度组行（支持部分发货）。 */
   async pushFulfillment(deps, store, input) {
+    type FoLineNode = {
+      id: string;
+      remainingQuantity: number;
+      lineItem: { id: string } | null;
+    };
     type FoNode = {
       id: string;
       status: string;
       lineItems: {
-        nodes: Array<{
-          id: string;
-          remainingQuantity: number;
-          lineItem: { id: string } | null;
-        }>;
+        nodes: FoLineNode[];
+        pageInfo?: { hasNextPage: boolean; endCursor: string | null };
       };
     };
     // fulfillmentOrders 分页拉全：大订单多仓拆履约时一页 50 可能不够
@@ -1041,6 +1043,32 @@ export const shopifyAdapter: ChannelAdapter = {
     }
     // 超上限宁可失败可见，不静默部分履约
     if (foHasMore) throw new ChannelError("订单履约分组超过上限（500），请人工处理");
+    // 单个履约分组 >100 行时补拉剩余行项，同样设上限（500 行）
+    for (const fo of foNodes) {
+      let liAfter = fo.lineItems.pageInfo?.hasNextPage
+        ? fo.lineItems.pageInfo.endCursor
+        : null;
+      while (liAfter) {
+        if (fo.lineItems.nodes.length >= 500) {
+          throw new ChannelError("订单履约行项超过上限（500），请人工处理");
+        }
+        const more: {
+          fulfillmentOrder: {
+            lineItems: {
+              nodes: FoLineNode[];
+              pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            };
+          } | null;
+        } = await shopifyGraphql(deps, store, FULFILLMENT_ORDER_LINES, {
+          id: fo.id,
+          after: liAfter,
+        });
+        const li = more.fulfillmentOrder?.lineItems;
+        if (!li) break;
+        fo.lineItems.nodes.push(...li.nodes);
+        liAfter = li.pageInfo.hasNextPage ? li.pageInfo.endCursor : null;
+      }
+    }
     const order = { fulfillmentOrders: { nodes: foNodes } };
     const wanted = input.lineItems
       ? new Map(input.lineItems.map((l) => [l.remoteLineItemId, l.qty]))
@@ -1269,8 +1297,20 @@ const FULFILLMENT_ORDERS = /* GraphQL */ `
           status
           lineItems(first: 100) {
             nodes { id remainingQuantity lineItem { id } }
+            pageInfo { hasNextPage endCursor }
           }
         }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+const FULFILLMENT_ORDER_LINES = /* GraphQL */ `
+  query FulfillmentOrderLines($id: ID!, $after: String) {
+    fulfillmentOrder(id: $id) {
+      lineItems(first: 100, after: $after) {
+        nodes { id remainingQuantity lineItem { id } }
         pageInfo { hasNextPage endCursor }
       }
     }

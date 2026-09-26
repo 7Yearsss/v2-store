@@ -1160,7 +1160,7 @@ const pipelineAdvance: JobHandler = {
           try {
             Object.assign(
               patch,
-              await acceptSuggestion(tx, listing, s, {
+              await acceptSuggestion(tx, { ...listing, ...patch }, s, {
                 workspaceId: listing.workspaceId,
                 storePlatform: store.platform,
                 storeLanguage: store.language,

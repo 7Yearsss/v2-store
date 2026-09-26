@@ -132,23 +132,28 @@ export function SelectionPage() {
   const [status, setStatus] = useState<DiscoveryItemStatus | "">("new");
   const [minScore, setMinScore] = useState(0);
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
   const [editor, setEditor] = useState<{ open: boolean; plan?: SelectionPlan; draft: PlanDraft }>({
     open: false,
     draft: { ...EMPTY_DRAFT },
   });
 
   const plans = useQuery({ queryKey: ["selection-plans"], queryFn: api.selectionPlans });
+  const PAGE_SIZE = 40;
   const items = useQuery({
-    queryKey: ["discovery", "items", planId ?? "*", status, minScore],
+    queryKey: ["discovery", "items", planId ?? "*", status, minScore, page],
     queryFn: () =>
       api.discoveryItems({
         planId,
         status: status || undefined,
         minScore: minScore || undefined,
-        pageSize: 100,
+        page,
+        pageSize: PAGE_SIZE,
       }),
     refetchInterval: 30_000,
   });
+  // 换筛选回到第一页
+  const setFilter = (fn: () => void) => () => { fn(); setPage(1); setChecked(new Set()); };
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["selection-plans"] });
@@ -285,7 +290,7 @@ export function SelectionPage() {
             <button
               type="button"
               className={`sel-plan${planId === undefined ? " active" : ""}`}
-              onClick={() => setPlanId(undefined)}
+              onClick={setFilter(() => setPlanId(undefined))}
             >
               <span className="sel-plan-name">全部候选</span>
               <span className="sel-plan-meta" />
@@ -296,8 +301,8 @@ export function SelectionPage() {
                 className={`sel-plan${planId === p.id ? " active" : ""}${p.enabled ? "" : " off"}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => setPlanId(p.id)}
-                onKeyDown={(e) => e.key === "Enter" && setPlanId(p.id)}
+                onClick={setFilter(() => setPlanId(p.id))}
+                onKeyDown={(e) => e.key === "Enter" && setFilter(() => setPlanId(p.id))()}
               >
                 <span className="sel-plan-name" title={p.name}>
                   {p.name}
@@ -378,7 +383,7 @@ export function SelectionPage() {
                   key={t.label}
                   type="button"
                   className={status === t.v ? "active" : ""}
-                  onClick={() => setStatus(t.v)}
+                  onClick={setFilter(() => setStatus(t.v))}
                 >
                   {t.label}
                 </button>
@@ -390,7 +395,7 @@ export function SelectionPage() {
                   key={t.label}
                   type="button"
                   className={minScore === t.v ? "active" : ""}
-                  onClick={() => setMinScore(t.v)}
+                  onClick={setFilter(() => setMinScore(t.v))}
                 >
                   {t.label}
                 </button>
@@ -506,6 +511,29 @@ export function SelectionPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+          {(items.data?.total ?? 0) > PAGE_SIZE && (
+            <div className="pg-row" style={{ justifyContent: "center", gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page <= 1}
+                onClick={() => setPage((v) => v - 1)}
+              >
+                上一页
+              </button>
+              <span className="pg-sub">
+                {page} / {Math.max(1, Math.ceil((items.data?.total ?? 0) / PAGE_SIZE))}
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page * PAGE_SIZE >= (items.data?.total ?? 0)}
+                onClick={() => setPage((v) => v + 1)}
+              >
+                下一页
+              </button>
             </div>
           )}
         </section>
