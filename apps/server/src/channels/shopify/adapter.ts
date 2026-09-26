@@ -988,10 +988,11 @@ export const shopifyAdapter: ChannelAdapter = {
     const out: RemoteOrder[] = [];
     let after: string | null = opts.after ?? null;
     // 游标回退 1s：Shopify 的 updated_at:> 是严格大于，边界同刻订单不能丢
-    // 无游标首次同步只回溯 90 天——历史订单不是托管对象，别把整店买家数据都拉进来
+    // 无游标首次同步按 updated_at 回溯 90 天：与增量游标同轴——老单今天被更新也会进来，
+    // 但完全不动的历史单（不是托管对象）不会整批灌进来
     const query = opts.updatedAfter
       ? `updated_at:>${new Date(Date.parse(opts.updatedAfter) - 1000).toISOString()}`
-      : `created_at:>${new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()}`;
+      : `updated_at:>${new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()}`;
     let nextAfter: string | null = null;
     for (let page = 0; page < 20; page++) {
       const data: {

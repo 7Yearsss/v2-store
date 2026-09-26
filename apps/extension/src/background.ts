@@ -360,14 +360,16 @@ function from1688(sender: chrome.runtime.MessageSender): boolean {
 }
 
 chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: string]: any }, sender, sendResponse) => {
-  // 采购数据含货代收货地址：读全量/写任务只允许工作台；GET_PROCURE 额外放行 1688 详情页 content script
-  const PROCURE_WRITE = new Set(["PROCURE_1688", "GET_PROCURE_LIST", "PROCURE_PLACED"]);
-  if (PROCURE_WRITE.has(msg?.type) && !fromApp(sender)) {
+  // 采购数据含货代收货地址：读全量/写任务只允许工作台；
+  // GET_PROCURE / PROCURE_PLACED 额外放行 1688 详情页 content script（采购卡片在那渲染与回填单号）
+  const PROCURE_APP_ONLY = new Set(["PROCURE_1688", "GET_PROCURE_LIST"]);
+  const PROCURE_1688_OK = new Set(["GET_PROCURE", "PROCURE_PLACED"]);
+  if (PROCURE_APP_ONLY.has(msg?.type) && !fromApp(sender)) {
     sendResponse({ ok: false, error: "来源不允许" });
     return false;
   }
-  if (msg?.type === "GET_PROCURE" && !fromApp(sender) && !from1688(sender)) {
-    sendResponse({ items: [] });
+  if (PROCURE_1688_OK.has(msg?.type) && !fromApp(sender) && !from1688(sender)) {
+    sendResponse(msg?.type === "GET_PROCURE" ? { items: [] } : { ok: false, error: "来源不允许" });
     return false;
   }
   switch (msg?.type) {
