@@ -37,6 +37,14 @@ export function fakeShopify(
     remoteProducts?: Record<string, Record<string, unknown> | null>;
     /** sku per variant index for the StockData query (sku-matching in pushStock) */
     stockSkus?: string[];
+    /** order gid → raw Order node for OrderList/OrderOne/FulfillmentOrders queries */
+    orders?: Record<string, Record<string, unknown> | null>;
+    /** records webhookSubscriptionCreate calls (oauth connect 订单 webhook 注册) */
+    capturedWebhooks?: Array<{ topic: string; callbackUrl: string }>;
+    /** records fulfillmentCreate input for assertions */
+    capturedFulfillment?: Array<Record<string, unknown>>;
+    /** fulfillmentCreate userErrors to return */
+    fulfillmentErrors?: Array<{ field?: string[]; message: string }>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -332,6 +340,75 @@ export function fakeShopify(
       if (query.includes("AttrMetafields")) {
         opts.capturedMetafields?.push(...variables.metafields);
         return json({ data: { metafieldsSet: { metafields: [], userErrors: [] } } });
+      }
+      if (query.includes("WebhookSubCreate")) {
+        opts.capturedWebhooks?.push({
+          topic: String(variables.topic),
+          callbackUrl: String(variables.subscription?.callbackUrl ?? ""),
+        });
+        return json({
+          data: {
+            webhookSubscriptionCreate: {
+              webhookSubscription: { id: `gid://shopify/WebhookSubscription/w${opts.capturedWebhooks?.length ?? 0}` },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes("FulfillmentOrders")) {
+        const order = opts.orders?.[String(variables.id)] as
+          | { lineItems?: { nodes?: Array<{ id: string; quantity?: number }> } }
+          | null
+          | undefined;
+        return json({
+          data: {
+            order: order
+              ? {
+                  fulfillmentOrders: {
+                    nodes: [
+                      {
+                        id: `gid://shopify/FulfillmentOrder/fo_${String(variables.id).split("/").pop()}`,
+                        status: "OPEN",
+                        lineItems: {
+                          nodes: (order.lineItems?.nodes ?? []).map((li, i) => ({
+                            id: `gid://shopify/FulfillmentOrderLineItem/foli${i}`,
+                            remainingQuantity: li.quantity ?? 1,
+                            lineItem: { id: li.id },
+                          })),
+                        },
+                      },
+                    ],
+                  },
+                }
+              : null,
+          },
+        });
+      }
+      if (query.includes("FulfillmentCreate")) {
+        opts.capturedFulfillment?.push(variables.fulfillment as Record<string, unknown>);
+        return json({
+          data: {
+            fulfillmentCreate: {
+              fulfillment: opts.fulfillmentErrors?.length
+                ? null
+                : { id: "gid://shopify/Fulfillment/f1", status: "SUCCESS" },
+              userErrors: opts.fulfillmentErrors ?? [],
+            },
+          },
+        });
+      }
+      if (query.includes("OrderOne")) {
+        return json({ data: { order: opts.orders?.[String(variables.id)] ?? null } });
+      }
+      if (query.includes("OrderList")) {
+        return json({
+          data: {
+            orders: {
+              nodes: Object.values(opts.orders ?? {}).filter(Boolean),
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
       }
       if (query.includes("productSet")) {
         filesCount = variables.input?.files?.length ?? 0;

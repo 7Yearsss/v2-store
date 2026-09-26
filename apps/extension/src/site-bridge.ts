@@ -12,6 +12,8 @@ const HANDLERS: Record<string, string> = {
   PING: "SITE_PING",
   SET_AUTH: "SITE_SET_AUTH",
   COLLECT_1688: "COLLECT_BY_OFFER_ID",
+  // 订单页「去采购」→ 背景存采购任务并打开货源详情页
+  PROCURE_1688: "PROCURE_1688",
 };
 
 window.addEventListener("message", (ev) => {

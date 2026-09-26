@@ -85,6 +85,13 @@
       "when": 1790391915379,
       "tag": "0011_friendly_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790441220374,
+      "tag": "0012_tearful_wraith",
+      "breakpoints": true
     }
   ]
 }

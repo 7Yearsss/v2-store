@@ -8,13 +8,17 @@ import type { Db } from "../db/client.js";
 import {
   jobs,
   listings,
+  orderItems,
+  orders,
   publishAttempts,
   publishRuns,
+  shipments,
   sourceItems,
   stores,
 } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { resolveCategoryMapping } from "../lib/category.js";
+import { refreshOrderStatus, upsertRemoteOrder } from "../lib/orders.js";
 import {
   computeDrift,
   filterDriftByPolicy,
@@ -43,6 +47,12 @@ export const DELIST_LISTING = "listing.delist";
 export const AI_IMAGE = "listing.aiImage";
 /** 只更新远端库存（货源库存变化的轻量同步，不触碰远端标题/描述/价格）。 */
 export const PUSH_STOCK = "listing.pushStock";
+/** 订单增量/单条同步（webhook 只入队，worker 内拉最新单）。 */
+export const ORDER_SYNC = "order.sync";
+/** 订单行项 → 刊登/货源映射（remoteVariantId → sku → 人工 bind）。 */
+export const ORDER_MAP = "order.map";
+/** 履约回传（fulfillmentOrders → fulfillmentCreate 写 trackingInfo）。 */
+export const FULFILL_PUSH = "fulfill.push";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -153,6 +163,68 @@ export async function enqueueCategorySync(db: Db, storeId: string, workspaceId: 
   if (!pending) {
     await enqueue(db, SYNC_CATEGORIES, { storeId }, { workspaceId, maxAttempts: 2 });
   }
+}
+
+/**
+ * Queue an order sync for a store unless an identical one is waiting/running.
+ * remoteId 给了就只拉那一单（webhook 路径），否则按 stores.ordersCursor 增量拉。
+ * webhook 风暴下同参数去重，避免队列堆积。
+ */
+export async function enqueueOrderSync(
+  db: Db,
+  storeId: string,
+  workspaceId: string,
+  remoteId?: string,
+) {
+  const dup = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, ORDER_SYNC),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`${jobs.payload}->>'storeId' = ${storeId}`,
+        remoteId
+          ? sql`${jobs.payload}->>'remoteId' = ${remoteId}`
+          : sql`${jobs.payload}->>'remoteId' is null`,
+      ),
+    )
+    .limit(1);
+  if (dup.length) return;
+  await enqueue(
+    db,
+    ORDER_SYNC,
+    remoteId ? { storeId, remoteId } : { storeId },
+    { workspaceId },
+  );
+}
+
+/** Queue an order.map pass for one order (or all open orders of a store). */
+export async function enqueueOrderMap(
+  db: Db,
+  payload: { orderId?: string; storeId?: string },
+  workspaceId: string,
+) {
+  const [dup] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, ORDER_MAP),
+        inArray(jobs.status, ["queued", "running"]),
+        payload.orderId
+          ? sql`${jobs.payload}->>'orderId' = ${payload.orderId}`
+          : sql`${jobs.payload}->>'storeId' = ${payload.storeId ?? ""}`,
+      ),
+    )
+    .limit(1);
+  if (dup) return;
+  await enqueue(db, ORDER_MAP, payload, { workspaceId, maxAttempts: 2 });
+}
+
+/** Queue a fulfillment push for one shipment row. */
+export async function enqueueFulfillPush(db: Db, shipmentId: string, workspaceId: string) {
+  await enqueue(db, FULFILL_PUSH, { shipmentId }, { workspaceId, maxAttempts: 3 });
 }
 
 /** 按每刊登最新 attempt 聚合 run 状态（重试留档的旧 attempt 不参与）。 */
@@ -520,10 +592,14 @@ const publishListing: JobHandler = {
         ),
         remoteDrift: [],
         ...(result.remoteStatus ? { remoteStatus: result.remoteStatus, syncedAt: now } : {}),
+        // 本地 sku ↔ 远端 variantId：订单映射的主键级键，发布成功后回填
+        ...(result.remoteVariantMap ? { remoteVariantMap: result.remoteVariantMap } : {}),
         lastError: result.warnings?.length ? result.warnings.join("；") : null,
         publishedAt: now,
       })
       .where(eq(listings.id, listingId));
+    // 新变体映射就位后，该店未匹配的订单行可以再过一遍映射
+    await enqueueOrderMap(deps.db, { storeId: listing.storeId }, listing.workspaceId);
     if (attemptId) {
       await finishAttempt(deps.db, attemptId, {
         status: "succeeded",
@@ -769,7 +845,220 @@ const aiImage: JobHandler = {
   },
 };
 
+// --- 订单域 -------------------------------------------------------------------
+
+/**
+ * order.sync：webhook/手动同步都只入队，这里才真正拉远端。
+ * remoteId 路径（webhook）：拉单条；否则按 ordersCursor 增量拉并推进游标。
+ * upsert 靠「remote.updatedAt <= raw.updatedAt → 跳过」挡乱序重放。
+ */
+const orderSync: JobHandler = {
+  async run(deps, job) {
+    const storeId = String(job.payload.storeId);
+    const remoteId =
+      typeof job.payload.remoteId === "string" ? job.payload.remoteId : undefined;
+    const [store] = await deps.db.select().from(stores).where(eq(stores.id, storeId));
+    if (!store || store.status === "disconnected") return;
+    const adapter = adapterFor(store.platform);
+    if (!adapter.fetchOrders) return;
+
+    const remoteList = await adapter.fetchOrders(
+      deps,
+      store,
+      remoteId ? { remoteId } : { updatedAfter: store.ordersCursor },
+    );
+    let maxUpdated = store.ordersCursor ? Date.parse(store.ordersCursor) : 0;
+    for (const ro of remoteList) {
+      const { orderId, skipped } = await upsertRemoteOrder(deps, store, ro);
+      if (!skipped) {
+        await enqueueOrderMap(deps.db, { orderId }, store.workspaceId);
+      }
+      const u = ro.updatedAt ? Date.parse(ro.updatedAt) : 0;
+      if (u > maxUpdated) maxUpdated = u;
+    }
+    if (!remoteId && maxUpdated) {
+      const cursor = new Date(maxUpdated).toISOString();
+      if (cursor !== store.ordersCursor) {
+        await deps.db
+          .update(stores)
+          .set({ ordersCursor: cursor })
+          .where(eq(stores.id, storeId));
+      }
+    }
+  },
+};
+
+/**
+ * order.map：行项三级匹配——remoteVariantMap（发布回填的稳定键）→ listing 变体
+ * sku → unmatched。人工绑定（listingId 已设）的行不覆盖，只补齐 mapping 状态。
+ * 解析到刊登但没拿到 sourceSkuId 的记 partial（=能看到货源、缺规格，要人工补）。
+ */
+const orderMap: JobHandler = {
+  async run(deps, job) {
+    const orderId =
+      typeof job.payload.orderId === "string" ? job.payload.orderId : undefined;
+    const storeId =
+      typeof job.payload.storeId === "string" ? job.payload.storeId : undefined;
+    const orderRows = orderId
+      ? await deps.db.select().from(orders).where(eq(orders.id, orderId))
+      : await deps.db
+          .select()
+          .from(orders)
+          .where(
+            and(
+              eq(orders.storeId, storeId ?? ""),
+              ne(orders.status, "cancelled"),
+              ne(orders.status, "done"),
+            ),
+          );
+    for (const order of orderRows) {
+      const items = await deps.db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, order.id));
+      const storeListings = await deps.db
+        .select()
+        .from(listings)
+        .where(eq(listings.storeId, order.storeId));
+      const byVariant = new Map<string, (typeof storeListings)[number]>();
+      const bySku = new Map<string, (typeof storeListings)[number]>();
+      for (const l of storeListings) {
+        for (const ref of Object.values(l.remoteVariantMap ?? {})) {
+          if (ref?.variantId) byVariant.set(ref.variantId, l);
+        }
+        for (const v of l.variants) if (v.sku && !bySku.has(v.sku)) bySku.set(v.sku, l);
+      }
+      for (const it of items) {
+        // 已有绑定（人工/自动）优先保留：sourceItemId 还在就只刷新辅助字段
+        let listing: (typeof storeListings)[number] | undefined;
+        let sourceItemId: string | null = null;
+        let sourceSkuId: string | null = null;
+        if (it.sourceItemId) {
+          sourceItemId = it.sourceItemId;
+          sourceSkuId = it.sourceSkuId;
+          listing =
+            storeListings.find((l) => l.id === it.listingId) ??
+            storeListings.find((l) => l.sourceItemId === it.sourceItemId);
+        } else {
+          listing =
+            (it.remoteVariantId ? byVariant.get(it.remoteVariantId) : undefined) ??
+            (it.sku ? bySku.get(it.sku) : undefined);
+          if (listing) {
+            sourceItemId = listing.sourceItemId;
+            const vmap = listing.remoteVariantMap;
+            const lv = listing.variants.find(
+              (v) =>
+                (it.remoteVariantId &&
+                  vmap?.[v.sku ?? ""]?.variantId === it.remoteVariantId) ||
+                (it.sku && v.sku === it.sku),
+            );
+            sourceSkuId = lv?.sourceSkuId ?? null;
+          }
+        }
+        if (sourceItemId) {
+          // 绑定的货源还在不在采集箱决定 mapping 有没有意义
+          const [src] = await deps.db
+            .select({ id: sourceItems.id })
+            .from(sourceItems)
+            .where(eq(sourceItems.id, sourceItemId))
+            .limit(1);
+          if (!src) {
+            sourceItemId = null;
+            sourceSkuId = null;
+            listing = undefined;
+          }
+        }
+        const patch: {
+          listingId: string | null;
+          sourceItemId: string | null;
+          sourceSkuId: string | null;
+          mapping: "matched" | "partial" | "unmatched";
+        } = sourceItemId
+          ? {
+              listingId: listing?.id ?? it.listingId,
+              sourceItemId,
+              sourceSkuId,
+              mapping: sourceSkuId ? "matched" : "partial",
+            }
+          : {
+              listingId: null,
+              sourceItemId: null,
+              sourceSkuId: null,
+              mapping: "unmatched",
+            };
+        if (
+          patch.listingId !== it.listingId ||
+          patch.sourceItemId !== it.sourceItemId ||
+          patch.sourceSkuId !== it.sourceSkuId ||
+          patch.mapping !== it.mapping
+        ) {
+          await deps.db.update(orderItems).set(patch).where(eq(orderItems.id, it.id));
+        }
+      }
+      await refreshOrderStatus(deps, order.id);
+    }
+  },
+};
+
+/** fulfill.push：一条 shipment → 一次 fulfillmentCreate；失败走 onFailed 标 failed。 */
+const fulfillPush: JobHandler = {
+  async run(deps, job) {
+    const shipmentId = String(job.payload.shipmentId);
+    const [row] = await deps.db
+      .select({ shipment: shipments, order: orders, store: stores })
+      .from(shipments)
+      .innerJoin(orders, eq(orders.id, shipments.orderId))
+      .innerJoin(stores, eq(stores.id, orders.storeId))
+      .where(eq(shipments.id, shipmentId));
+    if (!row) throw new PermanentJobError("运单已删除");
+    if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
+    const adapter = adapterFor(row.store.platform);
+    if (!adapter.pushFulfillment) throw new PermanentJobError("该平台不支持履约回传");
+    const res = await adapter.pushFulfillment(deps, row.store, {
+      remoteOrderId: row.order.remoteId,
+      tracking: {
+        number: row.shipment.trackingNo ?? "",
+        company: row.shipment.carrier ?? undefined,
+        url: row.shipment.trackingUrl ?? undefined,
+      },
+      notifyCustomer: true,
+    });
+    await deps.db
+      .update(shipments)
+      .set({ status: "pushed", remoteFulfillmentId: res.remoteFulfillmentId, lastError: null })
+      .where(eq(shipments.id, shipmentId));
+    await audit(deps.db, row.order.workspaceId, {
+      actor: "system",
+      action: "order.fulfill_pushed",
+      entityType: "order",
+      entityId: row.order.id,
+      payload: { shipmentId, remoteFulfillmentId: res.remoteFulfillmentId },
+    });
+    await refreshOrderStatus(deps, row.order.id);
+  },
+  async onFailed(deps, job, error) {
+    const shipmentId = String(job.payload.shipmentId);
+    const [s] = await deps.db
+      .update(shipments)
+      .set({ status: "failed", lastError: error })
+      .where(eq(shipments.id, shipmentId))
+      .returning();
+    if (!s) return;
+    await audit(deps.db, s.workspaceId, {
+      actor: "system",
+      action: "order.fulfill_failed",
+      entityType: "order",
+      entityId: s.orderId,
+      payload: { shipmentId, error },
+    });
+    await refreshOrderStatus(deps, s.orderId);
+  },
+};
+
 export const jobHandlers: Record<string, JobHandler> = {
+  [ORDER_SYNC]: orderSync,
+  [ORDER_MAP]: orderMap,
+  [FULFILL_PUSH]: fulfillPush,
   [PUBLISH_LISTING]: publishListing,
   [PUSH_STOCK]: pushStockJob,
   [FETCH_MISSING_MEDIA]: fetchMissingMedia,

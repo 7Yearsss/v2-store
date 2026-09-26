@@ -1,4 +1,4 @@
-import type { CollectHarvest } from "@caiji/shared";
+import type { CollectHarvest, ShippingAddress } from "@caiji/shared";
 
 /** 待确认队列条目：点采集先 stage 到这里，用户在面板勾选提交后才真正入库。 */
 export interface PendingItem {
@@ -8,6 +8,21 @@ export interface PendingItem {
   price?: string;
   /** 详情页采集时已解析的完整数据——提交时直接入箱，不用重拉页面 */
   harvest?: CollectHarvest;
+}
+
+/** 一条待采购货源行：web 侧「去采购」下发，按 (orderId, offerId) 去重存 background。 */
+export interface ProcureOfferTask {
+  orderId: string;
+  orderName?: string | null;
+  offerId: string;
+  /** 服务端 source_items.id —— 回传时服务端用来定位行项 */
+  sourceItemId?: string;
+  title: string;
+  image?: string | null;
+  specText?: string | null;
+  qty: number;
+  unitPriceCny?: number | null;
+  address?: ShippingAddress | null;
 }
 
 /** Content-script → background RPC. The background owns auth + the API base. */
@@ -21,7 +36,16 @@ export type BgMessage =
   | { type: "CLEAR_PENDING" }
   | { type: "SUBMIT_PENDING"; offerIds: string[] }
   | { type: "FETCH_DESC_IMAGES"; url: string }
+  | { type: "PROCURE_1688"; orderId: string; orderName?: string | null; offers: ProcureOfferTask[]; address?: ShippingAddress | null }
+  | { type: "GET_PROCURE"; offerId: string }
+  | { type: "GET_PROCURE_LIST" }
+  | { type: "PROCURE_PLACED"; orderId: string; offerId?: string; sourceOrderId: string }
   | { type: "GET_STATUS" };
+
+/** background → content script 广播：待采购任务变化。 */
+export interface ProcureChanged {
+  type: "V2_PROCURE_CHANGED";
+}
 
 /** background → content script 广播：待确认队列变化（stage/unstage/submit 后）。 */
 export interface PendingChanged {
