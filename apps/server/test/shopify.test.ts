@@ -117,7 +117,8 @@ describe("claim → publish", () => {
     expect(again.body).toEqual({ created: 0, skipped: 1 });
 
     const pub = await ctx.api("POST", "/api/listings/publish", { ids: [listing.id] }, t);
-    expect(pub.body).toEqual({ queued: 1, skipped: 0, blocked: [] });
+    expect(pub.body).toMatchObject({ queued: 1, skipped: 0, blocked: [] });
+    expect(typeof pub.body.runId).toBe("string");
     // editing while publishing is refused
     const locked = await ctx.api("PATCH", `/api/listings/${listing.id}`, { title: "x" }, t);
     expect(locked.status).toBe(409);

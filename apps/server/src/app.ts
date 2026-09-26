@@ -13,6 +13,7 @@ import { jobRoutes } from "./modules/jobs.js";
 import { listingRoutes } from "./modules/listings.js";
 import { mediaRoutes } from "./modules/media.js";
 import { overviewRoutes } from "./modules/overview.js";
+import { publishRoutes } from "./modules/publish.js";
 import { sourceItemRoutes } from "./modules/sourceItems.js";
 import { storeRoutes } from "./modules/stores.js";
 import { templateRoutes } from "./modules/templates.js";
@@ -34,6 +35,7 @@ export function createApp(deps: Deps, opts: { log?: boolean } = {}) {
   app.route("/api/listings", listingRoutes());
   app.route("/api/overview", overviewRoutes());
   app.route("/api/jobs", jobRoutes());
+  app.route("/api/publish", publishRoutes());
   app.route("/api/category-mappings", categoryMappingRoutes());
   app.route("/api/term-mappings", termMappingRoutes());
   app.route("/api/templates", templateRoutes());

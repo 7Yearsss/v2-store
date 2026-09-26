@@ -8,7 +8,7 @@ import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
 import { listings, sourceItems } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
-import { FETCH_MISSING_MEDIA, PUBLISH_LISTING } from "../jobs/handlers.js";
+import { FETCH_MISSING_MEDIA, PUSH_STOCK } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { toSourceItemDto } from "./sourceItems.js";
@@ -111,7 +111,9 @@ export async function ingestOffer(
 }
 
 /** 重复采集 = 货源刷新：把最新 SKU 库存/成本同步到该条目的所有刊登，
- *  已发布的自动排队重发让远端跟上。价格不覆盖（商家可能改过售价）。 */
+ *  已发布的排队「只推库存」（listing.pushStock → adapter.pushStock），
+ *  不再全量重发覆盖远端标题；adapter 不支持时 job 内退回全量并审计标注。
+ *  价格不覆盖（商家可能改过售价）。 */
 async function propagateToListings(
   db: Db,
   workspaceId: string,
@@ -141,15 +143,11 @@ async function propagateToListings(
     const republish = l.status === "published" && !!l.remoteId;
     await db
       .update(listings)
-      .set({
-        variants,
-        updatedAt: new Date(),
-        ...(republish ? { status: "publishing" as const, lastError: null } : {}),
-      })
+      .set({ variants, updatedAt: new Date() })
       .where(eq(listings.id, l.id));
     if (republish) {
       republished++;
-      await enqueue(db, PUBLISH_LISTING, { listingId: l.id }, { workspaceId });
+      await enqueue(db, PUSH_STOCK, { listingId: l.id }, { workspaceId });
     }
   }
   return { updated, republished };
