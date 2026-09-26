@@ -19,6 +19,11 @@ const CSS = `
   color: #1f2937; background: #fff; border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0,0,0,.18); overflow: hidden; }
 .root.min { width: auto; border-radius: 22px; }
+.root.min .head { padding: 9px 12px; }
+.root.min .dot { display: none; }
+.count { display: none; background: #fff; color: #f97316; font-size: 11px; font-weight: 700;
+  border-radius: 10px; padding: 0 7px; line-height: 18px; }
+.count.show { display: inline-block; }
 .head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
   background: #f97316; color: #fff; cursor: default; user-select: none; }
 .logo { font-weight: 700; letter-spacing: .3px; }
@@ -101,12 +106,14 @@ export async function mountPanel(): Promise<Panel> {
   const dot = el("span", { class: "dot" });
   const root = el("div", { class: "root" });
   const toggle = el("button", { class: "icon", title: "最小化" }, "–");
+  const countBadge = el("span", { class: "count" });
   const head = el(
     "div",
     { class: "head" },
     dot,
     el("span", { class: "logo" }, "V2Store"),
     el("span", { class: "title-extra" }, " 采集"),
+    countBadge,
     el("span", { class: "spacer" }),
     toggle,
   );
@@ -126,12 +133,17 @@ export async function mountPanel(): Promise<Panel> {
     root.classList.toggle("min", min);
     toggle.textContent = min ? "+" : "–";
     toggle.title = min ? "展开" : "最小化";
+    head.style.cursor = min ? "pointer" : "default";
     try {
       localStorage.setItem(MIN_KEY, min ? "1" : "");
     } catch {
       /* storage blocked */
     }
   };
+  // 收起状态下点图标区（除按钮本身）即展开
+  head.addEventListener("click", (e) => {
+    if (root.classList.contains("min") && e.target !== toggle) setMin(false);
+  });
 
   // 待确认队列：后台广播 V2_PENDING_CHANGED 时重拉并渲染
   const renderPending = async () => {
@@ -145,8 +157,12 @@ export async function mountPanel(): Promise<Panel> {
     if (!items.length) {
       pendList.style.display = "none";
       pendList.replaceChildren();
+      countBadge.classList.remove("show");
       return;
     }
+    countBadge.textContent = String(items.length);
+    countBadge.title = `${items.length} 条待确认`;
+    countBadge.classList.add("show");
     pendList.style.display = "";
     const submitBtn = el("button", { class: "btn primary", type: "button" });
     const boxes: Array<{ id: string; box: HTMLInputElement }> = [];
