@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { CollectedOffer, CollectHarvest } from "@caiji/shared";
@@ -8,6 +8,7 @@ import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
 import { listings, sourceItems, stores } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
+import { backfillDiscovery } from "../lib/selection.js";
 import { FETCH_MISSING_MEDIA, PUSH_STOCK } from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
@@ -61,6 +62,7 @@ export async function ingestOffer(
   workspaceId: string,
   userId: string,
   offer: CollectedOffer,
+  via?: "manual" | "plan" | "inquiry",
 ) {
   const sourceUrl = canonicalSourceUrl(offer);
   const values = {
@@ -78,6 +80,8 @@ export async function ingestOffer(
     sourceCategoryId: offer.categoryId ?? null,
     sourceCategoryName: offer.categoryPath?.[0] ?? null,
     collectedBy: userId,
+    /** 重复采集时 undefined 会被 drizzle set 跳过，保留首次入口归因。 */
+    collectedVia: via,
     collectedAt: new Date(offer.collectedAt || Date.now()),
   };
   const [existing] = await db
@@ -174,6 +178,7 @@ const harvestSchema = z.object({
   afterUrl: z.string().optional(),
   productExtInfo: z.record(z.string(), z.unknown()).optional(),
   collectedAt: z.string().default(() => new Date().toISOString()),
+  collectedVia: z.enum(["manual", "plan", "inquiry"]).optional(),
 });
 
 const checkSchema = z.object({
@@ -193,7 +198,23 @@ export function collectRoutes() {
     if (!offer) {
       throw new HttpError(422, "页面未解析出商品数据", "rowDataInvalid");
     }
-    const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer);
+    const via = c.req.valid("json").collectedVia;
+    const { item, duplicated } = await ingestOffer(db, workspaceId, userId, offer, via);
+    // 选品回填：候选池里同 offerId 的 new 条目 → collected + 指向入箱行；
+    // harvest 没带 via 但池里命中，说明这条就是候选 → 归因 plan。
+    const discoveryBackfilled = await backfillDiscovery(
+      db,
+      workspaceId,
+      offer.offerId,
+      item.id,
+    );
+    if (!via && discoveryBackfilled > 0) {
+      await db
+        .update(sourceItems)
+        .set({ collectedVia: "plan" })
+        .where(and(eq(sourceItems.id, item.id), isNull(sourceItems.collectedVia)));
+      item.collectedVia = item.collectedVia ?? "plan";
+    }
     const propagation = duplicated
       ? await propagateToListings(db, workspaceId, item.id, offer.skus)
       : { updated: 0, republished: 0 };
@@ -207,7 +228,7 @@ export function collectRoutes() {
       );
     }
     return c.json(
-      { ok: true, item: toSourceItemDto(item, []), duplicated, ...propagation },
+      { ok: true, item: toSourceItemDto(item, []), duplicated, discoveryBackfilled, ...propagation },
       duplicated ? 200 : 201,
     );
   });

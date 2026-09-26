@@ -57,3 +57,10 @@ export function collectOfferById(offerId: string) {
     30000,
   );
 }
+
+/** 选品页批量挂入插件待确认队列（via=plan，入库时服务端归因 + 回填候选池）。 */
+export function stageCollectMany(
+  items: Array<{ offerId: string; title: string; image?: string; price?: string; via?: string }>,
+) {
+  return extensionCall<{ count: number }>("STAGE_COLLECT_MANY", { items }, 15000);
+}

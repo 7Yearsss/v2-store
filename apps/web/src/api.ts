@@ -4,6 +4,8 @@ import type {
   ChannelAttribute,
   CategoryCandidate,
   CategoryMapping,
+  DiscoveryItem,
+  DiscoveryItemStatus,
   Job,
   JobStatus,
   Listing,
@@ -16,6 +18,10 @@ import type {
   PublishAttempt,
   PublishRun,
   RemoteStatus,
+  SelectionPlan,
+  SelectionPlanFilters,
+  SelectionPlanSchedule,
+  SelectionPlanSource,
   SourceItem,
   Store,
   StoreRules,
@@ -238,4 +244,43 @@ export const api = {
   }) => request<AttributeMapping>("PUT", "/attribute-mappings", body),
   deleteAttributeMapping: (id: string) =>
     request<{ ok: boolean }>("DELETE", `/attribute-mappings/${id}`),
+
+  // --- 选品 -------------------------------------------------------------
+  selectionPlans: () => request<{ items: SelectionPlan[] }>("GET", "/selection-plans"),
+  createSelectionPlan: (body: {
+    name: string;
+    source?: SelectionPlanSource;
+    filters?: SelectionPlanFilters;
+    schedule?: SelectionPlanSchedule;
+    enabled?: boolean;
+  }) => request<SelectionPlan>("POST", "/selection-plans", body),
+  updateSelectionPlan: (
+    id: string,
+    body: Partial<{
+      name: string;
+      source: SelectionPlanSource;
+      filters: SelectionPlanFilters;
+      schedule: SelectionPlanSchedule;
+      enabled: boolean;
+    }>,
+  ) => request<SelectionPlan>("PATCH", `/selection-plans/${id}`, body),
+  deleteSelectionPlan: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/selection-plans/${id}`),
+  runSelectionPlan: (id: string) =>
+    request<SelectionPlan>("POST", `/selection-plans/${id}/run`, {}),
+  discoveryItems: (p: {
+    planId?: string;
+    status?: DiscoveryItemStatus;
+    minScore?: number;
+    page?: number;
+    pageSize?: number;
+  }) => request<Page<DiscoveryItem>>("GET", `/discovery/items${qs({ ...p })}`),
+  discoveryCollect: (ids: string[]) =>
+    request<{ items: Array<{ id: string; offerId: string; title: string; image: string | null; price: string | null }> }>(
+      "POST",
+      "/discovery/collect",
+      { ids },
+    ),
+  discoveryDismiss: (ids: string[]) =>
+    request<{ dismissed: number }>("POST", "/discovery/dismiss", { ids }),
 };

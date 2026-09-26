@@ -63,6 +63,8 @@ export interface CollectHarvest {
   afterUrl?: string;
   productExtInfo?: Record<string, unknown>;
   collectedAt: string;
+  /** 采集入口来源：手动按钮 / 选品计划 / 询盘等；缺省视为 manual。 */
+  collectedVia?: "manual" | "plan" | "inquiry";
 }
 
 // --- API DTOs (server ↔ web ↔ extension) ------------------------------------
@@ -96,6 +98,8 @@ export interface SourceItem {
   sourceCategoryName: string | null;
   collectedAt: string;
   updatedAt: string;
+  /** 采集入口：manual | plan | inquiry；旧数据为 null。 */
+  collectedVia: "manual" | "plan" | "inquiry" | null;
   /** store ids this item has been claimed to. */
   claimedStoreIds: string[];
 }
@@ -524,6 +528,135 @@ export interface PublishAttempt {
   createdAt: string;
   updatedAt: string;
 }
+
+// --- 选品（计划 → 候选池 → 采集回箱） -----------------------------------------
+
+export type SelectionPlanSource = "keyword" | "1688_rank";
+export type SelectionPlanSchedule = "manual" | "daily";
+
+/** 计划筛选器：硬门槛在打分阶段判 0 分，关键词只用于生成抓取 URL。 */
+export interface SelectionPlanFilters {
+  keywords?: string[];
+  /** 1688 类目名（仅展示用途，抓取仍走关键词）。 */
+  category?: string;
+  priceMinCny?: number;
+  priceMaxCny?: number;
+  requireDaiFa?: boolean;
+  require48h?: boolean;
+  /** 回头率下限 0-1。 */
+  minRepurchase?: number;
+}
+
+/** 卡片/榜单能取到的确定性信号；取不到的留空，不伪造。 */
+export interface DiscoverySignals {
+  /** 一件代发。 */
+  daiFa?: boolean;
+  /** 48h（或更短）发货承诺。 */
+  ship48h?: boolean;
+  /** 回头率 0-1。 */
+  repurchaseRate?: number;
+  /** 店铺经营年限。 */
+  sellerYears?: number;
+  /** 卡片在抓取页内的名次（1-based）。 */
+  rank?: number;
+  /** 榜单名次（榜单来源时）。 */
+  sourceRank?: number;
+  /** 同款/相似货源数量（找同款入口用）。 */
+  sameStyleCount?: number;
+}
+
+export type DiscoveryItemStatus = "new" | "collected" | "dismissed" | "expired";
+
+export interface SelectionPlan {
+  id: string;
+  name: string;
+  source: SelectionPlanSource;
+  filters: SelectionPlanFilters;
+  schedule: SelectionPlanSchedule;
+  enabled: boolean;
+  lastRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** 候选统计（列表接口附带）。 */
+  itemCount?: number;
+  newCount?: number;
+  /** tasks 接口返回：本轮是否到期需要插件抓。 */
+  due?: boolean;
+  urls?: string[];
+}
+
+export interface DiscoveryItem {
+  id: string;
+  planId: string | null;
+  planName?: string | null;
+  sourcePlatform: SourcePlatform;
+  sourceItemId: string;
+  title: string | null;
+  priceText: string | null;
+  thumb: string | null;
+  signals: DiscoverySignals;
+  score: number | null;
+  aiNote: string | null;
+  status: DiscoveryItemStatus;
+  sourceItemDbId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 插件回流的候选条目（detail/列表页卡片提的轻量字段）。 */
+export interface DiscoveryFeedItem {
+  sourceItemId: string;
+  title?: string;
+  priceText?: string;
+  thumb?: string;
+  signals?: DiscoverySignals;
+}
+
+/** 新 workspace 预置的计划：低风险类目 + 代发门槛，让选品页冷门期不空。 */
+export const SELECTION_PRESET_PLANS: Array<{
+  name: string;
+  source: SelectionPlanSource;
+  filters: SelectionPlanFilters;
+  schedule: SelectionPlanSchedule;
+}> = [
+  {
+    name: "家居收纳·一件代发",
+    source: "keyword",
+    filters: {
+      keywords: ["收纳箱", "收纳架", "厨房收纳"],
+      category: "家居收纳",
+      priceMinCny: 2,
+      priceMaxCny: 60,
+      requireDaiFa: true,
+    },
+    schedule: "daily",
+  },
+  {
+    name: "宠物用品·轻小件",
+    source: "keyword",
+    filters: {
+      keywords: ["宠物玩具", "宠物用品"],
+      category: "宠物用品",
+      priceMinCny: 2,
+      priceMaxCny: 60,
+      requireDaiFa: true,
+    },
+    schedule: "daily",
+  },
+  {
+    name: "3C配件·手机周边",
+    source: "keyword",
+    filters: {
+      keywords: ["手机壳", "数据线", "手机支架"],
+      category: "3C配件",
+      priceMinCny: 1,
+      priceMaxCny: 40,
+      requireDaiFa: true,
+      require48h: true,
+    },
+    schedule: "daily",
+  },
+];
 
 export interface AuditLog {
   id: string;

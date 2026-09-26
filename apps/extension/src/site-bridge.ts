@@ -12,6 +12,7 @@ const HANDLERS: Record<string, string> = {
   PING: "SITE_PING",
   SET_AUTH: "SITE_SET_AUTH",
   COLLECT_1688: "COLLECT_BY_OFFER_ID",
+  STAGE_COLLECT_MANY: "STAGE_COLLECT_MANY",
 };
 
 window.addEventListener("message", (ev) => {

@@ -17,6 +17,7 @@ export const JOB_LABELS: Record<string, string> = {
   "listing.aiEnhance": "AI 产线",
   "listing.categorySuggest": "类目推荐",
   "store.syncCategories": "类目树同步",
+  "selection.score": "选品打分",
 };
 
 const JSTATUS: Record<JobStatus, { st: string; label: string }> = {

@@ -1,6 +1,8 @@
 import type {
   ChannelAttribute,
+  DiscoverySignals,
   LastAutoAction,
+  SelectionPlanFilters,
   ListingChannelAttribute,
   ListingFieldsSnapshot,
   ListingOption,
@@ -17,6 +19,7 @@ import type {
 } from "@caiji/shared";
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -121,6 +124,8 @@ export const sourceItems = pgTable(
     collectedBy: uuid("collected_by").references(() => users.id, {
       onDelete: "set null",
     }),
+    /** 采集入口：manual|plan|inquiry；历史数据为 null 视为 manual。 */
+    collectedVia: text("collected_via"),
     collectedAt: timestamp("collected_at", { withTimezone: true }).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -593,4 +598,78 @@ export const jobs = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("jobs_status_run_at_idx").on(t.status, t.runAt)],
+);
+
+// --- 选品（AI discovery） -----------------------------------------------------
+
+/** 选品计划：关键词/榜单来源 + 筛选器 + 抓取节奏；插件回流入候选池。 */
+export const selectionPlans = pgTable(
+  "selection_plans",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** keyword（关键词搜索）| 1688_rank（榜单）。 */
+    source: text("source").notNull().default("keyword"),
+    filters: jsonb("filters")
+      .$type<SelectionPlanFilters>()
+      .notNull()
+      .default({}),
+    /** manual = 只被动回流/手动 run；daily = 插件 alarm 到期抓一次。 */
+    schedule: text("schedule").notNull().default("manual"),
+    enabled: boolean("enabled").notNull().default(true),
+    /** 最近一次 feed 落库时间；null = 未跑过（tasks 里视为到期）。 */
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("selection_plans_ws_idx").on(t.workspaceId)],
+);
+
+/** 候选池条目：计划抓回来尚未采集的货源线索。 */
+export const discoveryItems = pgTable(
+  "discovery_items",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id").references(() => selectionPlans.id, {
+      onDelete: "cascade",
+    }),
+    sourcePlatform: text("source_platform").notNull().default("1688"),
+    /** 平台侧条目 id（1688 offerId），幂等键的一部分。 */
+    sourceItemId: text("source_item_id").notNull(),
+    title: text("title"),
+    priceText: text("price_text"),
+    thumb: text("thumb"),
+    signals: jsonb("signals").$type<DiscoverySignals>().notNull().default({}),
+    score: real("score"),
+    /** LLM 只对 top-20 写的一句话理由。 */
+    aiNote: text("ai_note"),
+    status: text("status", {
+      enum: ["new", "collected", "dismissed", "expired"],
+    })
+      .notNull()
+      .default("new"),
+    /** 入箱后回填指向 source_items。 */
+    sourceItemDbId: uuid("source_item_db_id").references(() => sourceItems.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // plan_id 可空 → 两条部分唯一索引覆盖幂等键两种形态。
+    uniqueIndex("discovery_items_ws_plan_item_uq")
+      .on(t.workspaceId, t.planId, t.sourceItemId)
+      .where(sql`${t.planId} is not null`),
+    uniqueIndex("discovery_items_ws_item_uq")
+      .on(t.workspaceId, t.sourceItemId)
+      .where(sql`${t.planId} is null`),
+    index("discovery_items_ws_status_idx").on(t.workspaceId, t.status),
+    index("discovery_items_plan_idx").on(t.planId),
+  ],
 );

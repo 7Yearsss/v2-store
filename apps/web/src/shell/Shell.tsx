@@ -1,5 +1,6 @@
 import {
   AppstoreOutlined,
+  CompassOutlined,
   DownOutlined,
   LogoutOutlined,
   RocketOutlined,
@@ -18,6 +19,7 @@ import { StoreScopeProvider, useStoreScope, type StoreScopeValue } from "./store
 
 const NAV = [
   { to: "/", label: "铺货", icon: RocketOutlined, end: true },
+  { to: "/selection", label: "选品", icon: CompassOutlined, end: false },
   { to: "/products", label: "商品", icon: AppstoreOutlined, end: false },
   { to: "/stores", label: "店铺", icon: ShopOutlined, end: false },
   { to: "/jobs", label: "任务", icon: UnorderedListOutlined, end: false },
@@ -26,6 +28,7 @@ const NAV = [
 
 const PAGE_META: { match: RegExp; title: string; context: string }[] = [
   { match: /^\/listings\/[^/]+/, title: "刊登编辑", context: "店稿完整字段" },
+  { match: /^\/selection/, title: "选品", context: "计划定筛选 · 插件回流候选 · 勾选入箱" },
   { match: /^\/products/, title: "商品", context: "按货源聚合的各店刊登" },
   { match: /^\/stores/, title: "店铺", context: "授权与刊登设置" },
   { match: /^\/jobs/, title: "任务", context: "后台任务与失败重试" },
