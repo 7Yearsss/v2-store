@@ -398,6 +398,7 @@ export function fakeShopify(
                         },
                       },
                     ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
                   },
                 }
               : null,

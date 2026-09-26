@@ -3,6 +3,7 @@ import type { Deps } from "../../context.js";
 import { categorySuggestStage } from "./categorySuggest.js";
 import { enhanceStage } from "./enhance.js";
 import { loadStageRow, type Stage } from "./types.js";
+import type { PipelinePolicy } from "@caiji/shared";
 
 export {
   loadStageRow,
@@ -16,9 +17,9 @@ export {
 /** 注册表：顺序即执行顺序。新 stage（确定性规则、视频脚本…）加在这里。 */
 export const STAGES: Stage[] = [enhanceStage, categorySuggestStage];
 
-/** 店铺启用中的 stage（disabledStages 剔除）。 */
-export function enabledStages(store: StoreRow): Stage[] {
-  const disabled = new Set(store.rules?.pipeline?.disabledStages ?? []);
+/** 店铺启用中的 stage（disabledStages 剔除）。快照优先：认领冻结的策略覆盖在途刊登。 */
+export function enabledStages(store: StoreRow, snapshot?: PipelinePolicy | null): Stage[] {
+  const disabled = new Set(snapshot?.disabledStages ?? store.rules?.pipeline?.disabledStages ?? []);
   return STAGES.filter((s) => !disabled.has(s.key));
 }
 
@@ -39,7 +40,7 @@ export async function runStages(
 ) {
   const row = await loadStageRow(deps, listingId);
   if (!aiEnabled(deps, row.store)) return;
-  for (const stage of enabledStages(row.store)) {
+  for (const stage of enabledStages(row.store, row.listing.policySnapshot)) {
     if (opts.only && stage.key !== opts.only) continue;
     await stage.run({ deps, ...row });
   }

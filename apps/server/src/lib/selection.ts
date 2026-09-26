@@ -94,7 +94,13 @@ export function planIsDue(plan: {
   lastRunAt: Date | string | null;
   runRequestedAt?: Date | string | null;
   schedule: string;
+  source?: string;
+  filters?: SelectionPlanFilters;
 }): boolean {
+  // 无关键词的计划产不出任何抓取 URL：永不到期，避免每次 tick 都空跑
+  if (plan.source != null && plan.filters != null && !planUrls(plan as { source: string; filters: SelectionPlanFilters }).length) {
+    return false;
+  }
   const last = plan.lastRunAt != null ? new Date(plan.lastRunAt).getTime() : NaN;
   // run-now 是显式的一次性请求（任意 schedule）：runRequestedAt > lastRunAt = 这轮还没抓到
   if (plan.runRequestedAt != null) {

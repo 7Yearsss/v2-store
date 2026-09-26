@@ -1001,25 +1001,39 @@ export const shopifyAdapter: ChannelAdapter = {
 
   /** fulfillmentOrders → fulfillmentCreate：按 fulfillmentOrder 粒度组行（支持部分发货）。 */
   async pushFulfillment(deps, store, input) {
-    const data = await shopifyGraphql<{
-      order: {
-        fulfillmentOrders: {
-          nodes: Array<{
-            id: string;
-            status: string;
-            lineItems: {
-              nodes: Array<{
-                id: string;
-                remainingQuantity: number;
-                lineItem: { id: string } | null;
-              }>;
-            };
-          }>;
-        };
-      } | null;
-    }>(deps, store, FULFILLMENT_ORDERS, { id: input.remoteOrderId });
-    const order = data.order;
-    if (!order) throw new ChannelError("远端订单不存在");
+    type FoNode = {
+      id: string;
+      status: string;
+      lineItems: {
+        nodes: Array<{
+          id: string;
+          remainingQuantity: number;
+          lineItem: { id: string } | null;
+        }>;
+      };
+    };
+    // fulfillmentOrders 分页拉全：大订单多仓拆履约时一页 50 可能不够
+    const foNodes: FoNode[] = [];
+    let foAfter: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const pageData: {
+        order: {
+          fulfillmentOrders: {
+            nodes: FoNode[];
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      } = await shopifyGraphql(deps, store, FULFILLMENT_ORDERS, {
+        id: input.remoteOrderId,
+        after: foAfter,
+      });
+      if (!pageData.order) throw new ChannelError("远端订单不存在");
+      foNodes.push(...pageData.order.fulfillmentOrders.nodes);
+      const pi = pageData.order.fulfillmentOrders.pageInfo;
+      if (!pi.hasNextPage || !pi.endCursor) break;
+      foAfter = pi.endCursor;
+    }
+    const order = { fulfillmentOrders: { nodes: foNodes } };
     const wanted = input.lineItems
       ? new Map(input.lineItems.map((l) => [l.remoteLineItemId, l.qty]))
       : null;
@@ -1239,9 +1253,9 @@ const ORDER_ONE = /* GraphQL */ `
 `;
 
 const FULFILLMENT_ORDERS = /* GraphQL */ `
-  query FulfillmentOrders($id: ID!) {
+  query FulfillmentOrders($id: ID!, $after: String) {
     order(id: $id) {
-      fulfillmentOrders(first: 30) {
+      fulfillmentOrders(first: 50, after: $after) {
         nodes {
           id
           status
@@ -1249,6 +1263,7 @@ const FULFILLMENT_ORDERS = /* GraphQL */ `
             nodes { id remainingQuantity lineItem { id } }
           }
         }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
