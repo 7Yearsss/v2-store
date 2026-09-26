@@ -1112,6 +1112,13 @@ const pipelineAdvance: JobHandler = {
       listing = { ...listing, pipelineHoldReason: null };
     }
 
+    // 已在人工闸点：自动推进不重复落闸/重复 autoAccept，等手动 advance
+    if (
+      !manual &&
+      (listing.pipelineStage === "hold_ai" || listing.pipelineStage === "hold_precheck")
+    ) {
+      return;
+    }
     // 策略快照兜底：老链路行没有快照时回落当前店铺配置并固化
     const policy: PipelinePolicy = listing.policySnapshot ?? store.rules?.pipeline ?? {};
     if (!listing.policySnapshot) {

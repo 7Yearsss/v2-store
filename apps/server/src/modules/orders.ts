@@ -304,7 +304,10 @@ export function orderRoutes() {
       if (!covered.length) throw new HttpError(422, "该订单没有对应货源的行项", "no_items");
       const src = srcs.find((s) => s.id === covered[0]!.sourceItemId)!;
 
-      // 找已含这些行项、且未完结的采购单；没有就建一张 source_order
+      // 找已含这些行项的活跃采购单（含已发货——已下单过的行不重复建单）。
+      // 完结/异常态（done/exception）不再算活跃。
+      const PO_ACTIVE = ["draft", "placed", "paid", "domestic_shipped", "intl_shipped"] as const;
+      const PO_SHIPPED = new Set(["domestic_shipped", "intl_shipped"]);
       const existingLinks = await deps.db
         .select()
         .from(purchaseOrderItems)
@@ -312,7 +315,7 @@ export function orderRoutes() {
         .where(
           and(
             inArray(purchaseOrderItems.orderItemId, covered.map((i) => i.id)),
-            inArray(purchaseOrders.status, ["draft", "placed", "paid"]),
+            inArray(purchaseOrders.status, PO_ACTIVE),
           ),
         );
       // 只复用「所有行项都在本次覆盖集内」的采购单：PO 按货源聚合可能混了
@@ -329,17 +332,34 @@ export function orderRoutes() {
           break;
         }
       }
+      // 已发货 PO 里的 covered 行项：已经下单在途，不再重复下单/挪单
+      const shippedItemIds = new Set(
+        existingLinks
+          .filter((l) => PO_SHIPPED.has(l.purchase_orders.status))
+          .map((l) => l.purchase_order_items.orderItemId),
+      );
       if (!poId) {
-        // covered 行项若挂在别的未完结 PO 上（如手工合并进来的），先把链接搬走，
-        // 保证一条订单行只属于一张未完结采购单
-        const stalePoIds = [...new Set(existingLinks.map((l) => l.purchase_orders.id))];
+        const freeItems = covered.filter((i) => !shippedItemIds.has(i.id));
+        if (!freeItems.length) {
+          // 覆盖集全部在已发货 PO：只补写 sourceOrderId，不建第二张单
+          poId = existingLinks[0]!.purchase_orders.id;
+        } else {
+        // covered 行项若挂在别的未发货 PO 上（如手工合并进来的），先把链接搬走；
+        // 已发货 PO 的链接不动
+        const stalePoIds = [
+          ...new Set(
+            existingLinks
+              .filter((l) => !PO_SHIPPED.has(l.purchase_orders.status))
+              .map((l) => l.purchase_orders.id),
+          ),
+        ];
         if (stalePoIds.length) {
           await deps.db
             .delete(purchaseOrderItems)
             .where(
               and(
                 inArray(purchaseOrderItems.purchaseOrderId, stalePoIds),
-                inArray(purchaseOrderItems.orderItemId, covered.map((i) => i.id)),
+                inArray(purchaseOrderItems.orderItemId, freeItems.map((i) => i.id)),
               ),
             );
         }
@@ -355,7 +375,7 @@ export function orderRoutes() {
           })
           .returning({ id: purchaseOrders.id });
         poId = created!.id;
-        for (const it of covered) {
+        for (const it of freeItems) {
           const sku = srcs
             .find((s) => s.id === it.sourceItemId)
             ?.skus.find((s) => s.skuId === it.sourceSkuId);
@@ -366,13 +386,16 @@ export function orderRoutes() {
             unitPriceCny: sku?.priceCny ?? null,
           });
         }
+        }
       } else {
         const linked = new Set(
           existingLinks
             .filter((l) => l.purchase_orders.id === poId)
             .map((l) => l.purchase_order_items.orderItemId),
         );
-        for (const it of covered.filter((i) => !linked.has(i.id))) {
+        for (const it of covered.filter(
+          (i) => !linked.has(i.id) && !shippedItemIds.has(i.id),
+        )) {
           const sku = srcs
             .find((s) => s.id === it.sourceItemId)
             ?.skus.find((s) => s.skuId === it.sourceSkuId);
@@ -384,17 +407,27 @@ export function orderRoutes() {
           });
         }
       }
+      // 状态只前进不后退：已 paid/发货的 PO 只补 sourceOrderId，不回退到 placed
+      const [poRow] = await deps.db
+        .select({ status: purchaseOrders.status })
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, poId));
       await deps.db
         .update(purchaseOrders)
         .set({
           sourceOrderId,
-          status: "placed",
+          ...(poRow?.status === "draft" ? { status: "placed" as const } : {}),
         })
         .where(eq(purchaseOrders.id, poId));
       await deps.db
         .update(orderItems)
         .set({ procureStatus: "placed" })
-        .where(inArray(orderItems.id, covered.map((i) => i.id)));
+        .where(
+          and(
+            inArray(orderItems.id, covered.map((i) => i.id)),
+            inArray(orderItems.procureStatus, ["none", "queued", "failed"]),
+          ),
+        );
       await audit(deps.db, workspaceId, {
         actor: `user:${userId}`,
         action: "purchase_order.placed",
