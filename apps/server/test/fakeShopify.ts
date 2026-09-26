@@ -287,6 +287,8 @@ export function fakeShopify(
               variants: {
                 nodes: Array.from({ length: variantsCount }, (_, i) => ({
                   id: `gid://shopify/ProductVariant/v${i}`,
+                  sku: variantSkus[i] ?? opts.stockSkus?.[i] ?? null,
+                  inventoryItem: { id: `gid://shopify/InventoryItem/i${i}` },
                 })),
               },
             },
