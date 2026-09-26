@@ -149,8 +149,12 @@ async function collectByOfferId(offerId: string, via?: PendingItem["via"]) {
   const descImages = descUrl ? await fetchDescImages(descUrl).catch(() => []) : [];
   return submitHarvest({
     sourceInfo: { itemUrl: url, itemId: offerId, site: "detail", source: "1688" },
-    // 解析失败兜底上传整页前先把浏览者自己的买家数据（buyerModel）剥掉
-    pageContent: data ? undefined : stripViewerData(html),
+    // 解析失败兜底上传整页前先剥浏览者数据；剥完仍检出账号标记则放弃上传整页
+    pageContent: (() => {
+      if (data) return undefined;
+      const stripped = stripViewerData(html);
+      return /buyerModel|memberId|"loginId"|loginName/.test(stripped) ? undefined : stripped;
+    })(),
     afterUrl: resp.url,
     productExtInfo: data
       ? { initData: productOnlyData(data), ...(descImages.length ? { descImages } : {}) }

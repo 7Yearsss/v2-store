@@ -173,11 +173,14 @@ function getModel(data: any): any | null {
  * Raw-HTML sanitizer for the fallback path: when the client can't parse init
  * data we still must not ship the viewer's own 1688 account (buyerModel).
  * Brace-matches `buyerModel: {…}` / `["buyerModel": […]]` literals (quoted or
- * bare keys) inside script blobs and cuts them out.
+ * bare keys) inside script blobs and cuts them out. 覆盖浏览者侧常见键名；
+ * 调用方应在使用结果前再验一遍是否仍有残留标记。
  */
 export function stripViewerData(html: string): string {
   let out = html;
-  const keyRe = /"?buyerModel"?\s*:\s*/g;
+  // 浏览者/账号侧的字段名集合：buyerModel 之外还有 member/login/user/account 等变体
+  const keyRe =
+    /"?(?:buyerModel|memberModel|memberInfo|loginModel|loginInfo|userModel|userInfo|accountInfo|accountModel)"?\s*:\s*/g;
   for (;;) {
     const m = keyRe.exec(out);
     if (!m) break;

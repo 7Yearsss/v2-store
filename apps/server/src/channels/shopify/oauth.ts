@@ -152,10 +152,11 @@ export function shopifyAppRoutes() {
     const topic = c.req.header("x-shopify-topic");
     const shop = c.req.header("x-shopify-shop-domain");
     if (topic === "app/uninstalled" && shop) {
+      // 只有 oauth 店靠我们的 app：卸载事件不应把同域的手动 token 店/别的 workspace 一起断掉
       await deps.db
         .update(stores)
         .set({ status: "disconnected", lastError: "应用已从店铺卸载" })
-        .where(eq(stores.shopDomain, shop));
+        .where(and(eq(stores.shopDomain, shop), eq(stores.authType, "oauth")));
     } else if (
       shop &&
       topic &&
@@ -163,13 +164,12 @@ export function shopifyAppRoutes() {
     ) {
       // webhook 用我们 app 的 secret 签的 → 只路由到 oauth 店；
       // 手动 token 店在同一 shopDomain 下不该吃到别的 workspace 的订单数据
-      const [store] = await deps.db
+      // 同一 shopDomain 可能被多个 workspace 都 oauth 连上：每一家都要吃自己的订单副本
+      const oauthStores = await deps.db
         .select()
         .from(stores)
-        .where(and(eq(stores.shopDomain, shop), eq(stores.authType, "oauth")))
-        .orderBy(desc(stores.updatedAt))
-        .limit(1);
-      if (store) {
+        .where(and(eq(stores.shopDomain, shop), eq(stores.authType, "oauth")));
+      if (oauthStores.length) {
         // 只取 gid 做定向同步；拿不到就退全店增量（报文本体绝不进 worker）
         let remoteId: string | undefined;
         try {
@@ -179,7 +179,9 @@ export function shopifyAppRoutes() {
         } catch {
           /* fall through to incremental */
         }
-        await enqueueOrderSync(deps.db, store.id, store.workspaceId, remoteId);
+        for (const store of oauthStores) {
+          await enqueueOrderSync(deps.db, store.id, store.workspaceId, remoteId);
+        }
       }
     }
     return c.text("ok");

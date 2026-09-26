@@ -533,6 +533,53 @@ export function orderRoutes() {
       const { workspaceId, userId } = c.var.auth;
       const order = await getOrder(deps, workspaceId, c.req.param("id"));
       const body = c.req.valid("json");
+      // 行项校验：必须属于该订单、不重复、qty 不超过剩余可发量（剩余 = 下单量 - 已在 pending/pushed 运单里的量）
+      if (body.lineItems?.length) {
+        const items = await deps.db
+          .select()
+          .from(orderItems)
+          .where(eq(orderItems.orderId, order.id));
+        const byRemote = new Map(
+          items.filter((i) => i.remoteLineItemId).map((i) => [i.remoteLineItemId!, i]),
+        );
+        const orderShipments = await deps.db
+          .select({ lineItems: shipments.lineItems })
+          .from(shipments)
+          .where(
+            and(
+              eq(shipments.orderId, order.id),
+              inArray(shipments.status, ["pending", "pushed"]),
+            ),
+          );
+        const inflight = new Map<string, number>();
+        for (const sh of orderShipments) {
+          for (const li of sh.lineItems ?? []) {
+            inflight.set(
+              li.remoteLineItemId,
+              (inflight.get(li.remoteLineItemId) ?? 0) + (li.qty ?? 0),
+            );
+          }
+        }
+        const seenLines = new Set<string>();
+        for (const li of body.lineItems) {
+          if (seenLines.has(li.remoteLineItemId)) {
+            throw new HttpError(400, `行项 ${li.remoteLineItemId} 重复`, "duplicate_line");
+          }
+          seenLines.add(li.remoteLineItemId);
+          const it = byRemote.get(li.remoteLineItemId);
+          if (!it) {
+            throw new HttpError(400, `行项 ${li.remoteLineItemId} 不属于该订单`, "invalid_line");
+          }
+          const remaining = it.qty - (inflight.get(li.remoteLineItemId) ?? 0);
+          if (li.qty !== undefined && li.qty > remaining) {
+            throw new HttpError(
+              409,
+              `行项 ${li.remoteLineItemId} 剩余可发 ${remaining}，请求 ${li.qty}`,
+              "qty_exceeds_remaining",
+            );
+          }
+        }
+      }
       let shipmentId = body.shipmentId;
       if (shipmentId) {
         const [s] = await deps.db

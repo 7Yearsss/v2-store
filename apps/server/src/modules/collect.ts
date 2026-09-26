@@ -247,6 +247,7 @@ export async function recordSourceChanges(
     .returning({
       id: sourceChanges.id,
       changeType: sourceChanges.changeType,
+      skuId: sourceChanges.skuId,
     });
 
   const rows = await db
@@ -404,7 +405,20 @@ export async function recordSourceChanges(
   // 全部关联刊登都处理过的变更 → 直接落账；否则留 pending
   const listingCount = rows.length;
   const appliedAtById = new Map<string, SourceChangeAppliedAction[]>();
-  for (const { id, changeType } of inserted) {
+  const boundSkuIds = new Set(
+    rows.flatMap(({ listing: l }) =>
+      l.variants.map((v) => v.sourceSkuId).filter((x): x is string => !!x),
+    ),
+  );
+  for (const { id, changeType, skuId } of inserted) {
+    // 供应商新增的 SKU（刊登里还没有绑定变体）：没东西可改，留 pending 待人工处理
+    if (
+      (changeType === "stock" || changeType === "price") &&
+      skuId &&
+      !boundSkuIds.has(skuId)
+    ) {
+      continue;
+    }
     const handled = handledByType.get(changeType) ?? 0;
     const acts = actsByType.get(changeType) ?? [];
     if (

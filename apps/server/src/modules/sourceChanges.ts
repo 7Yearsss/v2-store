@@ -57,6 +57,10 @@ async function applyChangeToListing(
 
   switch (change.changeType) {
     case "price": {
+      // 供应商新增的 SKU 在刊登里没有绑定变体：没有什么可改——不算应用，留 pending 待人工处理
+      if (change.skuId !== null && !listing.variants.some((v) => v.sourceSkuId === change.skuId)) {
+        return { listingId: listing.id, action: "new_sku_pending" };
+      }
       const priceCny = typeof nvo?.priceCny === "number" ? nvo.priceCny : null;
       const variants = listing.variants.map((v) =>
         change.skuId === null || v.sourceSkuId === change.skuId
@@ -80,6 +84,10 @@ async function applyChangeToListing(
       break;
     }
     case "stock": {
+      // 供应商新增的 SKU 在刊登里没有绑定变体：没有什么可改——不算应用，留 pending 待人工处理
+      if (change.skuId !== null && !listing.variants.some((v) => v.sourceSkuId === change.skuId)) {
+        return { listingId: listing.id, action: "new_sku_pending" };
+      }
       const inv = storeRules?.inventory;
       const variants = listing.variants.map((v) => {
         if (change.skuId !== null && v.sourceSkuId !== change.skuId) return v;
@@ -265,15 +273,25 @@ export function sourceChangeRoutes() {
             ),
           );
         }
-        await db
-          .update(sourceChanges)
-          .set({
-            appliedAt: now,
-            appliedAction: acts.length ? acts : [{ action: "no_listings" }],
-          })
-          .where(eq(sourceChanges.id, change.id));
+        // 全部刊登都因「新 SKU 未绑定」跳过 → 该变更保持 pending，不记 appliedAt
+        const allPendingNewSku =
+          acts.length > 0 && acts.every((a) => a.action === "new_sku_pending");
+        if (allPendingNewSku) {
+          await db
+            .update(sourceChanges)
+            .set({ appliedAction: acts })
+            .where(eq(sourceChanges.id, change.id));
+        } else {
+          await db
+            .update(sourceChanges)
+            .set({
+              appliedAt: now,
+              appliedAction: acts.length ? acts : [{ action: "no_listings" }],
+            })
+            .where(eq(sourceChanges.id, change.id));
+          applied++;
+        }
         touchedItems.add(change.sourceItemId);
-        applied++;
       }
       for (const intent of pushQueue.values()) {
         await enqueue(db, intent.type, intent.payload, { workspaceId });

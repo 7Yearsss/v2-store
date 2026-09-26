@@ -300,7 +300,13 @@ export async function upsertRemoteOrder(
   }
   // 远端删掉的行项本地同步删除（仅限还没被采购引用的，保守起见保留有绑定的行）
   for (const it of existingItems) {
-    if (it.remoteLineItemId && !seen.has(it.remoteLineItemId) && it.procureStatus === "none") {
+    // 有货源绑定（手动 bind 或自动映射）的行远端删了也保留——采购/核对还要看映射关系
+    if (
+      it.remoteLineItemId &&
+      !seen.has(it.remoteLineItemId) &&
+      it.procureStatus === "none" &&
+      !it.sourceItemId
+    ) {
       await deps.db.delete(orderItems).where(eq(orderItems.id, it.id));
     }
   }
