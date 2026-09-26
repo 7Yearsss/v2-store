@@ -22,9 +22,14 @@ export function ExtensionBadge() {
   if (ext.isLoading) return null;
   if (!ext.data) {
     return (
-      <span className="tag" title="安装 V2Store 采集插件后刷新页面">
-        插件未安装
-      </span>
+      <a
+        className="tag"
+        href="/extension.zip"
+        download
+        title="下载采集插件：解压后打开 chrome://extensions，开启开发者模式，点「加载已解压的扩展程序」选择解压目录，然后刷新本页"
+      >
+        插件未安装 · 下载
+      </a>
     );
   }
   const authorize = async () => {
