@@ -7,6 +7,7 @@ import type {
   ListingSyncPolicy,
   ListingVariant,
   OfferSku,
+  PipelinePolicy,
   PricingRule,
   PublishErrorCode,
   RemoteDriftEntry,
@@ -280,12 +281,45 @@ export const listings = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
+    /** 链路排定的发布时间（scheduled/paced 的释放时刻）。 */
+    publishAt: timestamp("publish_at", { withTimezone: true }),
+    /** 发布回填：本地变体 sku → {variantId, inventoryItemId}（订单/库存链路用）。 */
+    remoteVariantMap: jsonb("remote_variant_map").$type<
+      Record<string, { variantId: string; inventoryItemId: string }>
+    >(),
+    /** 货源最近一次内容变化时间（监控回扫写入）。 */
+    sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
+    /** 内部运营标签（不上渠道，与发布 tags 分开）。 */
+    internalTags: text("internal_tags").array(),
+    /**
+     * 一键链路阶段：claimed → ai_running → (hold_ai) → precheck →
+     * (hold_precheck) → queued → publishing → published；失败 → failed。
+     * null = 非链路刊登（手工认领、店铺未开链路）。
+     */
+    pipelineStage: text("pipeline_stage", {
+      enum: [
+        "claimed",
+        "ai_running",
+        "hold_ai",
+        "precheck",
+        "hold_precheck",
+        "queued",
+        "publishing",
+        "published",
+        "failed",
+      ],
+    }),
+    /** 链路暂停/卡住原因（'manual' = 用户手动暂停）。 */
+    pipelineHoldReason: text("pipeline_hold_reason"),
+    /** 链路进入时的策略快照（审计「为什么自动发了」）。 */
+    policySnapshot: jsonb("policy_snapshot").$type<PipelinePolicy>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     uniqueIndex("listings_store_source_uq").on(t.storeId, t.sourceItemId),
     index("listings_ws_status_idx").on(t.workspaceId, t.status),
+    index("listings_ws_pipeline_idx").on(t.workspaceId, t.pipelineStage),
   ],
 );
 
@@ -313,6 +347,8 @@ export const listingSuggestions = pgTable(
         "attributes",
       ],
     }).notNull(),
+    /** 产出该建议的 stage key（ai/stages 注册表；迁移前旧行为 'ai'）。 */
+    stage: text("stage").notNull().default("ai"),
     /** proposed value; for `options` it's {options, variantOptionValues}. */
     value: jsonb("value").notNull(),
     status: text("status", { enum: ["pending", "accepted", "rejected"] })

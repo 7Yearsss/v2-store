@@ -114,6 +114,49 @@ export const pricingSchema = z.object({
   minPrice: z.number().min(0).max(1_000_000).nullable().default(null),
 }) satisfies z.ZodType<PricingRule>;
 
+const SUGGESTION_FIELDS = [
+  "title",
+  "descriptionHtml",
+  "productType",
+  "tags",
+  "options",
+  "category",
+  "attributes",
+] as const;
+
+export const pipelinePolicySchema = z
+  .object({
+    autoClaim: z.boolean().optional(),
+    autoAcceptFields: z.array(z.enum(SUGGESTION_FIELDS)).max(7).optional(),
+    holdPoint: z.enum(["after_ai", "after_precheck", "auto"]).optional(),
+    autoPublish: z.boolean().optional(),
+    publishMode: z.enum(["now", "scheduled", "paced"]).optional(),
+    publishAt: z.iso.datetime({ offset: true }).optional(),
+    paceMinutes: z.number().min(1).max(24 * 60).optional(),
+    holdOnWarning: z.boolean().optional(),
+    disabledStages: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
+  })
+  .optional();
+
+export const inventoryRulesSchema = z
+  .object({
+    strategy: z.enum(["mirror", "fixed", "percent", "cap"]).optional(),
+    fixedQty: z.number().int().min(0).max(999_999).optional(),
+    percent: z.number().min(0).max(10_000).optional(),
+    cap: z.number().int().min(0).max(999_999).optional(),
+    buffer: z.number().int().min(0).max(999_999).optional(),
+    oosAction: z.enum(["zero", "unpublish", "notify"]).optional(),
+  })
+  .optional();
+
+export const monitorRulesSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    minStock: z.number().int().min(0).max(999_999).optional(),
+    priceAuto: z.boolean().optional(),
+  })
+  .optional();
+
 export const rulesSchema = z.object({
   titlePrefix: z.string().trim().max(100).optional(),
   titleSuffix: z.string().trim().max(100).optional(),
@@ -131,6 +174,9 @@ export const rulesSchema = z.object({
   defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   defaultProductType: z.string().trim().max(255).optional(),
   defaultWeightKg: z.number().min(0).max(100_000).optional(),
+  pipeline: pipelinePolicySchema,
+  inventory: inventoryRulesSchema,
+  monitor: monitorRulesSchema,
 }) satisfies z.ZodType<StoreRules>;
 
 const patchSchema = z.object({

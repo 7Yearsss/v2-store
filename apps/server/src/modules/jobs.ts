@@ -14,6 +14,8 @@ const JOB_LABELS: Record<string, string> = {
   "listing.aiEnhance": "AI 产线",
   "listing.categorySuggest": "类目推荐",
   "listing.aiImage": "AI 图片",
+  "listing.claim": "链路认领",
+  "pipeline.advance": "链路推进",
   "store.syncCategories": "类目树同步",
 };
 

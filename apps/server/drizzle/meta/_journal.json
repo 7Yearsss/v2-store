@@ -85,6 +85,13 @@
       "when": 1790391915379,
       "tag": "0011_friendly_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790441123396,
+      "tag": "0012_rapid_silver_centurion",
+      "breakpoints": true
     }
   ]
 }

@@ -218,6 +218,7 @@ const STOCK_DATA = /* GraphQL */ `
     product(id: $id) {
       variants(first: 250) {
         nodes {
+          id
           sku
           inventoryItem {
             id
@@ -251,6 +252,7 @@ interface StockDataResult {
   product: {
     variants: {
       nodes: Array<{
+        id: string;
         sku?: string | null;
         inventoryItem: {
           id: string;
@@ -335,6 +337,45 @@ async function setVariantStock(
   }
   const sent = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
   return writeStock(deps, store, productId, data, sent, (_v, i) => i);
+}
+
+const VARIANT_MAP = /* GraphQL */ `
+  query VariantMap($id: ID!) {
+    product(id: $id) {
+      variants(first: 250) { nodes { id sku inventoryItem { id } } }
+    }
+  }
+`;
+
+/** 发布回填：本地变体 sku → 远端 {variantId, inventoryItemId}。失败静默返回 null（不阻塞发布）。 */
+async function fetchVariantMap(
+  deps: Deps,
+  store: StoreRow,
+  productId: string,
+  listing: ListingRow,
+): Promise<Record<string, { variantId: string; inventoryItemId: string }> | null> {
+  try {
+    const data = await shopifyGraphql<{
+      product: {
+        variants: {
+          nodes: Array<{ id: string; sku?: string | null; inventoryItem?: { id: string } | null }>;
+        };
+      } | null;
+    }>(deps, store, VARIANT_MAP, { id: productId });
+    const nodes = data.product?.variants.nodes ?? [];
+    const sent = listing.options.length ? listing.variants : listing.variants.slice(0, 1);
+    const map: Record<string, { variantId: string; inventoryItemId: string }> = {};
+    sent.forEach((v, i) => {
+      if (!v.sku) return; // 无 sku 的本地变体无 key 可填
+      const n = nodes.find((n) => n.sku && n.sku === v.sku) ?? nodes[i];
+      if (n?.inventoryItem?.id) {
+        map[v.sku] = { variantId: n.id, inventoryItemId: n.inventoryItem.id };
+      }
+    });
+    return Object.keys(map).length ? map : null;
+  } catch {
+    return null;
+  }
 }
 
 const REMOTE_SNAPSHOTS = /* GraphQL */ `
@@ -651,6 +692,9 @@ export const shopifyAdapter: ChannelAdapter = {
       const stockWarning = await setVariantStock(deps, store, product.id, listing);
       if (stockWarning) warnings.push(stockWarning);
     }
+    // 发布回填远端变体映射（订单/库存链路用）；拿不到不阻塞
+    const remoteVariantMap =
+      (await fetchVariantMap(deps, store, product.id, listing)) ?? undefined;
     const attrWarnings = await writeCategoryAttributes(deps, store, product.id, listing);
     warnings.push(...attrWarnings);
     if (!listing.remoteId && publishStatus !== "draft") {
@@ -664,6 +708,7 @@ export const shopifyAdapter: ChannelAdapter = {
       remoteUrl: `https://${store.shopDomain}/admin/products/${numericId}`,
       remoteStatus: listing.remoteId ? undefined : publishStatus === "draft" ? "DRAFT" : "ACTIVE",
       warnings,
+      remoteVariantMap,
     };
   },
 

@@ -46,6 +46,8 @@ export interface PublishResult {
   remoteStatus?: RemoteStatus;
   /** published, but something needs attention (e.g. images failed) */
   warnings?: string[];
+  /** 本地变体 sku → 远端 {variantId, inventoryItemId}（订单/库存链路消费）。 */
+  remoteVariantMap?: Record<string, { variantId: string; inventoryItemId: string }>;
 }
 
 /**

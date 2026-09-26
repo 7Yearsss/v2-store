@@ -9,6 +9,7 @@ import type {
   Listing,
   ListingStatus,
   ListingSuggestion,
+  PipelineStage,
   ListingTemplate,
   Me,
   Page,
@@ -112,8 +113,12 @@ export const api = {
   sourceItems: (p: { q?: string; unclaimed?: boolean; page?: number; pageSize?: number }) =>
     request<Page<SourceItem>>("GET", `/source-items${qs({ ...p, unclaimed: p.unclaimed ? 1 : undefined })}`),
   deleteSourceItems: (ids: string[]) => request<{ deleted: number }>("POST", "/source-items/delete", { ids }),
-  claim: (ids: string[], storeIds: string[]) =>
-    request<{ created: number; skipped: number }>("POST", "/source-items/claim", { ids, storeIds }),
+  claim: (ids: string[], storeIds: string[], advance?: boolean) =>
+    request<{ created: number; skipped: number }>("POST", "/source-items/claim", {
+      ids,
+      storeIds,
+      ...(advance ? { advance: true } : {}),
+    }),
 
   stores: () => request<Store[]>("GET", "/stores"),
   connectShopify: (
@@ -149,12 +154,19 @@ export const api = {
 
   listings: (p: {
     status?: ListingStatus;
+    pipelineStage?: PipelineStage;
     storeId?: string;
     sourceItemId?: string;
     q?: string;
     page?: number;
     pageSize?: number;
   }) => request<Page<Listing>>("GET", `/listings${qs(p)}`),
+  pipelineAdvance: (id: string) =>
+    request<Listing>("POST", `/listings/${id}/pipeline/advance`, {}),
+  pipelinePause: (id: string) =>
+    request<Listing>("POST", `/listings/${id}/pipeline/pause`, {}),
+  pipelineCancel: (id: string) =>
+    request<Listing>("POST", `/listings/${id}/pipeline/cancel`, {}),
   overview: () => request<Overview>("GET", "/overview"),
   jobs: (p: { status?: JobStatus; page?: number; pageSize?: number }) =>
     request<Page<Job>>("GET", `/jobs${qs(p)}`),

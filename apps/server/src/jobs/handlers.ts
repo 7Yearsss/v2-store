@@ -1,13 +1,14 @@
 import { and, asc, eq, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
-import type { RemoteSnapshot, SourcePlatform } from "@caiji/shared";
-import { runCategorySuggest } from "../ai/category.js";
-import { runAiEnhance } from "../ai/enhance.js";
+import type { PipelinePolicy, RemoteSnapshot, SourcePlatform } from "@caiji/shared";
+import { runStages } from "../ai/stages/index.js";
 import { adapterFor } from "../channels/index.js";
+import type { ListingRow } from "../channels/types.js";
 import type { Deps } from "../context.js";
 import type { Db } from "../db/client.js";
 import {
   jobs,
   listings,
+  listingSuggestions,
   publishAttempts,
   publishRuns,
   sourceItems,
@@ -15,13 +16,17 @@ import {
 } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { resolveCategoryMapping } from "../lib/category.js";
+import { claimItems } from "../lib/claim.js";
 import {
   computeDrift,
   filterDriftByPolicy,
   normalizePublishError,
   pushedSnapshot,
+  toFieldsSnapshot,
 } from "../lib/drift.js";
+import { advancePolicy, circuitOpen, nextRunAt } from "../lib/pipeline.js";
 import { findBannedWords } from "../lib/rules.js";
+import { acceptSuggestion } from "../lib/suggestions.js";
 import { meteredEditImage } from "../lib/ai.js";
 import {
   fetchAndStore,
@@ -43,6 +48,10 @@ export const DELIST_LISTING = "listing.delist";
 export const AI_IMAGE = "listing.aiImage";
 /** 只更新远端库存（货源库存变化的轻量同步，不触碰远端标题/描述/价格）。 */
 export const PUSH_STOCK = "listing.pushStock";
+/** 链路认领：collect 命中 autoClaim / 认领并发布的异步入口，复用 claimItems。 */
+export const LISTING_CLAIM = "listing.claim";
+/** 链路推进：autoAccept → holdPoint → precheck → autoPublish（pace/scheduled 顺延）。 */
+export const PIPELINE_ADVANCE = "pipeline.advance";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -94,6 +103,128 @@ export async function enqueueAiEnhance(
     queued++;
   }
   return queued;
+}
+
+/** Queue a pipeline advance for a listing unless one is already waiting/running.
+ *  已有排队任务时把 manual 合并进去（手动推进不能因自动推进在排而丢）。 */
+export async function enqueuePipelineAdvance(
+  db: Db,
+  listingId: string,
+  workspaceId: string,
+  opts: { manual?: boolean } = {},
+) {
+  const [pending] = await db
+    .select({ id: jobs.id, payload: jobs.payload })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, PIPELINE_ADVANCE),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`${jobs.payload}->>'listingId' = ${listingId}`,
+      ),
+    )
+    .limit(1);
+  if (pending) {
+    if (opts.manual && pending.payload.manual !== true) {
+      await db
+        .update(jobs)
+        .set({ payload: { ...pending.payload, manual: true }, updatedAt: new Date() })
+        .where(eq(jobs.id, pending.id));
+    }
+    return false;
+  }
+  await enqueue(
+    db,
+    PIPELINE_ADVANCE,
+    { listingId, manual: !!opts.manual },
+    { workspaceId, maxAttempts: 2 },
+  );
+  return true;
+}
+
+/** Queue a claim for (sourceItem × store) unless one is already waiting/running. */
+export async function enqueueListingClaim(
+  db: Db,
+  payload: { sourceItemId: string; storeId: string; advance?: boolean },
+  workspaceId: string,
+) {
+  const [pending] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, LISTING_CLAIM),
+        inArray(jobs.status, ["queued", "running"]),
+        sql`${jobs.payload}->>'sourceItemId' = ${payload.sourceItemId}`,
+        sql`${jobs.payload}->>'storeId' = ${payload.storeId}`,
+      ),
+    )
+    .limit(1);
+  if (pending) return false;
+  await enqueue(db, LISTING_CLAIM, payload, { workspaceId, maxAttempts: 3 });
+  return true;
+}
+
+/**
+ * 让刊登进入链路：写 stage=claimed + 策略快照（审计「为什么自动发了」）+ 排队 AI 产线。
+ * AI 无论开关都排——job 尾负责 enqueue advance，AI 关闭时链路跳过产线直接推进。
+ * 已在链路（stage 非空）不重复入场；返回是否入场成功。
+ */
+export async function enterPipeline(
+  db: Db,
+  listingId: string,
+  policy: PipelinePolicy,
+): Promise<boolean> {
+  const [row] = await db
+    .update(listings)
+    .set({
+      pipelineStage: "claimed",
+      pipelineHoldReason: null,
+      policySnapshot: policy,
+      publishAt:
+        policy.publishMode === "scheduled" && policy.publishAt
+          ? new Date(policy.publishAt)
+          : null,
+    })
+    .where(and(eq(listings.id, listingId), sql`${listings.pipelineStage} is null`))
+    .returning({ id: listings.id, workspaceId: listings.workspaceId });
+  if (!row) return false;
+  await enqueueAiEnhance(db, [listingId], row.workspaceId);
+  return true;
+}
+
+/** 撤销 stage=queued 刊登排队中的发布：job 置 failed（不会被执行），attempt 记失败并聚合 run。 */
+export async function dequeueQueuedPublish(db: Db, listingId: string): Promise<boolean> {
+  const pending = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, PUBLISH_LISTING),
+        eq(jobs.status, "queued"),
+        sql`${jobs.payload}->>'listingId' = ${listingId}`,
+      ),
+    );
+  if (!pending.length) return false;
+  await db
+    .update(jobs)
+    .set({ status: "failed", lastError: "链路操作取消了排队中的发布", updatedAt: new Date() })
+    .where(
+      inArray(
+        jobs.id,
+        pending.map((p) => p.id),
+      ),
+    );
+  const atts = await db
+    .select({ id: publishAttempts.id })
+    .from(publishAttempts)
+    .where(
+      and(eq(publishAttempts.listingId, listingId), eq(publishAttempts.status, "queued")),
+    );
+  for (const a of atts) {
+    await finishAttempt(db, a.id, { status: "failed", error: "链路操作已取消排队中的发布" });
+  }
+  return true;
 }
 
 /** Queue an AI image edit for one listing image (dedup on listing+url+action). */
@@ -425,6 +556,17 @@ const publishListing: JobHandler = {
         .set({ status: "running", jobId: job.id, updatedAt: new Date() })
         .where(eq(publishAttempts.id, attemptId));
     }
+    // 正式开跑：链路 queued → publishing；排队发布的草稿态到这一步才转 publishing
+    // （paced/scheduled 顺延期间刊登仍可编辑）。
+    await deps.db
+      .update(listings)
+      .set({
+        status: "publishing",
+        pipelineStage: sql`case when ${listings.pipelineStage} = 'queued' then 'publishing' else ${listings.pipelineStage} end`,
+      })
+      .where(
+        and(eq(listings.id, listingId), inArray(listings.status, ["draft", "publishing"])),
+      );
     const adapter = adapterFor(row.store.platform);
     // 发布门禁（绕过端点的路径也要拦）：平台结构化校验 + 店铺禁售词
     const issues = await adapter.validate(deps, row.store, row.listing);
@@ -520,10 +662,22 @@ const publishListing: JobHandler = {
         ),
         remoteDrift: [],
         ...(result.remoteStatus ? { remoteStatus: result.remoteStatus, syncedAt: now } : {}),
+        ...(result.remoteVariantMap ? { remoteVariantMap: result.remoteVariantMap } : {}),
         lastError: result.warnings?.length ? result.warnings.join("；") : null,
         publishedAt: now,
       })
       .where(eq(listings.id, listingId));
+    // 链路刊登：发布成功即 'published'（无论从哪一环走来）
+    await deps.db
+      .update(listings)
+      .set({ pipelineStage: "published", pipelineHoldReason: null, publishAt: null })
+      .where(
+        and(
+          eq(listings.id, listingId),
+          isNotNull(listings.pipelineStage),
+          ne(listings.pipelineStage, "published"),
+        ),
+      );
     if (attemptId) {
       await finishAttempt(deps.db, attemptId, {
         status: "succeeded",
@@ -557,14 +711,23 @@ const publishListing: JobHandler = {
       .update(listings)
       .set({ status: "failed", lastError: error })
       .where(and(eq(listings.id, listingId), eq(listings.status, "publishing")));
+    const [l] = await deps.db
+      .select({ workspaceId: listings.workspaceId, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(eq(listings.id, listingId));
+    if (l?.pipelineStage && l.pipelineStage !== "published") {
+      // 链路刊登：发布失败 → failed + 原因（含排队发布的草稿态）
+      await deps.db
+        .update(listings)
+        .set({ pipelineStage: "failed", pipelineHoldReason: error })
+        .where(and(eq(listings.id, listingId), ne(listings.pipelineStage, "published")));
+      // 熔断统计基于 attempt：本轮失败计入当日失败率（触发落一次 audit）
+      await circuitOpen(deps.db, l.workspaceId, listingId);
+    }
     const attemptId =
       typeof job.payload.attemptId === "string" ? job.payload.attemptId : undefined;
     if (attemptId) {
       await finishAttempt(deps.db, attemptId, { status: "failed", error });
-      const [l] = await deps.db
-        .select({ workspaceId: listings.workspaceId })
-        .from(listings)
-        .where(eq(listings.id, listingId));
       if (l) {
         await audit(deps.db, l.workspaceId, {
           actor: "user",
@@ -708,15 +871,326 @@ const syncCategories: JobHandler = {
   },
 };
 
+/** stage 注册表入口：跑全部启用 stage（enhance + categorySuggest + …），尾端推进链路。 */
 const aiEnhance: JobHandler = {
   async run(deps: Deps, job) {
-    await runAiEnhance(deps, String(job.payload.listingId));
+    const listingId = String(job.payload.listingId);
+    await deps.db
+      .update(listings)
+      .set({ pipelineStage: "ai_running" })
+      .where(and(eq(listings.id, listingId), eq(listings.pipelineStage, "claimed")));
+    await runStages(deps, listingId);
+    // AI 产线是链路的第二站：跑完入下一环（空/终态/排队中都不是链路在跑，不推进）
+    const [l] = await deps.db
+      .select({ workspaceId: listings.workspaceId, pipelineStage: listings.pipelineStage })
+      .from(listings)
+      .where(eq(listings.id, listingId));
+    if (
+      l?.pipelineStage &&
+      !["published", "failed", "queued", "publishing"].includes(l.pipelineStage)
+    ) {
+      await enqueuePipelineAdvance(deps.db, listingId, l.workspaceId);
+    }
+  },
+  async onFailed(deps, job, error) {
+    const listingId = String(job.payload.listingId);
+    await deps.db
+      .update(listings)
+      .set({ pipelineStage: "failed", pipelineHoldReason: error })
+      .where(
+        and(
+          eq(listings.id, listingId),
+          inArray(listings.pipelineStage, [
+            "claimed",
+            "ai_running",
+            "hold_ai",
+            "precheck",
+            "hold_precheck",
+          ]),
+        ),
+      );
   },
 };
 
 const categorySuggest: JobHandler = {
   async run(deps: Deps, job) {
-    await runCategorySuggest(deps, String(job.payload.listingId));
+    await runStages(deps, String(job.payload.listingId), { only: "categorySuggest" });
+  },
+};
+
+/** 链路认领：collect 命中 autoClaim 的异步入口。复用 claimItems；已有刊登不重建、不重复入场。 */
+const listingClaim: JobHandler = {
+  async run(deps: Deps, job) {
+    const sourceItemId = String(job.payload.sourceItemId);
+    const storeId = String(job.payload.storeId);
+    const advance = job.payload.advance === true;
+    const [[item], [store]] = await Promise.all([
+      deps.db.select().from(sourceItems).where(eq(sourceItems.id, sourceItemId)),
+      deps.db.select().from(stores).where(eq(stores.id, storeId)),
+    ]);
+    if (!item || !store || store.status === "disconnected") return;
+    if (item.workspaceId !== store.workspaceId) return; // 防御：不该发生
+    const created = await claimItems(deps.db, item.workspaceId, [item], [store]);
+    let listingId = created[0]?.id;
+    if (!listingId) {
+      const [l] = await deps.db
+        .select({ id: listings.id, pipelineStage: listings.pipelineStage })
+        .from(listings)
+        .where(and(eq(listings.storeId, storeId), eq(listings.sourceItemId, sourceItemId)));
+      listingId = l?.id;
+      if (!listingId) return; // 预处理规则下没有刊登可进链路（如价格全被过滤）
+      if (l!.pipelineStage) return; // 已在链路：autoClaim 幂等，不重复入场
+    }
+    const policy = advance ? advancePolicy(store.rules?.pipeline) : store.rules?.pipeline;
+    if (policy) {
+      await enterPipeline(deps.db, listingId, policy); // 内含 AI 产线排队（链路驱动）
+    } else if (created[0] && store.aiEnhance !== "off" && deps.config.ai) {
+      await enqueueAiEnhance(deps.db, [listingId], item.workspaceId);
+    }
+  },
+};
+
+/**
+ * pipeline.advance：autoAccept 白名单（复用 decide 的 apply+学习钩子）→ holdPoint →
+ * precheck（与发布同一道门禁）→ autoPublish（带熔断 + pace/scheduled 顺延）。
+ * payload.manual=人工推进：越过所有 hold 与熔断，queued 时提前放行发布。
+ */
+const pipelineAdvance: JobHandler = {
+  async run(deps: Deps, job) {
+    const listingId = String(job.payload.listingId);
+    const manual = job.payload.manual === true;
+    const [row] = await deps.db
+      .select({ listing: listings, store: stores, item: sourceItems })
+      .from(listings)
+      .innerJoin(stores, eq(stores.id, listings.storeId))
+      .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
+      .where(eq(listings.id, listingId));
+    if (!row) return; // 刊登已删
+    let { listing } = row;
+    const { store, item } = row;
+    if (!listing.pipelineStage) return;
+    if (store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
+    // 手动暂停：仅手动推进放行
+    if (listing.pipelineHoldReason === "manual" && !manual) return;
+    // 发布 job 已接管
+    if (listing.pipelineStage === "publishing") return;
+    if (listing.pipelineStage === "queued") {
+      if (!manual) return;
+      // 手动推进 = 提前放行排队中的发布（publishAt/scheduled 作废）
+      await deps.db
+        .update(jobs)
+        .set({ runAt: new Date() })
+        .where(
+          and(
+            eq(jobs.type, PUBLISH_LISTING),
+            eq(jobs.status, "queued"),
+            sql`${jobs.payload}->>'listingId' = ${listingId}`,
+          ),
+        );
+      await deps.db
+        .update(listings)
+        .set({ publishAt: null })
+        .where(eq(listings.id, listingId));
+      return;
+    }
+    if (manual && listing.pipelineHoldReason === "manual") {
+      await deps.db
+        .update(listings)
+        .set({ pipelineHoldReason: null })
+        .where(eq(listings.id, listingId));
+      listing = { ...listing, pipelineHoldReason: null };
+    }
+
+    // 策略快照兜底：老链路行没有快照时回落当前店铺配置并固化
+    const policy: PipelinePolicy = listing.policySnapshot ?? store.rules?.pipeline ?? {};
+    if (!listing.policySnapshot) {
+      await deps.db
+        .update(listings)
+        .set({ policySnapshot: policy })
+        .where(eq(listings.id, listingId));
+      listing = { ...listing, policySnapshot: policy };
+    }
+    const setStage = async (
+      stage: NonNullable<typeof listing.pipelineStage>,
+      holdReason: string | null = null,
+    ) => {
+      await deps.db
+        .update(listings)
+        .set({ pipelineStage: stage, pipelineHoldReason: holdReason })
+        .where(eq(listings.id, listingId));
+      listing = { ...listing, pipelineStage: stage, pipelineHoldReason: holdReason };
+    };
+
+    // ① autoAccept 白名单：自动接受指定字段的 pending 建议（复用 decide 的 apply+学习钩子）
+    const fields = policy.autoAcceptFields ?? [];
+    if (fields.length) {
+      const patch: Partial<ListingRow> = {};
+      let accepted = 0;
+      await deps.db.transaction(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(listingSuggestions)
+          .where(
+            and(
+              eq(listingSuggestions.listingId, listingId),
+              eq(listingSuggestions.workspaceId, listing.workspaceId),
+              eq(listingSuggestions.status, "pending"),
+              inArray(listingSuggestions.field, fields),
+            ),
+          );
+        for (const s of rows) {
+          try {
+            Object.assign(
+              patch,
+              await acceptSuggestion(tx, listing, s, {
+                workspaceId: listing.workspaceId,
+                storePlatform: store.platform,
+                storeLanguage: store.language,
+                sourcePlatform: item.sourcePlatform,
+                confirmedBy: "ai",
+              }),
+            );
+            await tx
+              .update(listingSuggestions)
+              .set({ status: "accepted" })
+              .where(eq(listingSuggestions.id, s.id));
+            accepted++;
+          } catch {
+            // 无可用候选等不建议自动接受：留在 pending 待人工
+          }
+        }
+        if (Object.keys(patch).length) {
+          await tx.update(listings).set(patch).where(eq(listings.id, listingId));
+        }
+      });
+      if (accepted) {
+        listing = { ...listing, ...patch };
+        await audit(deps.db, listing.workspaceId, {
+          actor: "system",
+          action: "pipeline.auto_accept",
+          entityType: "listing",
+          entityId: listingId,
+          payload: { fields, accepted },
+        });
+      }
+    }
+
+    // ② holdPoint=after_ai：AI 完事后卡在人工审核
+    if (!manual && policy.holdPoint === "after_ai") {
+      await setStage("hold_ai", "等待人工审核 AI 建议");
+      await audit(deps.db, listing.workspaceId, {
+        actor: "system",
+        action: "pipeline.hold",
+        entityType: "listing",
+        entityId: listingId,
+        payload: { stage: "hold_ai" },
+      });
+      return;
+    }
+
+    // ③ precheck：与发布同一道门禁（adapter.validate + 禁售词）
+    const adapter = adapterFor(store.platform);
+    const issues = await adapter.validate(deps, store, listing);
+    const blocking = issues.filter((i) => (i.severity ?? "block") === "block");
+    const banned = findBannedWords(listing, store.rules?.bannedWords);
+    if (blocking.length || banned.length) {
+      const reason = [
+        ...blocking.map((i) => i.message),
+        ...(banned.length ? [`含禁售词：${banned.join("、")}`] : []),
+      ].join("；");
+      await setStage("failed", reason);
+      await audit(deps.db, listing.workspaceId, {
+        actor: "system",
+        action: "pipeline.precheck_failed",
+        entityType: "listing",
+        entityId: listingId,
+        payload: {
+          issues: blocking.map((i) => ({ code: i.code, message: i.message })),
+          banned,
+        },
+      });
+      return;
+    }
+    const warnings = issues.filter((i) => i.severity === "warn").map((i) => i.message);
+    if (!manual && warnings.length && policy.holdOnWarning) {
+      await setStage("hold_precheck", `门禁告警待确认：${warnings.join("；")}`);
+      await audit(deps.db, listing.workspaceId, {
+        actor: "system",
+        action: "pipeline.hold",
+        entityType: "listing",
+        entityId: listingId,
+        payload: { stage: "hold_precheck", warnings },
+      });
+      return;
+    }
+    if (!manual && policy.holdPoint === "after_precheck") {
+      await setStage("hold_precheck", "发布前检查通过，待人工确认");
+      await audit(deps.db, listing.workspaceId, {
+        actor: "system",
+        action: "pipeline.hold",
+        entityType: "listing",
+        entityId: listingId,
+        payload: { stage: "hold_precheck", warnings },
+      });
+      return;
+    }
+    // ④ autoPublish 关：链路停在 precheck 待人工推进
+    if (!manual && !policy.autoPublish) {
+      await setStage("precheck", null);
+      return;
+    }
+    // ⑤ 熔断：当日失败率 >50% 且样本 >5 → 自动发布停排（手动推进可越过）
+    if (!manual && (await circuitOpen(deps.db, listing.workspaceId, listingId))) {
+      await setStage("hold_precheck", "当日自动发布失败率过高，已熔断（可人工推进）");
+      return;
+    }
+    // ⑥ 自动发布：pace/scheduled 顺延 runAt；queued 期间保持 draft 可编辑
+    const runAt = await nextRunAt(deps.db, store, listing, policy);
+    const attemptId = await deps.db.transaction(async (tx) => {
+      const [run] = await tx
+        .insert(publishRuns)
+        .values({
+          workspaceId: listing.workspaceId,
+          listingIds: [listingId],
+          status: "queued",
+        })
+        .returning({ id: publishRuns.id });
+      const [attempt] = await tx
+        .insert(publishAttempts)
+        .values({
+          workspaceId: listing.workspaceId,
+          runId: run!.id,
+          listingId,
+          storeId: store.id,
+          status: "queued",
+          fieldsSnapshot: toFieldsSnapshot(listing),
+        })
+        .returning({ id: publishAttempts.id });
+      await tx
+        .update(listings)
+        .set({
+          pipelineStage: "queued",
+          pipelineHoldReason: null,
+          publishAt: runAt.getTime() > Date.now() ? runAt : listing.publishAt,
+          lastError: null,
+        })
+        .where(eq(listings.id, listingId));
+      await enqueue(
+        tx,
+        PUBLISH_LISTING,
+        { listingId, attemptId: attempt!.id, pipeline: true },
+        { workspaceId: listing.workspaceId, runAt },
+      );
+      return attempt!.id;
+    });
+    listing = { ...listing, pipelineStage: "queued" };
+    await audit(deps.db, listing.workspaceId, {
+      actor: "system",
+      action: "pipeline.publish_queued",
+      entityType: "listing",
+      entityId: listingId,
+      payload: { attemptId, runAt: runAt.toISOString(), mode: policy.publishMode ?? "now" },
+    });
   },
 };
 
@@ -776,6 +1250,8 @@ export const jobHandlers: Record<string, JobHandler> = {
   [SYNC_STORE]: syncStore,
   [AI_ENHANCE_LISTING]: aiEnhance,
   [CATEGORY_SUGGEST]: categorySuggest,
+  [LISTING_CLAIM]: listingClaim,
+  [PIPELINE_ADVANCE]: pipelineAdvance,
   [AI_IMAGE]: aiImage,
   [SYNC_CATEGORIES]: syncCategories,
   [DELIST_LISTING]: delistListing,

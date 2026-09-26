@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { CollectedOffer, CollectHarvest } from "@caiji/shared";
@@ -8,7 +8,11 @@ import type { AppEnv } from "../context.js";
 import type { Db } from "../db/client.js";
 import { listings, sourceItems, stores } from "../db/schema.js";
 import { HttpError } from "../lib/errors.js";
-import { FETCH_MISSING_MEDIA, PUSH_STOCK } from "../jobs/handlers.js";
+import {
+  enqueueListingClaim,
+  FETCH_MISSING_MEDIA,
+  PUSH_STOCK,
+} from "../jobs/handlers.js";
 import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { toSourceItemDto } from "./sourceItems.js";
@@ -205,6 +209,27 @@ export function collectRoutes() {
         { sourceItemId: item.id },
         { workspaceId, runAt: new Date(Date.now() + 90_000) },
       );
+    }
+    // 采集成功：命中 autoClaim 的店铺 → 链式认领（认领+按策略走链路）。
+    // 重复采集只同步既有刊登，不再触发认领。
+    if (!duplicated) {
+      const autoStores = await db
+        .select({ id: stores.id })
+        .from(stores)
+        .where(
+          and(
+            eq(stores.workspaceId, workspaceId),
+            ne(stores.status, "disconnected"),
+            sql`coalesce((${stores.rules}->'pipeline'->>'autoClaim')::boolean, false)`,
+          ),
+        );
+      for (const s of autoStores) {
+        await enqueueListingClaim(
+          db,
+          { sourceItemId: item.id, storeId: s.id },
+          workspaceId,
+        );
+      }
     }
     return c.json(
       { ok: true, item: toSourceItemDto(item, []), duplicated, ...propagation },
