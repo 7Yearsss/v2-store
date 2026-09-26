@@ -41,6 +41,10 @@ const ATTEMPT_STATUS: Record<string, { st: string; label: string }> = {
   failed: { st: "failed", label: "失败" },
 };
 
+/** 周期性例行任务（每 10 分钟跑一条）：默认折叠，失败的仍显示。 */
+const ROUTINE_TYPES = new Set(["store.syncListings", "store.syncCategories"]);
+const isRoutine = (j: Job) => ROUTINE_TYPES.has(j.type) && j.status !== "failed";
+
 /** 单个 run 展开：每店一条 attempt（失败原因 + 店铺链接 + 刊登跳转）。 */
 function RunAttempts({ runId }: { runId: string }) {
   const scope = useStoreScope();
@@ -160,6 +164,7 @@ export function JobsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [showRoutine, setShowRoutine] = useState(false);
 
   const list = useQuery({
     queryKey: ["jobs", status, scope.storeId, page, pageSize],
@@ -168,7 +173,14 @@ export function JobsPage() {
     refetchInterval: (q) =>
       q.state.data?.items.some((j) => j.status === "queued" || j.status === "running") ? 2000 : false,
   });
-  const items = (list.data?.items ?? []).filter((j) => !scope.storeId || j.storeId === scope.storeId || !j.storeId);
+  const items = (list.data?.items ?? [])
+    .filter((j) => !scope.storeId || j.storeId === scope.storeId || !j.storeId)
+    .filter((j) => showRoutine || !isRoutine(j));
+  const hiddenRoutine = (list.data?.items ?? []).filter(
+    (j) =>
+      (!scope.storeId || j.storeId === scope.storeId || !j.storeId) &&
+      isRoutine(j),
+  ).length;
 
   const retry = async (id: string) => {
     setRetrying(id);
@@ -192,6 +204,10 @@ export function JobsPage() {
         <h2>任务</h2>
         <span className="pg-sub">发布、同步、AI 等后台任务的执行记录{scope.store ? ` · 仅 ${scope.store.name}` : ""}</span>
         <div className="pg-spacer" />
+        <label className="job-sub" style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", flex: "none" }}>
+          <input type="checkbox" checked={showRoutine} onChange={(e) => setShowRoutine(e.target.checked)} />
+          例行同步{hiddenRoutine > 0 ? `（已折叠 ${hiddenRoutine}）` : ""}
+        </label>
         <div className="seg" style={{ flex: "none" }}>
           {(["all", "failed", "running", "queued", "succeeded"] as const).map((s) => (
             <button

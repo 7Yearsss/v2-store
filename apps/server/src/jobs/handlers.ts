@@ -22,7 +22,14 @@ import {
   pushedSnapshot,
 } from "../lib/drift.js";
 import { findBannedWords } from "../lib/rules.js";
-import { fetchAndStore, resolveSources } from "../modules/media.js";
+import { meteredEditImage } from "../lib/ai.js";
+import {
+  fetchAndStore,
+  loadImage,
+  mediaUrl,
+  resolveSources,
+  storeImage,
+} from "../modules/media.js";
 import { enqueue, type JobHandler, PermanentJobError } from "./queue.js";
 
 export const PUBLISH_LISTING = "listing.publish";
@@ -32,6 +39,8 @@ export const AI_ENHANCE_LISTING = "listing.aiEnhance";
 export const CATEGORY_SUGGEST = "listing.categorySuggest";
 export const SYNC_CATEGORIES = "store.syncCategories";
 export const DELIST_LISTING = "listing.delist";
+/** 图片 AI 编辑（如白底主图）：生成的图存进媒体库并插到原图后面。 */
+export const AI_IMAGE = "listing.aiImage";
 /** 只更新远端库存（货源库存变化的轻量同步，不触碰远端标题/描述/价格）。 */
 export const PUSH_STOCK = "listing.pushStock";
 
@@ -85,6 +94,31 @@ export async function enqueueAiEnhance(
     queued++;
   }
   return queued;
+}
+
+/** Queue an AI image edit for one listing image (dedup on listing+url+action). */
+export async function enqueueAiImage(
+  db: Db,
+  listingId: string,
+  workspaceId: string,
+  imageUrl: string,
+  action: string,
+) {
+  const pending = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, AI_IMAGE),
+        inArray(jobs.status, ["queued", "running"]),
+        eq(sql`${jobs.payload}->>'listingId'`, listingId),
+        eq(sql`${jobs.payload}->>'imageUrl'`, imageUrl),
+        eq(sql`${jobs.payload}->>'action'`, action),
+      ),
+    );
+  if (pending.length) return false;
+  await enqueue(db, AI_IMAGE, { listingId, imageUrl, action }, { workspaceId, maxAttempts: 1 });
+  return true;
 }
 
 /** Queue a status sync for a store unless one is already waiting. */
@@ -686,6 +720,55 @@ const categorySuggest: JobHandler = {
   },
 };
 
+/** 图片 AI 动作的提示词；动作名留扩展空间（后续可加抠图/场景图等）。 */
+const AI_IMAGE_PROMPTS: Record<string, string> = {
+  whiteBg:
+    "Put this product on a pure white seamless background with soft studio lighting. " +
+    "Keep the product itself pixel-accurate: same shape, colors, text and labels. " +
+    "No props, no text overlay, no watermark. Output a square product photo.",
+};
+
+const aiImage: JobHandler = {
+  async run(deps: Deps, job) {
+    const listingId = String(job.payload.listingId);
+    // 按 URL 定位源图：生成期间用户可能删图/排序，下标会漂移
+    const url = String(job.payload.imageUrl);
+    const action = String(job.payload.action ?? "whiteBg");
+    const [listing] = await deps.db
+      .select()
+      .from(listings)
+      .where(eq(listings.id, listingId));
+    if (!listing) return;
+    if (!listing.images.includes(url)) {
+      throw new PermanentJobError(`源图已不在刊登里：${url}`);
+    }
+    const img = await loadImage(deps, listing.workspaceId, url, { fetchMissing: true });
+    if (!img) throw new Error(`取不到图片：${url}`);
+    const prompt = AI_IMAGE_PROMPTS[action] ?? AI_IMAGE_PROMPTS.whiteBg!;
+    const out = await meteredEditImage(
+      deps,
+      { workspaceId: listing.workspaceId, listingId },
+      { image: img.bytes, contentType: img.asset.contentType, prompt },
+    );
+    const asset = await storeImage(
+      deps,
+      listing.workspaceId,
+      `ai-image://${listingId}/${encodeURIComponent(url)}/${action}`,
+      out,
+    );
+    // 写时重读最新 images：生成期间的并发编辑（删图/排序/另一个 AI 图）不能丢
+    const [fresh] = await deps.db
+      .select({ images: listings.images })
+      .from(listings)
+      .where(eq(listings.id, listingId));
+    const cur = fresh?.images ?? listing.images;
+    const at = cur.indexOf(url);
+    const images = [...cur];
+    images.splice(at >= 0 ? at + 1 : cur.length, 0, mediaUrl(asset.id));
+    await deps.db.update(listings).set({ images }).where(eq(listings.id, listingId));
+  },
+};
+
 export const jobHandlers: Record<string, JobHandler> = {
   [PUBLISH_LISTING]: publishListing,
   [PUSH_STOCK]: pushStockJob,
@@ -693,6 +776,7 @@ export const jobHandlers: Record<string, JobHandler> = {
   [SYNC_STORE]: syncStore,
   [AI_ENHANCE_LISTING]: aiEnhance,
   [CATEGORY_SUGGEST]: categorySuggest,
+  [AI_IMAGE]: aiImage,
   [SYNC_CATEGORIES]: syncCategories,
   [DELIST_LISTING]: delistListing,
 };

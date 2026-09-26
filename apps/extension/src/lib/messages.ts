@@ -1,12 +1,47 @@
 import type { CollectHarvest } from "@caiji/shared";
 
+/** 待确认队列条目：点采集先 stage 到这里，用户在面板勾选提交后才真正入库。 */
+export interface PendingItem {
+  offerId: string;
+  title: string;
+  image?: string;
+  price?: string;
+  /** 详情页采集时已解析的完整数据——提交时直接入箱，不用重拉页面 */
+  harvest?: CollectHarvest;
+}
+
 /** Content-script → background RPC. The background owns auth + the API base. */
 export type BgMessage =
   | { type: "SUBMIT_HARVEST"; harvest: CollectHarvest }
   | { type: "CHECK_COLLECTED"; items: Array<{ itemUrl?: string; itemId?: string }> }
   | { type: "COLLECT_BY_OFFER_ID"; offerId: string }
+  | { type: "STAGE_COLLECT"; item: PendingItem }
+  | { type: "GET_PENDING" }
+  | { type: "UNSTAGE"; offerId: string }
+  | { type: "CLEAR_PENDING" }
+  | { type: "SUBMIT_PENDING"; offerIds: string[] }
   | { type: "FETCH_DESC_IMAGES"; url: string }
   | { type: "GET_STATUS" };
+
+/** background → content script 广播：待确认队列变化（stage/unstage/submit 后）。 */
+export interface PendingChanged {
+  type: "V2_PENDING_CHANGED";
+  /** 当前仍在队列里的 offerId 列表 */
+  stagedIds: string[];
+  /** 刚提交成功的 offerId 列表（卡片可标已采集） */
+  okIds: string[];
+}
+
+export interface SubmitPendingResult {
+  results: Array<{
+    offerId: string;
+    ok: boolean;
+    duplicated?: boolean;
+    title?: string;
+    image?: string;
+    error?: string;
+  }>;
+}
 
 export interface BgResponse<T = unknown> {
   ok: boolean;

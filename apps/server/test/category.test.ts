@@ -43,7 +43,7 @@ function fakeAll(): FakeFetch {
 }
 
 function enableAi(c: Awaited<ReturnType<typeof setup>>) {
-  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m" };
+  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m", imageModel: "imgm" };
 }
 
 /** Collect via the pre-parsed offer path so categoryId/categoryPath survive. */

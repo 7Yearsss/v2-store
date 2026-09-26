@@ -46,7 +46,7 @@ function fakeAll(aiReply: unknown = AI_REPLY): FakeFetch {
 }
 
 function enableAi(c: Awaited<ReturnType<typeof setup>>) {
-  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m" };
+  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m", imageModel: "imgm" };
 }
 
 async function storeAndClaim(c: Awaited<ReturnType<typeof setup>>, t: string, offerId: string) {

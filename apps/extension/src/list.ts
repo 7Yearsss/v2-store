@@ -5,10 +5,11 @@
  * itself never requests detail pages (risk control).
  */
 
-import { sendToBackground, type SubmitResult } from "./lib/messages";
+import { sendToBackground } from "./lib/messages";
+import type { PendingChanged } from "./lib/messages";
 import { el, mountPanel, type Panel, sleep } from "./ui/panel";
 
-type CardState = "idle" | "busy" | "done" | "err";
+type CardState = "idle" | "busy" | "staged" | "done" | "err";
 
 interface Card {
   offerId: string;
@@ -24,14 +25,16 @@ const BTN_CSS =
 const STYLE: Record<CardState, string> = {
   idle: "background:#f97316;color:#fff;",
   busy: "background:#fed7aa;color:#9a3412;cursor:wait;",
+  staged: "background:#2563eb;color:#fff;",
   done: "background:#16a34a;color:#fff;",
   err: "background:#dc2626;color:#fff;",
 };
 const LABEL: Record<CardState, string> = {
   idle: "+ 采集",
-  busy: "采集中…",
+  busy: "加入中…",
+  staged: "✓ 待确认",
   done: "✓ 已采集",
-  err: "重试采集",
+  err: "重试",
 };
 
 const cards = new Map<string, Card>();
@@ -74,30 +77,48 @@ function cardInfo(card: Card): { title: string; image?: string } {
   return { title: title.slice(0, 60), image: img?.src };
 }
 
+/** 点卡片按钮：只把卡片信息加进待确认队列，真正入库由面板「提交」触发。 */
 async function collect(card: Card): Promise<boolean> {
   if (card.state === "busy") return false;
+  if (card.state === "staged") {
+    // 已在待确认里 → 再点一次移出
+    setState(card, "busy");
+    try {
+      await sendToBackground({ type: "UNSTAGE", offerId: card.offerId });
+      setState(card, "idle");
+    } catch {
+      setState(card, "staged");
+    }
+    return false;
+  }
   setState(card, "busy");
   try {
-    const res = await sendToBackground<SubmitResult>({
-      type: "COLLECT_BY_OFFER_ID",
-      offerId: card.offerId,
+    const info = cardInfo(card);
+    await sendToBackground({
+      type: "STAGE_COLLECT",
+      item: { offerId: card.offerId, title: info.title, image: info.image, price: cardPrice(card) },
     });
-    setState(card, "done");
-    panel.log({
-      title: res.item.title,
-      image: res.item.images?.[0] ?? cardInfo(card).image,
-      state: res.duplicated ? "dup" : "ok",
-    });
+    setState(card, "staged");
     return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     setState(card, "err", msg);
-    panel.log({ ...cardInfo(card), state: "err", note: msg });
     if (msg.includes("授权")) await panel.refreshStatus();
     throw e;
   } finally {
     renderStats();
   }
+}
+
+/** 卡片价格文本：1688 卡片价格 class 不稳定，捞第一个含 ¥ 的节点。 */
+function cardPrice(card: Card): string | undefined {
+  const node =
+    card.root.querySelector<HTMLElement>("[class*=price], [class*=Price]") ??
+    [...card.root.querySelectorAll<HTMLElement>("span, div")].find((n) =>
+      /^[¥￥]\s*\d/.test(n.innerText?.trim() ?? "") && n.childElementCount === 0,
+    );
+  const t = node?.innerText?.trim().split("\n")[0];
+  return t ? t.slice(0, 24) : undefined;
 }
 
 /**
@@ -207,16 +228,16 @@ const stopBtn = el("button", { class: "btn", style: "display:none" }, "停止");
 
 function renderStats() {
   const all = [...cards.values()];
-  const done = all.filter((c) => c.state === "done").length;
+  const staged = all.filter((c) => c.state === "staged").length;
   const todo = all.filter((c) => c.state === "idle" || c.state === "err").length;
   stats.replaceChildren(
     "本页识别 ",
     el("b", {}, String(all.length)),
-    " 个商品 · 已采集 ",
-    el("b", {}, String(done)),
+    " 个商品 · 待确认 ",
+    el("b", {}, String(staged)),
   );
   if (!batchRunning) {
-    batchBtn.textContent = todo ? `采集本页未采集的 ${todo} 个` : "本页已全部采集";
+    batchBtn.textContent = todo ? `全部加入待确认（${todo}）` : "本页已全部加入";
     batchBtn.disabled = !todo || !panel.status.authorized;
   }
 }
@@ -232,26 +253,20 @@ async function runBatch() {
   let ok = 0;
   let fail = 0;
   for (let i = 0; i < queue.length && !batchStop; i++) {
-    batchBtn.textContent = `采集中 ${i + 1}/${queue.length}…`;
+    batchBtn.textContent = `加入中 ${i + 1}/${queue.length}…`;
     panel.progress(i, queue.length);
     try {
       await collect(queue[i]!);
       ok++;
-    } catch (e) {
+    } catch {
       fail++;
-      const msg = e instanceof Error ? e.message : "";
-      // every remaining item would fail the same way
-      if (/授权|安全验证|登录/.test(msg)) {
-        panel.toast(msg, false);
-        break;
-      }
     }
-    await sleep(800 + Math.random() * 600); // pace requests; 1688 rate-limits bursts
+    await sleep(120); // stage 是本地操作，不用走 1688 限流节奏
   }
   panel.progress(0, null);
   batchRunning = false;
   stopBtn.style.display = "none";
-  panel.toast(`${batchStop ? "已停止，" : ""}成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ""}`, fail === 0);
+  panel.toast(`已加入待确认 ${ok} 个${fail ? `，失败 ${fail} 个` : ""}，在下面列表勾选后提交`, fail === 0);
   renderStats();
 }
 
@@ -266,10 +281,34 @@ async function runBatch() {
     stats,
     batchBtn,
     stopBtn,
-    el("div", { class: "stat", style: "font-size:12px" }, "也可以点每个商品卡片右上角的「+ 采集」单独采集。"),
+    el("div", { class: "stat", style: "font-size:12px" }, "点卡片右上「+ 采集」或上方批量按钮加入待确认，在下方列表勾选后提交入库。"),
   );
   renderStats();
   scan();
+
+  // 页面打开时同步一次待确认队列（跨 tab 的 stage 也生效；广播只管之后的变化）
+  void sendToBackground<{ items: { offerId: string }[] }>({ type: "GET_PENDING" })
+    .then((res) => {
+      const staged = new Set(res.items.map((i) => i.offerId));
+      for (const card of cards.values()) {
+        if (card.state !== "done" && staged.has(card.offerId)) setState(card, "staged");
+      }
+      renderStats();
+    })
+    .catch(() => {});
+
+  // 待确认变化/提交完成时同步卡片状态
+  chrome.runtime.onMessage.addListener((msg: PendingChanged) => {
+    if (msg?.type !== "V2_PENDING_CHANGED") return;
+    const staged = new Set(msg.stagedIds);
+    const okIds = new Set(msg.okIds);
+    for (const card of cards.values()) {
+      if (okIds.has(card.offerId)) setState(card, "done");
+      else if (staged.has(card.offerId) && card.state !== "done") setState(card, "staged");
+      else if (card.state === "staged" && !staged.has(card.offerId)) setState(card, "idle");
+    }
+    renderStats();
+  });
   // cards move as images load and the layout reflows
   window.addEventListener("resize", queueLayout);
   window.addEventListener("scroll", queueLayout, { passive: true });

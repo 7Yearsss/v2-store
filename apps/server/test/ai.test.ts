@@ -34,7 +34,7 @@ function fakeAll(aiReply: unknown = AI_REPLY): FakeFetch {
 }
 
 function enableAi(c: Awaited<ReturnType<typeof setup>>) {
-  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m" };
+  c.deps.config.ai = { baseUrl: "https://ai.test/v1", apiKey: "k", model: "m", imageModel: "imgm" };
 }
 
 async function claimOne(c: Awaited<ReturnType<typeof setup>>, t: string) {
@@ -183,5 +183,85 @@ describe("AI 产线", () => {
       t2,
     );
     expect([404, 409]).toContain(decide.status);
+  });
+});
+
+const IMG_EDIT_URL = "https://ai.test/v1/images/edits";
+const SRC_IMG = "https://cbu01.alicdn.com/a.jpg";
+// 1x1 PNG
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+function fakeAllWithImage(): FakeFetch {
+  const base = fakeAll();
+  return (url, init) => {
+    if (url === IMG_EDIT_URL) {
+      return json({ data: [{ b64_json: PNG.toString("base64") }] });
+    }
+    if (url === SRC_IMG) {
+      return new Response(new Uint8Array(PNG), {
+        headers: { "Content-Type": "image/png" },
+      });
+    }
+    return base(url, init);
+  };
+}
+
+describe("AI 图片", () => {
+  it("白底图：生成后插在原图后，入媒体库并计量", async () => {
+    ctx = await setup(fakeAllWithImage());
+    enableAi(ctx);
+    const t = await ctx.register();
+    const { listing } = await claimOne(ctx, t);
+
+    const res = await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/ai-image`,
+      { imageUrl: SRC_IMG, action: "whiteBg" },
+      t,
+    );
+    expect(res.body).toEqual({ queued: true });
+    // 同图同动作已在队列 → 去重
+    const dup = await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/ai-image`,
+      { imageUrl: SRC_IMG, action: "whiteBg" },
+      t,
+    );
+    expect(dup.body).toEqual({ queued: false });
+
+    await drain(ctx);
+
+    const after = await ctx.api("GET", `/api/listings/${listing.id}`, undefined, t);
+    expect(after.body.images).toHaveLength(2);
+    expect(after.body.images[1]).toMatch(/^\/api\/media\//);
+
+    const { aiUsage } = await import("../src/db/schema.js");
+    const usage = await ctx.deps.db.select().from(aiUsage);
+    expect(usage.filter((u) => u.model === "image:imgm" && u.status === "ok")).toHaveLength(1);
+  });
+
+  it("不在刊登里的图 400，跨工作区 404", async () => {
+    ctx = await setup(fakeAllWithImage());
+    enableAi(ctx);
+    const t = await ctx.register();
+    const t2 = await ctx.register("c@test.dev");
+    const { listing } = await claimOne(ctx, t);
+    const bad = await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/ai-image`,
+      { imageUrl: "https://cbu01.alicdn.com/not-in-listing.jpg", action: "whiteBg" },
+      t,
+    );
+    expect(bad.status).toBe(400);
+    const cross = await ctx.api(
+      "POST",
+      `/api/listings/${listing.id}/ai-image`,
+      { imageUrl: SRC_IMG, action: "whiteBg" },
+      t2,
+    );
+    expect(cross.status).toBe(404);
   });
 });

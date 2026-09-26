@@ -33,6 +33,7 @@ import {
   CATEGORY_SUGGEST,
   DELIST_LISTING,
   enqueueAiEnhance,
+  enqueueAiImage,
   PUBLISH_LISTING,
 } from "../jobs/handlers.js";
 import { toProductSetInput } from "../channels/shopify/adapter.js";
@@ -716,6 +717,37 @@ export function listingRoutes() {
     const queued = await enqueueAiEnhance(db, [listing.id], workspaceId);
     return c.json({ queued: queued > 0 });
   });
+
+  /** AI 图片编辑：对刊登的某张图生成变体（当前支持 whiteBg 白底图），
+   *  完成后插在原图后面，用户可自行删除/排序。 */
+  r.post(
+    "/:id/ai-image",
+    zValidator(
+      "json",
+      z.object({
+        /** 用 URL 而非下标：编辑器草稿可能有未保存的删图，下标对不上服务端数组 */
+        imageUrl: z.string().min(1),
+        action: z.enum(["whiteBg"]).default("whiteBg"),
+      }),
+    ),
+    async (c) => {
+      const { db } = c.var.deps;
+      const { workspaceId } = c.var.auth;
+      const { imageUrl, action } = c.req.valid("json");
+      const [listing] = await db
+        .select({ id: listings.id, images: listings.images })
+        .from(listings)
+        .where(
+          and(eq(listings.id, c.req.param("id")), eq(listings.workspaceId, workspaceId)),
+        );
+      if (!listing) throw notFound("刊登");
+      if (!listing.images.includes(imageUrl)) {
+        throw new HttpError(400, "该图片不在已保存的刊登里，请先保存图片编辑");
+      }
+      const queued = await enqueueAiImage(db, listing.id, workspaceId, imageUrl, action);
+      return c.json({ queued });
+    },
+  );
 
   /** 把刊登复制到另一个店铺：内容字段原样带走（含已编辑/AI 优化结果），
    *  remoteId/远端状态清掉——对目标店铺而言是全新草稿。变体价格沿用原值

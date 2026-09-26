@@ -1,5 +1,5 @@
 import type { CategoryCandidate, Listing, ListingStatus, ListingVariant, RemoteStatus } from "@caiji/shared";
-import { DeleteOutlined } from "@ant-design/icons";
+import { DeleteOutlined, HighlightOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -86,6 +86,8 @@ export function ListingEditPage() {
   const [preview, setPreview] = useState<PublishPreview>();
   const [bulk, setBulk] = useState<{ field: "price" | "compareAtPrice"; op: "set" | "add" | "sub" | "mul" } | null>(null);
   const [bulkValue, setBulkValue] = useState<number | null>(null);
+  /** AI 图片任务：pending=已入队数，merged=已合并进草稿的图数 */
+  const [imgJobs, setImgJobs] = useState({ pending: 0, merged: 0 });
 
   const listing = query.data;
   // (re)initialize the editor when the server copy changes and we have no local edits
@@ -100,6 +102,35 @@ export function ListingEditPage() {
   }, [serverJson]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirty = draft && JSON.stringify(draft) !== baseline;
+
+  /** AI 图片任务在跑时轮询刊登，把新生成的图合并进本地草稿（不丢用户未保存的编辑）。 */
+  useEffect(() => {
+    if (imgJobs.pending <= imgJobs.merged) return;
+    const t = window.setInterval(
+      () => qc.invalidateQueries({ queryKey: ["listings", "one", id] }),
+      3000,
+    );
+    const giveUp = window.setTimeout(() => setImgJobs((j) => ({ ...j, pending: j.merged })), 180_000);
+    return () => {
+      window.clearInterval(t);
+      window.clearTimeout(giveUp);
+    };
+  }, [imgJobs, id, qc]);
+  useEffect(() => {
+    if (!listing || !draft || imgJobs.pending <= imgJobs.merged) return;
+    const oldBaselineImgs: string[] = baseline ? (JSON.parse(baseline) as Editable).images : [];
+    const missing = listing.images.filter((u) => !oldBaselineImgs.includes(u));
+    if (!missing.length) return;
+    const oldBaselineSet = new Set(oldBaselineImgs);
+    // 按服务端顺序合并：新图（旧基线里没有）保留，用户本地删掉的旧图不复活
+    setDraft((d) => ({
+      ...d!,
+      images: listing.images.filter((u) => !oldBaselineSet.has(u) || d!.images.includes(u)),
+    }));
+    setBaseline(JSON.stringify(pickEditable(listing)));
+    setImgJobs((j) => ({ ...j, merged: j.merged + missing.length }));
+    message.success("AI 图片已生成并加入图片区");
+  }, [listing, draft, imgJobs, baseline, message]);
 
   const save = useMutation({
     mutationFn: async (andPublish: boolean) => {
@@ -136,6 +167,20 @@ export function ListingEditPage() {
   if (!listing || !draft) {
     return query.isError ? <Alert type="error" message={query.error.message} /> : <Spin />;
   }
+
+  const aiImage = useMutation({
+    // 传 URL 不传下标：本地可能有未保存的删图，下标与服务端数组会错位
+    mutationFn: (imageUrl: string) => api.aiImage(id, imageUrl),
+    onSuccess: (r) => {
+      if (r.queued) {
+        setImgJobs((j) => ({ ...j, pending: j.pending + 1 }));
+        message.info("AI 白底图已加入任务，完成后自动出现在图片区（约 30–90 秒）");
+      } else {
+        message.info("该图的 AI 任务已在队列中");
+      }
+    },
+    onError: (e) => message.error(e.message),
+  });
 
   const set = (patch: Partial<Editable>) => setDraft((d) => ({ ...d!, ...patch }));
   const openPreview = async () => {
@@ -271,20 +316,38 @@ export function ListingEditPage() {
         </Form>
       </Card>
 
-      <Card title={`图片（${draft.images.length}）`} extra={<Typography.Text type="secondary">第一张为主图</Typography.Text>}>
+      <Card
+        title={`图片（${draft.images.length}）`}
+        extra={
+          <Typography.Text type="secondary">
+            第一张为主图 · 点图下「AI 白底」生成白底版图
+          </Typography.Text>
+        }
+      >
         <Image.PreviewGroup>
           <Space wrap>
             {draft.images.map((src, i) => (
               <div key={src} style={{ position: "relative" }}>
                 <Image src={src} width={110} height={110} style={{ objectFit: "cover", borderRadius: 6 }} />
                 {!locked && (
-                  <Button
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    style={{ position: "absolute", top: 4, right: 4 }}
-                    onClick={() => set({ images: draft.images.filter((_, j) => j !== i) })}
-                  />
+                  <>
+                    <Button
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      style={{ position: "absolute", top: 4, right: 4 }}
+                      onClick={() => set({ images: draft.images.filter((_, j) => j !== i) })}
+                    />
+                    <Button
+                      size="small"
+                      icon={<HighlightOutlined />}
+                      loading={aiImage.isPending && aiImage.variables === src}
+                      style={{ position: "absolute", bottom: 4, right: 4, fontSize: 11 }}
+                      onClick={() => aiImage.mutate(src)}
+                    >
+                      白底
+                    </Button>
+                  </>
                 )}
               </div>
             ))}
