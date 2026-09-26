@@ -345,7 +345,31 @@ function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
 
 // --- messages from our own content scripts on source sites -----------------
 
+/** 消息来源分类：工作台 origin / 1688 页面 content script / 插件内部页。 */
+function senderOriginOf(sender: chrome.runtime.MessageSender): string {
+  return sender.origin ?? (sender.url ? new URL(sender.url).origin : "");
+}
+function fromApp(sender: chrome.runtime.MessageSender): boolean {
+  if (!sender.url) return true; // popup/options 等插件内部
+  if (sender.url.startsWith("chrome-extension://")) return true;
+  return trustedAppOrigins().includes(senderOriginOf(sender));
+}
+function from1688(sender: chrome.runtime.MessageSender): boolean {
+  const o = senderOriginOf(sender);
+  return o === "https://1688.com" || o.endsWith(".1688.com");
+}
+
 chrome.runtime.onMessage.addListener((msg: BgMessage | { type: string; [k: string]: any }, sender, sendResponse) => {
+  // 采购数据含货代收货地址：读全量/写任务只允许工作台；GET_PROCURE 额外放行 1688 详情页 content script
+  const PROCURE_WRITE = new Set(["PROCURE_1688", "GET_PROCURE_LIST", "PROCURE_PLACED"]);
+  if (PROCURE_WRITE.has(msg?.type) && !fromApp(sender)) {
+    sendResponse({ ok: false, error: "来源不允许" });
+    return false;
+  }
+  if (msg?.type === "GET_PROCURE" && !fromApp(sender) && !from1688(sender)) {
+    sendResponse({ items: [] });
+    return false;
+  }
   switch (msg?.type) {
     case "SUBMIT_HARVEST":
       return reply(submitHarvest((msg as any).harvest), sendResponse);

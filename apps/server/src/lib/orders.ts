@@ -202,7 +202,23 @@ export async function upsertRemoteOrder(
         currencyCode: r.currencyCode,
         subtotalPriceSet: r.subtotalPriceSet,
         totalPriceSet: r.totalPriceSet,
-        lineItems: li ? { nodes: li.nodes } : undefined,
+        lineItems: li
+          ? {
+              // 行节点也走白名单：buyer 备注/customAttributes 之类不能整节点落明文
+              nodes: (li.nodes ?? []).map((n) => {
+                const x = n as Record<string, unknown>;
+                const v = x.variant as Record<string, unknown> | null | undefined;
+                return {
+                  id: x.id,
+                  title: x.title,
+                  name: x.name,
+                  sku: x.sku,
+                  quantity: x.quantity,
+                  variant: v ? { id: v.id, sku: v.sku, title: v.title } : undefined,
+                };
+              }),
+            }
+          : undefined,
       };
     })(),
   };
