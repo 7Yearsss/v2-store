@@ -324,15 +324,25 @@ export async function recordSourceChanges(
 
     const oos =
       enabled && isSourceOos(item.availability, offerSkus, monitor);
-    if (oos) {
-      const oosAction = inv?.oosAction ?? "notify";
-      if (oosAction === "zero") {
-        for (const v of variants) {
-          if (v.stock !== 0) {
-            v.stock = 0;
-            stockDirty = true;
-          }
+    const oosAction = inv?.oosAction ?? "notify";
+    if (oos && oosAction === "zero") {
+      for (const v of variants) {
+        if (v.stock !== 0) {
+          v.stock = 0;
+          stockDirty = true;
         }
+      }
+    }
+
+    // 先落库再入队：worker 必须读到新变体，不能把旧库存/价格推上架
+    updated++;
+    await db
+      .update(listings)
+      .set({ variants, sourceChangedAt: now, updatedAt: now })
+      .where(eq(listings.id, l.id));
+
+    if (oos) {
+      if (oosAction === "zero") {
         if (published) {
           // force：售罄清零是店主的明确配置，不走刊登级 stock 策略
           await enqueue(
@@ -385,12 +395,6 @@ export async function recordSourceChanges(
         markAct("price", l.id, "price_recalculated");
       }
     }
-
-    updated++;
-    await db
-      .update(listings)
-      .set({ variants, sourceChangedAt: now, updatedAt: now })
-      .where(eq(listings.id, l.id));
   }
 
   // 全部关联刊登都处理过的变更 → 直接落账；否则留 pending

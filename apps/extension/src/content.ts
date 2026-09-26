@@ -173,7 +173,7 @@ const offerId = location.href.match(/offer\/(\d+)/)?.[1];
         specBtn.onclick = () => copy(spec, "规格");
         const qtyBtn = el("button", { class: "btn", style: "flex:1" }, `数量：${qty}`);
         qtyBtn.onclick = () => copy(String(t.qty), "数量");
-        const addrBtn = el("button", { class: "btn" }, addr ? `地址：${addr.slice(0, 26)}…（点我复制）` : "本单无收货地址");
+        const addrBtn = el("button", { class: "btn" }, addr ? `地址：${addr.slice(0, 26)}…（点我复制）` : "先在采购单绑货代，自动带出收货地址");
         addrBtn.disabled = !addr;
         addrBtn.onclick = () => copy(addr, "地址");
         const placed = el("button", { class: "btn primary" }, "标记已下单");

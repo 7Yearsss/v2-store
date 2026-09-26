@@ -522,8 +522,42 @@ describe("采购单 + 履约", () => {
       qty: 2,
       specText: expect.any(String),
     });
-    expect(res.body.address.recipient).toBe("Alice Chen"); // 明文只在采购卡/address 端点
-    expect(res.body.address.phone).toBe("13812345678");
+    // 买家地址是 PII：不下发到 1688 页面上下文，采购卡只拿货代仓地址
+    expect(res.body.address).toBeNull();
+
+    // PO 绑了货代后，采购卡拿到的是货代仓地址
+    const fw = await ctx.api(
+      "POST",
+      "/api/freight-forwarders",
+      {
+        name: "深圳仓",
+        address: {
+          recipient: "仓管",
+          phone: "0755-12345678",
+          country: "CN",
+          province: "广东",
+          city: "深圳",
+          address1: "保税仓 1 号",
+        },
+      },
+      t,
+    );
+    expect(fw.status).toBe(201);
+    const confirm = await ctx.api(
+      "POST",
+      `/api/orders/${order.id}/procure-confirm`,
+      { offerId: "777", sourceOrderId: "1688-SO-1" },
+      t,
+    );
+    const patch = await ctx.api(
+      "PATCH",
+      `/api/purchase-orders/${confirm.body.purchaseOrderId}`,
+      { forwarderId: fw.body.id },
+      t,
+    );
+    expect(patch.status).toBe(200);
+    const res2 = await ctx.api("POST", `/api/orders/${order.id}/procure`, {}, t);
+    expect(res2.body.address?.recipient).toBe("仓管");
   });
 });
 

@@ -230,6 +230,7 @@ export function listingRoutes() {
       pipelineStage ? eq(listings.pipelineStage, pipelineStage) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
       sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
+      q ? ilike(listings.title, `%${q}%`) : undefined,
       tag ? sql`${tag} = any(${listings.internalTags})` : undefined,
       watch
         ? or(

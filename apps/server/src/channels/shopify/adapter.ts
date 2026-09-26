@@ -992,9 +992,13 @@ export const shopifyAdapter: ChannelAdapter = {
         await fillOrderLines(deps, store, n);
         out.push(toRemoteOrder(n));
       }
+      // nextAfter 只在「打满 20 页且还有下一页」时保留：正常读到末页必须清空，
+      // 否则调用方把已消费的分页位写回游标，后续同步无限重拉同一批尾部订单
+      nextAfter = data.orders.pageInfo.hasNextPage
+        ? data.orders.pageInfo.endCursor
+        : null;
       if (!data.orders.pageInfo.hasNextPage) break;
       after = data.orders.pageInfo.endCursor;
-      nextAfter = after; // 打满 20 页仍 hasNextPage → 记下分页位让调用方续拉
     }
     return { orders: out, nextAfter };
   },

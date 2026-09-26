@@ -17,6 +17,7 @@ import {
 } from "../db/schema.js";
 import { audit, listAudits } from "../lib/audit.js";
 import { HttpError, notFound } from "../lib/errors.js";
+import type { ShippingAddress } from "@caiji/shared";
 import {
   hydrateOrders,
   openAddress,
@@ -247,14 +248,15 @@ export function orderRoutes() {
     if (!offers.length) {
       throw new HttpError(422, "没有已匹配货源的行项，先绑定货源", "no_matched_items");
     }
-    // 采购收货地址：优先已关联采购单的货代地址，否则买家地址
+    // 采购收货地址只发采购单关联的货代仓地址：终端买家地址（PII）不出服务端，
+    // 更不落进 1688 页面上下文。无货代 → null，卡片提示到采购单绑定货代。
     const [po] = await deps.db
       .select({ forwarderId: purchaseOrders.forwarderId })
       .from(purchaseOrderItems)
       .innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId))
       .where(inArray(purchaseOrderItems.orderItemId, items.map((i) => i.id)))
       .limit(1);
-    let address = openAddress(deps, order);
+    let address: ShippingAddress | null = null;
     if (po?.forwarderId) {
       const [fw] = await deps.db
         .select()
