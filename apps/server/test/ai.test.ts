@@ -219,7 +219,7 @@ describe("AI 图片", () => {
     const res = await ctx.api(
       "POST",
       `/api/listings/${listing.id}/ai-image`,
-      { imageIndex: 0, action: "whiteBg" },
+      { imageUrl: SRC_IMG, action: "whiteBg" },
       t,
     );
     expect(res.body).toEqual({ queued: true });
@@ -227,7 +227,7 @@ describe("AI 图片", () => {
     const dup = await ctx.api(
       "POST",
       `/api/listings/${listing.id}/ai-image`,
-      { imageIndex: 0, action: "whiteBg" },
+      { imageUrl: SRC_IMG, action: "whiteBg" },
       t,
     );
     expect(dup.body).toEqual({ queued: false });
@@ -243,7 +243,7 @@ describe("AI 图片", () => {
     expect(usage.filter((u) => u.model === "image:imgm" && u.status === "ok")).toHaveLength(1);
   });
 
-  it("下标越界 400，跨工作区 404", async () => {
+  it("不在刊登里的图 400，跨工作区 404", async () => {
     ctx = await setup(fakeAllWithImage());
     enableAi(ctx);
     const t = await ctx.register();
@@ -252,14 +252,14 @@ describe("AI 图片", () => {
     const bad = await ctx.api(
       "POST",
       `/api/listings/${listing.id}/ai-image`,
-      { imageIndex: 99, action: "whiteBg" },
+      { imageUrl: "https://cbu01.alicdn.com/not-in-listing.jpg", action: "whiteBg" },
       t,
     );
     expect(bad.status).toBe(400);
     const cross = await ctx.api(
       "POST",
       `/api/listings/${listing.id}/ai-image`,
-      { imageIndex: 0, action: "whiteBg" },
+      { imageUrl: SRC_IMG, action: "whiteBg" },
       t2,
     );
     expect(cross.status).toBe(404);

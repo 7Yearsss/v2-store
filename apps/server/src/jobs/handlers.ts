@@ -96,12 +96,12 @@ export async function enqueueAiEnhance(
   return queued;
 }
 
-/** Queue an AI image edit for one listing image (dedup on listing+index+action). */
+/** Queue an AI image edit for one listing image (dedup on listing+url+action). */
 export async function enqueueAiImage(
   db: Db,
   listingId: string,
   workspaceId: string,
-  imageIndex: number,
+  imageUrl: string,
   action: string,
 ) {
   const pending = await db
@@ -112,12 +112,12 @@ export async function enqueueAiImage(
         eq(jobs.type, AI_IMAGE),
         inArray(jobs.status, ["queued", "running"]),
         eq(sql`${jobs.payload}->>'listingId'`, listingId),
-        eq(sql`${jobs.payload}->>'imageIndex'`, String(imageIndex)),
+        eq(sql`${jobs.payload}->>'imageUrl'`, imageUrl),
         eq(sql`${jobs.payload}->>'action'`, action),
       ),
     );
   if (pending.length) return false;
-  await enqueue(db, AI_IMAGE, { listingId, imageIndex, action }, { workspaceId, maxAttempts: 1 });
+  await enqueue(db, AI_IMAGE, { listingId, imageUrl, action }, { workspaceId, maxAttempts: 1 });
   return true;
 }
 
@@ -731,15 +731,17 @@ const AI_IMAGE_PROMPTS: Record<string, string> = {
 const aiImage: JobHandler = {
   async run(deps: Deps, job) {
     const listingId = String(job.payload.listingId);
-    const imageIndex = Number(job.payload.imageIndex ?? 0);
+    // 按 URL 定位源图：生成期间用户可能删图/排序，下标会漂移
+    const url = String(job.payload.imageUrl);
     const action = String(job.payload.action ?? "whiteBg");
     const [listing] = await deps.db
       .select()
       .from(listings)
       .where(eq(listings.id, listingId));
     if (!listing) return;
-    const url = listing.images[imageIndex];
-    if (!url) throw new PermanentJobError(`图片下标越界：${imageIndex}`);
+    if (!listing.images.includes(url)) {
+      throw new PermanentJobError(`源图已不在刊登里：${url}`);
+    }
     const img = await loadImage(deps, listing.workspaceId, url, { fetchMissing: true });
     if (!img) throw new Error(`取不到图片：${url}`);
     const prompt = AI_IMAGE_PROMPTS[action] ?? AI_IMAGE_PROMPTS.whiteBg!;
@@ -751,12 +753,18 @@ const aiImage: JobHandler = {
     const asset = await storeImage(
       deps,
       listing.workspaceId,
-      `ai-image://${listingId}/${imageIndex}/${action}`,
+      `ai-image://${listingId}/${encodeURIComponent(url)}/${action}`,
       out,
     );
-    // 插在源图后面；主图（index 0）的 AI 版排在第二位，不挤掉原主图
-    const images = [...listing.images];
-    images.splice(imageIndex + 1, 0, mediaUrl(asset.id));
+    // 写时重读最新 images：生成期间的并发编辑（删图/排序/另一个 AI 图）不能丢
+    const [fresh] = await deps.db
+      .select({ images: listings.images })
+      .from(listings)
+      .where(eq(listings.id, listingId));
+    const cur = fresh?.images ?? listing.images;
+    const at = cur.indexOf(url);
+    const images = [...cur];
+    images.splice(at >= 0 ? at + 1 : cur.length, 0, mediaUrl(asset.id));
     await deps.db.update(listings).set({ images }).where(eq(listings.id, listingId));
   },
 };

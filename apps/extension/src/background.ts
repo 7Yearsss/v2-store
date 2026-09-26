@@ -166,11 +166,21 @@ async function broadcastPending(okIds: string[] = []) {
   }
 }
 
+/** 队列上限：详情页条目带完整 harvest，无界增长会撑爆 storage.local。 */
+const PENDING_MAX = 100;
+
 async function stageCollect(item: PendingItem) {
   const items = await getPending();
   const idx = items.findIndex((i) => i.offerId === item.offerId);
-  if (idx >= 0) items[idx] = item;
-  else items.push(item);
+  if (idx >= 0) {
+    // 已有条目可能带详情页解析的完整 harvest；卡片重 stage 不许降级覆盖
+    items[idx] = { ...item, harvest: item.harvest ?? items[idx].harvest };
+  } else {
+    if (items.length >= PENDING_MAX) {
+      throw new Error(`待确认队列已满（${PENDING_MAX} 条），请先在面板提交或清空`);
+    }
+    items.push(item);
+  }
   await chrome.storage.local.set({ [PENDING_KEY]: items });
   await broadcastPending();
   return { count: items.length };
@@ -212,8 +222,10 @@ async function submitPending(offerIds: string[]): Promise<SubmitPendingResult> {
     if (!it.harvest) await sleep(RESCAN_GAP_MS / 2);
   }
   const okIds = results.filter((r) => r.ok).map((r) => r.offerId);
+  // 重读最新队列再剔除成功项：提交期间可能有新 stage/unstage，不能回写旧快照
+  const latest = await getPending();
   await chrome.storage.local.set({
-    [PENDING_KEY]: items.filter((i) => !okIds.includes(i.offerId)),
+    [PENDING_KEY]: latest.filter((i) => !okIds.includes(i.offerId)),
   });
   await broadcastPending(okIds);
   return { results };

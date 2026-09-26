@@ -137,8 +137,17 @@ export async function editImage(
   const first = data.data?.[0];
   if (first?.b64_json) return new Uint8Array(Buffer.from(first.b64_json, "base64"));
   if (first?.url) {
-    const img = await deps.fetch(first.url);
-    if (img.ok) return new Uint8Array(await img.arrayBuffer());
+    // SSRF 防护：只允许拉取与 AI 网关同源的临时产物 URL，拒绝内网地址
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(first.url).origin === new URL(ai.baseUrl).origin;
+    } catch {
+      /* invalid url */
+    }
+    if (sameOrigin) {
+      const img = await deps.fetch(first.url);
+      if (img.ok) return new Uint8Array(await img.arrayBuffer());
+    }
   }
   throw new AiError("图片 AI 响应里没有图像数据");
 }

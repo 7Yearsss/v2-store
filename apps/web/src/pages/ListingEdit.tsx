@@ -169,7 +169,8 @@ export function ListingEditPage() {
   }
 
   const aiImage = useMutation({
-    mutationFn: (imageIndex: number) => api.aiImage(id, imageIndex),
+    // 传 URL 不传下标：本地可能有未保存的删图，下标与服务端数组会错位
+    mutationFn: (imageUrl: string) => api.aiImage(id, imageUrl),
     onSuccess: (r) => {
       if (r.queued) {
         setImgJobs((j) => ({ ...j, pending: j.pending + 1 }));
@@ -340,9 +341,9 @@ export function ListingEditPage() {
                     <Button
                       size="small"
                       icon={<HighlightOutlined />}
-                      loading={aiImage.isPending && aiImage.variables === i}
+                      loading={aiImage.isPending && aiImage.variables === src}
                       style={{ position: "absolute", bottom: 4, right: 4, fontSize: 11 }}
-                      onClick={() => aiImage.mutate(i)}
+                      onClick={() => aiImage.mutate(src)}
                     >
                       白底
                     </Button>

@@ -286,6 +286,17 @@ async function runBatch() {
   renderStats();
   scan();
 
+  // 页面打开时同步一次待确认队列（跨 tab 的 stage 也生效；广播只管之后的变化）
+  void sendToBackground<{ items: { offerId: string }[] }>({ type: "GET_PENDING" })
+    .then((res) => {
+      const staged = new Set(res.items.map((i) => i.offerId));
+      for (const card of cards.values()) {
+        if (card.state !== "done" && staged.has(card.offerId)) setState(card, "staged");
+      }
+      renderStats();
+    })
+    .catch(() => {});
+
   // 待确认变化/提交完成时同步卡片状态
   chrome.runtime.onMessage.addListener((msg: PendingChanged) => {
     if (msg?.type !== "V2_PENDING_CHANGED") return;

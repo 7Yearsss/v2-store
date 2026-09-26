@@ -725,14 +725,15 @@ export function listingRoutes() {
     zValidator(
       "json",
       z.object({
-        imageIndex: z.number().int().min(0),
+        /** 用 URL 而非下标：编辑器草稿可能有未保存的删图，下标对不上服务端数组 */
+        imageUrl: z.string().min(1),
         action: z.enum(["whiteBg"]).default("whiteBg"),
       }),
     ),
     async (c) => {
       const { db } = c.var.deps;
       const { workspaceId } = c.var.auth;
-      const { imageIndex, action } = c.req.valid("json");
+      const { imageUrl, action } = c.req.valid("json");
       const [listing] = await db
         .select({ id: listings.id, images: listings.images })
         .from(listings)
@@ -740,10 +741,10 @@ export function listingRoutes() {
           and(eq(listings.id, c.req.param("id")), eq(listings.workspaceId, workspaceId)),
         );
       if (!listing) throw notFound("刊登");
-      if (imageIndex >= listing.images.length) {
-        throw new HttpError(400, `图片下标越界（共 ${listing.images.length} 张）`);
+      if (!listing.images.includes(imageUrl)) {
+        throw new HttpError(400, "该图片不在已保存的刊登里，请先保存图片编辑");
       }
-      const queued = await enqueueAiImage(db, listing.id, workspaceId, imageIndex, action);
+      const queued = await enqueueAiImage(db, listing.id, workspaceId, imageUrl, action);
       return c.json({ queued });
     },
   );
