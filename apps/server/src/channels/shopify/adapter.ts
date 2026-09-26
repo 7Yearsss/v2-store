@@ -1015,6 +1015,7 @@ export const shopifyAdapter: ChannelAdapter = {
     // fulfillmentOrders 分页拉全：大订单多仓拆履约时一页 50 可能不够
     const foNodes: FoNode[] = [];
     let foAfter: string | null = null;
+    let foHasMore = false;
     for (let page = 0; page < 10; page++) {
       const pageData: {
         order: {
@@ -1030,9 +1031,12 @@ export const shopifyAdapter: ChannelAdapter = {
       if (!pageData.order) throw new ChannelError("远端订单不存在");
       foNodes.push(...pageData.order.fulfillmentOrders.nodes);
       const pi = pageData.order.fulfillmentOrders.pageInfo;
+      foHasMore = !!pi.hasNextPage;
       if (!pi.hasNextPage || !pi.endCursor) break;
       foAfter = pi.endCursor;
     }
+    // 超上限宁可失败可见，不静默部分履约
+    if (foHasMore) throw new ChannelError("订单履约分组超过上限（500），请人工处理");
     const order = { fulfillmentOrders: { nodes: foNodes } };
     const wanted = input.lineItems
       ? new Map(input.lineItems.map((l) => [l.remoteLineItemId, l.qty]))
