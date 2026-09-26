@@ -132,7 +132,7 @@ export async function enqueuePipelineAdvance(
   opts: { manual?: boolean } = {},
 ) {
   const [pending] = await db
-    .select({ id: jobs.id, payload: jobs.payload })
+    .select({ id: jobs.id, payload: jobs.payload, status: jobs.status })
     .from(jobs)
     .where(
       and(
@@ -143,13 +143,18 @@ export async function enqueuePipelineAdvance(
     )
     .limit(1);
   if (pending) {
-    if (opts.manual && pending.payload.manual !== true) {
-      await db
-        .update(jobs)
-        .set({ payload: { ...pending.payload, manual: true }, updatedAt: new Date() })
-        .where(eq(jobs.id, pending.id));
+    // 运行中的 worker 已读过旧 payload，改它没用：手动放行要另排一个 manual job
+    if (pending.status === "running") {
+      if (!opts.manual) return false;
+    } else {
+      if (opts.manual && pending.payload.manual !== true) {
+        await db
+          .update(jobs)
+          .set({ payload: { ...pending.payload, manual: true }, updatedAt: new Date() })
+          .where(eq(jobs.id, pending.id));
+      }
+      return false;
     }
-    return false;
   }
   await enqueue(
     db,
@@ -1085,6 +1090,8 @@ const pipelineAdvance: JobHandler = {
     if (listing.pipelineHoldReason === "manual" && !manual) return;
     // 发布 job 已接管
     if (listing.pipelineStage === "publishing") return;
+    // 已到 published：再推进只会重复发布并覆盖商家远端编辑，advance 到此为止
+    if (listing.pipelineStage === "published") return;
     if (listing.pipelineStage === "queued") {
       if (!manual) return;
       // 手动推进 = 提前放行排队中的发布（publishAt/scheduled 作废）
@@ -1573,24 +1580,28 @@ const orderSync: JobHandler = {
       if (u > maxUpdated) maxUpdated = u;
     }
     if (!remoteId) {
-      if (res.nextAfter) {
-        // 这一页区间还没拉完：游标停在「同 updatedAfter + 分页位」，马上续拉
-        const next = `${cursorTs ?? ""}|${res.nextAfter}`;
-        if (next !== store.ordersCursor) {
+      // 并发同步可能交错完成：游标只许单调推进，旧窗口的结果不能盖掉新游标
+      const writeCursor = async (next: string) => {
+        const [cur] = await deps.db
+          .select({ c: stores.ordersCursor })
+          .from(stores)
+          .where(eq(stores.id, storeId));
+        const curTs = cur?.c?.split("|")[0] ?? "";
+        const nextTs = next.split("|")[0] ?? "";
+        if (nextTs < curTs) return;
+        if (next !== cur?.c) {
           await deps.db
             .update(stores)
             .set({ ordersCursor: next })
             .where(eq(stores.id, storeId));
         }
+      };
+      if (res.nextAfter) {
+        // 这一页区间还没拉完：游标停在「同 updatedAfter + 分页位」，马上续拉
+        await writeCursor(`${cursorTs ?? ""}|${res.nextAfter}`);
         await enqueue(deps.db, ORDER_SYNC, { storeId }, { workspaceId: store.workspaceId });
       } else if (maxUpdated) {
-        const cursor = new Date(maxUpdated).toISOString();
-        if (cursor !== store.ordersCursor) {
-          await deps.db
-            .update(stores)
-            .set({ ordersCursor: cursor })
-            .where(eq(stores.id, storeId));
-        }
+        await writeCursor(new Date(maxUpdated).toISOString());
       }
     }
   },
