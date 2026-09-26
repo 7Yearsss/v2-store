@@ -63,10 +63,19 @@ function remoteVariantFor(
   return snap[index];
 }
 
-/** 描述比较前剥离媒体块：发布时会把 descImages 追加进远端 body_html（CDN 地址），
- *  与本地 descriptionHtml 的字面差异不算漂移。 */
+/** 描述规范化：剥空段落、压空白（双侧一致）。 */
 function normDesc(s: string): string {
-  return norm(s.replace(/<img\b[^>]*>/gi, "").replace(/<p>\s*<\/p>/gi, ""));
+  return norm(s.replace(/<p>\s*<\/p>/gi, ""));
+}
+
+/** 远端描述 = 本地 descriptionHtml + 发布时追加的 descImages 渲染块（`<p><img cdn></p>` × n）。
+ *  只剥末尾至多 n 个这样的块；描述内用户自己写的 <img> 保留参与比较，商家改动仍会报漂移。 */
+function stripAppendedDescImages(html: string, n: number): string {
+  if (n <= 0) return html;
+  return html.replace(
+    new RegExp(`(?:<p>\\s*<img\\b[^>]*>\\s*</p>\\s*){1,${n}}$`, "i"),
+    "",
+  );
 }
 
 /**
@@ -81,7 +90,8 @@ export function computeDrift(l: ListingRow, snap: RemoteSnapshot): RemoteDriftEn
   }
   if (
     snap.descriptionHtml !== undefined &&
-    normDesc(snap.descriptionHtml) !== normDesc(l.descriptionHtml)
+    normDesc(stripAppendedDescImages(snap.descriptionHtml, l.descImages.length)) !==
+      normDesc(l.descriptionHtml)
   ) {
     drift.push({
       field: "descriptionHtml",

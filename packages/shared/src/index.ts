@@ -453,6 +453,8 @@ export interface Job {
   updatedAt: string;
   listingId: string | null;
   storeId: string | null;
+  /** run/attempt 体系内派生的 publish job 会带 attemptId；stock 兜底等直接入队的不带。 */
+  attemptId: string | null;
 }
 
 // --- 发布批次（run/attempt）与审计 -------------------------------------------

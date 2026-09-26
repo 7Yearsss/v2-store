@@ -29,6 +29,7 @@ function toDto(j: typeof jobs.$inferSelect) {
     updatedAt: j.updatedAt.toISOString(),
     listingId: (j.payload.listingId as string | undefined) ?? null,
     storeId: (j.payload.storeId as string | undefined) ?? null,
+    attemptId: (j.payload.attemptId as string | undefined) ?? null,
   };
 }
 

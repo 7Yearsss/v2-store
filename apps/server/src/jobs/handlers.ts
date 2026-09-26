@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { RemoteSnapshot, SourcePlatform } from "@caiji/shared";
 import { runCategorySuggest } from "../ai/category.js";
 import { runAiEnhance } from "../ai/enhance.js";
@@ -364,7 +364,8 @@ const publishListing: JobHandler = {
     if (!row) throw new PermanentJobError("刊登记录已删除");
     if (row.store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
     if (attemptId) {
-      // 同一刊登同时只允许一个发布 job：重试/重复派发不与在跑的另一个 job 重叠写远端
+      // 同一刊登同时只允许一个发布 job：按 id 取最小者优先，保证并发时恰有一个继续、
+      // 其余跳过（对称地互相排除会让所有 job 都跳过、刊登卡在 publishing）
       const [conflict] = await deps.db
         .select({ id: jobs.id })
         .from(jobs)
@@ -373,7 +374,7 @@ const publishListing: JobHandler = {
             eq(jobs.type, PUBLISH_LISTING),
             inArray(jobs.status, ["queued", "running"]),
             sql`${jobs.payload}->>'listingId' = ${listingId}`,
-            ne(jobs.id, job.id),
+            lt(jobs.id, job.id),
           ),
         )
         .limit(1);
@@ -437,6 +438,8 @@ const publishListing: JobHandler = {
               syncedAt: now,
             })
             .where(eq(listings.id, listingId));
+          // 同步内存状态：更新发布时 adapter 不回报 remoteStatus，快照兜底要用刚拉到的值
+          listing = { ...listing, remoteStatus: snap.status };
         }
       }
     }
