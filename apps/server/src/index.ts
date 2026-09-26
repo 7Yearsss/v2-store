@@ -39,7 +39,7 @@ const deps: Deps = {
       apiVersion: env.SHOPIFY_API_VERSION,
     },
     ...(env.AI_BASE_URL && env.AI_API_KEY
-      ? { ai: { baseUrl: env.AI_BASE_URL, apiKey: env.AI_API_KEY, model: env.AI_MODEL } }
+      ? { ai: { baseUrl: env.AI_BASE_URL, apiKey: env.AI_API_KEY, model: env.AI_MODEL, imageModel: env.AI_IMAGE_MODEL } }
       : {}),
   },
 };

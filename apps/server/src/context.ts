@@ -17,6 +17,8 @@ export interface AppConfig {
     baseUrl: string;
     apiKey: string;
     model: string;
+    /** OpenAI-compatible image model for /images/edits */
+    imageModel: string;
   };
 }
 

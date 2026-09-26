@@ -22,6 +22,8 @@ const schema = z.object({
   AI_BASE_URL: z.string().url().optional(),
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().default("gpt-5.6-sol"),
+  /** 图像编辑模型（OpenAI-compatible /images/edits）。 */
+  AI_IMAGE_MODEL: z.string().default("gpt-image-2.5"),
   SESSION_TTL_DAYS: z.coerce.number().default(30),
   /** Shopify public-app credentials (OAuth install flow). */
   SHOPIFY_API_KEY: z.string().optional(),

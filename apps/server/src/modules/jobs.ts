@@ -13,6 +13,7 @@ const JOB_LABELS: Record<string, string> = {
   "store.syncListings": "店铺状态同步",
   "listing.aiEnhance": "AI 产线",
   "listing.categorySuggest": "类目推荐",
+  "listing.aiImage": "AI 图片",
   "store.syncCategories": "类目树同步",
 };
 

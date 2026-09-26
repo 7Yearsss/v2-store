@@ -104,3 +104,72 @@ export async function meteredChatJson(
     throw e;
   }
 }
+
+/** OpenAI-compatible image edit (POST /images/edits, multipart). Returns edited bytes. */
+export async function editImage(
+  deps: Deps,
+  opts: { image: Uint8Array; contentType: string; prompt: string; timeoutMs?: number },
+): Promise<Uint8Array> {
+  const ai = deps.config.ai;
+  if (!ai) throw new AiError("未配置 AI（AI_BASE_URL / AI_API_KEY）");
+  const form = new FormData();
+  form.set("model", ai.imageModel);
+  form.set("prompt", opts.prompt);
+  form.set("size", "1024x1024");
+  form.set(
+    "image",
+    new Blob([opts.image as BlobPart], { type: opts.contentType }),
+    `image.${opts.contentType.split("/")[1] ?? "png"}`,
+  );
+  const res = await deps.fetch(`${ai.baseUrl}/images/edits`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ai.apiKey}` },
+    body: form,
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new AiError(`图片 AI 请求失败 (${res.status}): ${body.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as {
+    data?: Array<{ b64_json?: string; url?: string }>;
+  };
+  const first = data.data?.[0];
+  if (first?.b64_json) return new Uint8Array(Buffer.from(first.b64_json, "base64"));
+  if (first?.url) {
+    const img = await deps.fetch(first.url);
+    if (img.ok) return new Uint8Array(await img.arrayBuffer());
+  }
+  throw new AiError("图片 AI 响应里没有图像数据");
+}
+
+/** editImage + ai_usage 计量（图像接口无 token 计数，记调用成败）。 */
+export async function meteredEditImage(
+  deps: Deps,
+  meta: { workspaceId: string; listingId?: string | null },
+  opts: { image: Uint8Array; contentType: string; prompt: string; timeoutMs?: number },
+): Promise<Uint8Array> {
+  const model = `image:${deps.config.ai?.imageModel ?? ""}`;
+  try {
+    const bytes = await editImage(deps, opts);
+    await deps.db.insert(aiUsage).values({
+      workspaceId: meta.workspaceId,
+      listingId: meta.listingId ?? null,
+      model,
+      status: "ok",
+    });
+    return bytes;
+  } catch (e) {
+    await deps.db
+      .insert(aiUsage)
+      .values({
+        workspaceId: meta.workspaceId,
+        listingId: meta.listingId ?? null,
+        model,
+        status: "error",
+        error: e instanceof Error ? e.message.slice(0, 500) : String(e),
+      })
+      .catch(() => {});
+    throw e;
+  }
+}

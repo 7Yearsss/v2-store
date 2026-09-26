@@ -200,6 +200,8 @@ export const api = {
       { decisions },
     ),
   aiEnhance: (id: string) => request<{ queued: boolean }>("POST", `/listings/${id}/ai-enhance`, {}),
+  aiImage: (id: string, imageIndex: number, action = "whiteBg") =>
+    request<{ queued: boolean }>("POST", `/listings/${id}/ai-image`, { imageIndex, action }),
   setListingCategory: (
     id: string,
     body: { channelCategoryId: string; channelCategoryName: string; remember?: boolean },
