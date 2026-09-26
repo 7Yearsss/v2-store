@@ -35,8 +35,10 @@ export function fakeShopify(
     /** remote id → raw Product node for the RemoteSnapshots query (null = deleted);
      *  precedence over remoteStatuses which only supplies {id,status} */
     remoteProducts?: Record<string, Record<string, unknown> | null>;
-    /** sku per variant index for the StockData query (sku-matching in pushStock) */
+    /** sku per variant index for the StockData/VariantIds queries (sku-matching in pushStock/pushPrices) */
     stockSkus?: string[];
+    /** records productVariantsBulkUpdate variants inputs for price-push assertions */
+    capturedPrices?: Array<Array<Record<string, unknown>>>;
   } = {},
 ): FakeFetch {
   let filesCount = 0;
@@ -282,7 +284,22 @@ export function fakeShopify(
           },
         });
       }
+      if (query.includes("VariantIds")) {
+        return json({
+          data: {
+            product: {
+              variants: {
+                nodes: (opts.stockSkus ?? []).map((sku, i) => ({
+                  id: `gid://shopify/ProductVariant/v${i}`,
+                  sku,
+                })),
+              },
+            },
+          },
+        });
+      }
       if (query.includes("productVariantsBulkUpdate")) {
+        opts.capturedPrices?.push(variables.variants ?? []);
         return json({
           data: { productVariantsBulkUpdate: { productVariants: [], userErrors: [] } },
         });

@@ -830,7 +830,63 @@ export const shopifyAdapter: ChannelAdapter = {
       : null;
     return [skippedWarn, warn].filter(Boolean).join("；") || null;
   },
+
+  /**
+   * 价格专用同步：productVariantsBulkUpdate 只改 price/compareAtPrice。
+   * 远端变体按 sku 对齐（同 pushStock）；找不到 SKU 的变体跳过并告警。
+   */
+  async pushPrices(deps, store, remoteId, variants) {
+    const data = await shopifyGraphql<{
+      product: {
+        variants: { nodes: Array<{ id: string; sku?: string | null }> };
+      } | null;
+    }>(deps, store, VARIANT_IDS, { id: remoteId });
+    if (!data.product) throw new ChannelError("远端商品不存在", true);
+    const bySku = new Map<string, string>();
+    const nodes = data.product.variants.nodes;
+    nodes.forEach((v, i) => {
+      if (v.sku) bySku.set(v.sku, v.id);
+    });
+    const sent = variants.length > 1 ? variants : variants.slice(0, 1);
+    const skipped: string[] = [];
+    const inputs = sent
+      .map((v, i) => {
+        const id = v.sku ? bySku.get(v.sku) : nodes[i]?.id;
+        if (!id) {
+          skipped.push(v.sku || `#${i + 1}`);
+          return null;
+        }
+        return {
+          id,
+          price: v.price.toFixed(2),
+          ...(v.compareAtPrice != null
+            ? { compareAtPrice: v.compareAtPrice.toFixed(2) }
+            : {}),
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x);
+    if (!inputs.length) return "价格未写入：远端找不到对应变体";
+    const res = await shopifyGraphql<{
+      productVariantsBulkUpdate: { userErrors: Array<{ message: string }> };
+    }>(deps, store, VARIANTS_BIND, { productId: remoteId, variants: inputs });
+    const errs = res.productVariantsBulkUpdate.userErrors;
+    const parts = [
+      errs.length ? `价格写入失败：${errs.map((e) => e.message).join("；")}` : null,
+      skipped.length
+        ? `${skipped.length} 个变体在远端找不到对应 SKU，价格未写入：${skipped.slice(0, 5).join("、")}`
+        : null,
+    ].filter(Boolean);
+    return parts.join("；") || null;
+  },
 };
+
+const VARIANT_IDS = /* GraphQL */ `
+  query VariantIds($id: ID!) {
+    product(id: $id) {
+      variants(first: 250) { nodes { id sku } }
+    }
+  }
+`;
 
 const DELIST_PRODUCT = /* GraphQL */ `
   mutation DelistProduct($id: ID!) {

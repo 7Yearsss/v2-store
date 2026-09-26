@@ -4,9 +4,11 @@ import type {
   ChannelAttribute,
   CategoryCandidate,
   CategoryMapping,
+  FreightForwarder,
   Job,
   JobStatus,
   Listing,
+  ListingBatchOp,
   ListingStatus,
   ListingSuggestion,
   ListingTemplate,
@@ -16,6 +18,7 @@ import type {
   PublishAttempt,
   PublishRun,
   RemoteStatus,
+  SourceChange,
   SourceItem,
   Store,
   StoreRules,
@@ -151,10 +154,38 @@ export const api = {
     status?: ListingStatus;
     storeId?: string;
     sourceItemId?: string;
+    tag?: string;
+    watch?: boolean;
     q?: string;
     page?: number;
     pageSize?: number;
-  }) => request<Page<Listing>>("GET", `/listings${qs(p)}`),
+  }) => request<Page<Listing>>("GET", `/listings${qs({ ...p, watch: p.watch ? "true" : undefined })}`),
+  listingBatch: (ids: string[], ops: ListingBatchOp[]) =>
+    request<{ updated: number; skipped: number }>("POST", "/listings/batch", { ids, ops }),
+  sourceChanges: (p: {
+    sourceItemId?: string;
+    changeType?: string;
+    pending?: boolean;
+    page?: number;
+    pageSize?: number;
+  }) =>
+    request<Page<SourceChange>>(
+      "GET",
+      `/source-changes${qs({ ...p, pending: p.pending === undefined ? undefined : String(p.pending) })}`,
+    ),
+  decideSourceChanges: (ids: string[], action: "apply" | "ignore") =>
+    request<{ applied: number; ignored: number; skipped: number }>(
+      "POST",
+      "/source-changes/decide",
+      { ids, action },
+    ),
+  freightForwarders: () => request<{ items: FreightForwarder[] }>("GET", "/freight-forwarders"),
+  createFreightForwarder: (body: Partial<FreightForwarder> & { name: string }) =>
+    request<FreightForwarder>("POST", "/freight-forwarders", body),
+  updateFreightForwarder: (id: string, body: Partial<FreightForwarder>) =>
+    request<FreightForwarder>("PATCH", `/freight-forwarders/${id}`, body),
+  deleteFreightForwarder: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/freight-forwarders/${id}`),
   overview: () => request<Overview>("GET", "/overview"),
   jobs: (p: { status?: JobStatus; page?: number; pageSize?: number }) =>
     request<Page<Job>>("GET", `/jobs${qs(p)}`),

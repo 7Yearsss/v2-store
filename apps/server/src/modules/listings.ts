@@ -1,5 +1,17 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, count, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  exists,
+  ilike,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
@@ -8,7 +20,9 @@ import type {
   Listing,
   ListingSuggestion,
   OptionsSuggestionValue,
+  SourceChangeType,
 } from "@caiji/shared";
+import { audit } from "../lib/audit.js";
 import { adapterFor } from "../channels/index.js";
 import type { ListingRow } from "../channels/types.js";
 import type { AppEnv } from "../context.js";
@@ -18,6 +32,7 @@ import {
   listingSuggestions,
   publishAttempts,
   publishRuns,
+  sourceChanges,
   sourceItems,
   stores,
 } from "../db/schema.js";
@@ -42,11 +57,13 @@ import { enqueue } from "../jobs/queue.js";
 import { requireAuth } from "./auth.js";
 import { displayUrls } from "./media.js";
 
-/** `images`/`descImages` default to stored refs; pass display URLs (our copies) when resolved. */
+/** `images`/`descImages` default to stored refs; pass display URLs (our copies) when resolved.
+ *  `monitor` = 列表页聚合出的未消费货源变更概览。 */
 export function toListingDto(
   r: ListingRow,
   images: string[] = r.images,
   descImages: string[] = r.descImages,
+  monitor?: { pending: number; types: SourceChangeType[] },
 ): Listing {
   return {
     id: r.id,
@@ -75,6 +92,10 @@ export function toListingDto(
     remoteDrift: r.remoteDrift,
     lastPulledAt: r.lastPulledAt?.toISOString() ?? null,
     lastAutoAction: r.lastAutoAction,
+    sourceChangedAt: r.sourceChangedAt?.toISOString() ?? null,
+    internalTags: r.internalTags,
+    publishAt: r.publishAt?.toISOString() ?? null,
+    ...(monitor ? { sourceMonitor: monitor } : {}),
     syncedAt: r.syncedAt?.toISOString() ?? null,
     lastError: r.lastError,
     publishedAt: r.publishedAt?.toISOString() ?? null,
@@ -87,6 +108,14 @@ const listQuery = z.object({
   status: z.enum(["draft", "publishing", "published", "failed"]).optional(),
   storeId: z.string().uuid().optional(),
   sourceItemId: z.string().uuid().optional(),
+  /** 内部标记过滤（text[] 包含）。 */
+  tag: z.string().trim().max(100).optional(),
+  /** 关注页过滤：drift ∪ 未消费货源变更 ∪ remote_deleted ∪ 货源已下架。
+   *  （coerce.boolean 会把 "false" 当 true，用枚举转换）。 */
+  watch: z
+    .enum(["true", "false", "1", "0"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true" || v === "1")),
   q: z.string().trim().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
@@ -123,9 +152,11 @@ const patchSchema = z
       .object({
         stock: z.enum(["auto", "notify", "off"]),
         content: z.enum(["notify", "off"]),
-        price: z.enum(["notify", "off"]),
+        price: z.enum(["auto", "notify", "off"]),
       })
       .partial(),
+    internalTags: z.array(z.string().trim().min(1).max(100)).max(50),
+    publishAt: z.string().datetime().nullable(),
   })
   .partial()
   .refine(
@@ -206,13 +237,44 @@ export function listingRoutes() {
 
   r.get("/", zValidator("query", listQuery), async (c) => {
     const { db } = c.var.deps;
-    const { status, storeId, sourceItemId, q, page, pageSize } = c.req.valid("query");
+    const workspaceId = c.var.auth.workspaceId;
+    const { status, storeId, sourceItemId, tag, watch, q, page, pageSize } =
+      c.req.valid("query");
     const where = and(
-      eq(listings.workspaceId, c.var.auth.workspaceId),
+      eq(listings.workspaceId, workspaceId),
       status ? eq(listings.status, status) : undefined,
       storeId ? eq(listings.storeId, storeId) : undefined,
       sourceItemId ? eq(listings.sourceItemId, sourceItemId) : undefined,
-      q ? ilike(listings.title, `%${q}%`) : undefined,
+      tag ? sql`${tag} = any(${listings.internalTags})` : undefined,
+      watch
+        ? or(
+            sql`coalesce(jsonb_array_length(${listings.remoteDrift}), 0) > 0`,
+            eq(listings.linkStatus, "remote_deleted"),
+            exists(
+              db
+                .select({ id: sourceChanges.id })
+                .from(sourceChanges)
+                .where(
+                  and(
+                    eq(sourceChanges.workspaceId, workspaceId),
+                    eq(sourceChanges.sourceItemId, listings.sourceItemId),
+                    isNull(sourceChanges.appliedAt),
+                  ),
+                ),
+            ),
+            exists(
+              db
+                .select({ id: sourceItems.id })
+                .from(sourceItems)
+                .where(
+                  and(
+                    eq(sourceItems.id, listings.sourceItemId),
+                    eq(sourceItems.availability, "delisted"),
+                  ),
+                ),
+            ),
+          )
+        : undefined,
     );
     const [rows, [total]] = await Promise.all([
       db
@@ -224,13 +286,45 @@ export function listingRoutes() {
         .offset((page - 1) * pageSize),
       db.select({ n: count() }).from(listings).where(where),
     ]);
+    // 每条刊登的未消费货源变更概览（黄标文案用）
+    const itemIds = [...new Set(rows.map((r) => r.sourceItemId))];
+    const pendingRows = itemIds.length
+      ? await db
+          .select({
+            sid: sourceChanges.sourceItemId,
+            n: count(),
+            types: sql<string[]>`array_agg(distinct ${sourceChanges.changeType})`,
+          })
+          .from(sourceChanges)
+          .where(
+            and(
+              eq(sourceChanges.workspaceId, workspaceId),
+              inArray(sourceChanges.sourceItemId, itemIds),
+              isNull(sourceChanges.appliedAt),
+            ),
+          )
+          .groupBy(sourceChanges.sourceItemId)
+      : [];
+    const pendingByItem = new Map(
+      pendingRows.map((r) => [
+        r.sid,
+        { pending: r.n, types: r.types as SourceChangeType[] },
+      ]),
+    );
     const show = await displayUrls(
       db,
-      c.var.auth.workspaceId,
+      workspaceId,
       rows.map((r) => [...r.images, ...r.descImages]),
     );
     return c.json({
-      items: rows.map((r) => toListingDto(r, show(r.images), show(r.descImages))),
+      items: rows.map((r) =>
+        toListingDto(
+          r,
+          show(r.images),
+          show(r.descImages),
+          pendingByItem.get(r.sourceItemId),
+        ),
+      ),
       total: total?.n ?? 0,
     });
   });
@@ -265,7 +359,15 @@ export function listingRoutes() {
     const { db } = c.var.deps;
     const body = c.req.valid("json");
     const { syncPolicy, ...rest } = body;
-    const patch: Partial<ListingRow> = rest;
+    const patch: Partial<ListingRow> = {
+      ...rest,
+      publishAt:
+        rest.publishAt === undefined
+          ? undefined
+          : rest.publishAt
+            ? new Date(rest.publishAt)
+            : null,
+    };
     if (syncPolicy) {
       const [cur] = await db
         .select({ syncPolicy: listings.syncPolicy })
@@ -475,6 +577,118 @@ export function listingRoutes() {
       );
     if (!row) throw notFound("刊登");
     return c.json({ audits: await listAudits(db, c.var.auth.workspaceId, "listing", row.id) });
+  });
+
+  /** 批量工具（fl-monitor）：价格设/乘/加、内部标签增删、同步策略、定时发布、
+   *  批量开启监控（= 把勾选刊登的 stock/price 策略置 auto）。 */
+  const batchSchema = z.object({
+    ids: z.array(z.string().uuid()).min(1).max(200),
+    ops: z
+      .array(
+        z.discriminatedUnion("op", [
+          z.object({ op: z.literal("price_set"), value: z.number().min(0).max(1_000_000) }),
+          z.object({ op: z.literal("price_mul"), value: z.number().min(0).max(1000) }),
+          z.object({ op: z.literal("price_add"), value: z.number().min(-1_000_000).max(1_000_000) }),
+          z.object({
+            op: z.literal("internal_tag"),
+            add: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+            remove: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+          }),
+          z.object({
+            op: z.literal("sync_policy"),
+            value: z
+              .object({
+                stock: z.enum(["auto", "notify", "off"]),
+                content: z.enum(["notify", "off"]),
+                price: z.enum(["auto", "notify", "off"]),
+              })
+              .partial(),
+          }),
+          z.object({ op: z.literal("publish_at"), value: z.string().datetime().nullable() }),
+          z.object({ op: z.literal("monitor_enable"), value: z.boolean().optional() }),
+        ]),
+      )
+      .min(1)
+      .max(10),
+  });
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+
+  r.post("/batch", zValidator("json", batchSchema), async (c) => {
+    const { db } = c.var.deps;
+    const { workspaceId } = c.var.auth;
+    const { ids, ops } = c.req.valid("json");
+    const rows = await db
+      .select()
+      .from(listings)
+      .where(
+        and(
+          eq(listings.workspaceId, workspaceId),
+          inArray(listings.id, ids),
+          ne(listings.status, "publishing"),
+        ),
+      );
+    let updated = 0;
+    for (const l of rows) {
+      const patch: Partial<ListingRow> = {};
+      for (const op of ops) {
+        switch (op.op) {
+          case "price_set":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: round2(op.value),
+            }));
+            break;
+          case "price_mul":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: round2(v.price * op.value),
+            }));
+            break;
+          case "price_add":
+            patch.variants = (patch.variants ?? l.variants).map((v) => ({
+              ...v,
+              price: Math.max(0, round2(v.price + op.value)),
+            }));
+            break;
+          case "internal_tag": {
+            const cur = new Set(patch.internalTags ?? l.internalTags);
+            for (const t of op.add ?? []) cur.add(t);
+            for (const t of op.remove ?? []) cur.delete(t);
+            patch.internalTags = [...cur].sort();
+            break;
+          }
+          case "sync_policy":
+            patch.syncPolicy = { ...(patch.syncPolicy ?? l.syncPolicy), ...op.value };
+            break;
+          case "publish_at":
+            patch.publishAt = op.value ? new Date(op.value) : null;
+            break;
+          case "monitor_enable": {
+            const on = op.value !== false;
+            const cur = patch.syncPolicy ?? l.syncPolicy;
+            patch.syncPolicy = on
+              ? { ...cur, stock: "auto", price: "auto" }
+              : { ...cur, stock: "notify", price: "notify" };
+            break;
+          }
+        }
+      }
+      if (!Object.keys(patch).length) continue;
+      await db
+        .update(listings)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(listings.id, l.id));
+      updated++;
+      await audit(db, workspaceId, {
+        actor: `user:${c.var.auth.userId}`,
+        action: "listing.batch",
+        entityType: "listing",
+        entityId: l.id,
+        payload: { ops: ops.map((o) => o.op) },
+      });
+    }
+    return c.json({ updated, skipped: ids.length - updated });
   });
 
   /** Queue delist: 已发布 + 有 remoteId 的刊登下架（远端 status→DRAFT，刊登记录保留）。 */

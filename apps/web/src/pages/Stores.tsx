@@ -140,6 +140,15 @@ type SettingsForm = PricingRule & {
   defaultTags?: string[];
   defaultProductType?: string;
   defaultWeightKg?: number;
+  monitorEnabled?: boolean;
+  monitorMinStock?: number;
+  monitorPriceAuto?: boolean;
+  invStrategy?: "mirror" | "fixed" | "percent" | "cap";
+  invFixedQty?: number;
+  invPercent?: number;
+  invCap?: number;
+  invBuffer?: number;
+  invOosAction?: "zero" | "unpublish" | "notify";
 };
 
 const rulesToText = (rules?: StoreRules["replacements"]) =>
@@ -171,6 +180,19 @@ function formToPayload(v: SettingsForm): StoreSettingsPayload {
       defaultTags: v.defaultTags ?? [],
       defaultProductType: v.defaultProductType?.trim() || undefined,
       defaultWeightKg: v.defaultWeightKg ?? undefined,
+      monitor: {
+        enabled: v.monitorEnabled ?? false,
+        minStock: v.monitorMinStock ?? null,
+        priceAuto: v.monitorPriceAuto ?? false,
+      },
+      inventory: {
+        strategy: v.invStrategy ?? "mirror",
+        fixedQty: v.invFixedQty ?? undefined,
+        percent: v.invPercent ?? undefined,
+        cap: v.invCap ?? undefined,
+        buffer: v.invBuffer ?? undefined,
+        oosAction: v.invOosAction ?? "notify",
+      },
     },
     pricing: {
       exchangeRate: v.exchangeRate,
@@ -202,6 +224,15 @@ function payloadToForm(p: StoreSettingsPayload): SettingsForm {
     defaultTags: p.rules.defaultTags ?? [],
     defaultProductType: p.rules.defaultProductType,
     defaultWeightKg: p.rules.defaultWeightKg,
+    monitorEnabled: p.rules.monitor?.enabled ?? false,
+    monitorMinStock: p.rules.monitor?.minStock ?? undefined,
+    monitorPriceAuto: p.rules.monitor?.priceAuto ?? false,
+    invStrategy: p.rules.inventory?.strategy ?? "mirror",
+    invFixedQty: p.rules.inventory?.fixedQty ?? undefined,
+    invPercent: p.rules.inventory?.percent ?? undefined,
+    invCap: p.rules.inventory?.cap ?? undefined,
+    invBuffer: p.rules.inventory?.buffer ?? undefined,
+    invOosAction: p.rules.inventory?.oosAction ?? "notify",
   };
 }
 
@@ -429,6 +460,86 @@ function ListingSettingsModal({ store, onClose }: { store?: Store; onClose: () =
               placeholder="输入标签后回车"
             />
           </Form.Item>
+        </Space>
+        <Typography.Title level={5}>库存推送规则（仓储 L1）</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item
+            name="invStrategy"
+            label="推送数量策略"
+            extra="货源库存 → 写入渠道的变换；mirror 原样，fixed 固定值，percent 按比例，cap 封顶"
+          >
+            <Select
+              style={{ width: 150 }}
+              options={[
+                { value: "mirror", label: "原样同步" },
+                { value: "fixed", label: "固定值" },
+                { value: "percent", label: "按比例" },
+                { value: "cap", label: "封顶" },
+              ]}
+            />
+          </Form.Item>
+          {watched?.invStrategy === "fixed" && (
+            <Form.Item name="invFixedQty" label="固定库存数">
+              <InputNumber min={0} max={1000000} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          {watched?.invStrategy === "percent" && (
+            <Form.Item name="invPercent" label="比例（0-1）">
+              <InputNumber min={0} max={1} step={0.05} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          {watched?.invStrategy === "cap" && (
+            <Form.Item name="invCap" label="封顶值">
+              <InputNumber min={0} max={1000000} style={{ width: 120 }} />
+            </Form.Item>
+          )}
+          <Form.Item name="invBuffer" label="安全余量" extra="推送量再减该值，防止超卖">
+            <InputNumber min={0} max={1000000} style={{ width: 110 }} placeholder="0" />
+          </Form.Item>
+          <Form.Item
+            name="invOosAction"
+            label="货源售罄动作"
+            extra="货源下架或低于库存阈值时：推 0 = 清零库存，下架 = 刊登转草稿，只提醒 = 仅关注页提示"
+          >
+            <Select
+              style={{ width: 150 }}
+              options={[
+                { value: "notify", label: "只提醒" },
+                { value: "zero", label: "库存推 0" },
+                { value: "unpublish", label: "下架刊登" },
+              ]}
+            />
+          </Form.Item>
+        </Space>
+        <Typography.Title level={5}>货源监控</Typography.Title>
+        <Space size={12} style={{ display: "flex" }} wrap>
+          <Form.Item
+            name="monitorEnabled"
+            label="开启监控"
+            valuePropName="checked"
+            extra="插件回扫发现货源变化时按上面的规则自动处理；不开则只在关注页记录"
+          >
+            <Switch />
+          </Form.Item>
+          {watched?.monitorEnabled && (
+            <>
+              <Form.Item
+                name="monitorMinStock"
+                label="低库存阈值"
+                extra="货源全部 SKU 库存 ≤ 该值时按售罄处理"
+              >
+                <InputNumber min={0} max={1000000} placeholder="不启用" style={{ width: 120 }} />
+              </Form.Item>
+              <Form.Item
+                name="monitorPriceAuto"
+                label="自动跟价"
+                valuePropName="checked"
+                extra="货源改价时按定价规则重算并推送渠道价（刊登还需勾选价格自动同步）"
+              >
+                <Switch />
+              </Form.Item>
+            </>
+          )}
         </Space>
         <Typography.Title level={5}>AI 产线</Typography.Title>
         <Space size={12} style={{ display: "flex" }}>

@@ -118,6 +118,18 @@ export const sourceItems = pgTable(
     /** 来源平台叶子类目（1688 leafCategoryId / leafCategoryName）。 */
     sourceCategoryId: text("source_category_id"),
     sourceCategoryName: text("source_category_name"),
+    // --- fl-monitor ---
+    /** 货源在架上状态；插件/回扫上报下架置 delisted。 */
+    availability: text("availability", { enum: ["ok", "delisted"] })
+      .notNull()
+      .default("ok"),
+    /** 转入断货的时间（关注页据此算断货天数）。 */
+    delistedAt: timestamp("delisted_at", { withTimezone: true }),
+    /** 最近一次成功回扫/采集时间。 */
+    lastScannedAt: timestamp("last_scanned_at", { withTimezone: true }),
+    /** 采集通道：manual|plan|inquiry 等（fl-selection 复用同列，集成去重）。 */
+    collectedVia: text("collected_via"),
+    // ---
     collectedBy: uuid("collected_by").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -277,6 +289,14 @@ export const listings = pgTable(
     lastPulledAt: timestamp("last_pulled_at", { withTimezone: true }),
     /** 最近一次自动动作（库存推送等）；所有自动动作必须落此字段 + audit_logs。 */
     lastAutoAction: jsonb("last_auto_action").$type<LastAutoAction>(),
+    // --- fl-monitor（与 fl-pipeline 并行；集成时按 plan §9 归属去重） ---
+    /** 最近一次货源（1688）发生变化的检测时间；关注页的「货源有变化」黄标。 */
+    sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
+    /** 内部标记（不上渠道），批量分组/筛选用。 */
+    internalTags: text("internal_tags").array().notNull().default([]),
+    /** 定时发布时间（fl-pipeline 的排程器消费，集成去重）。 */
+    publishAt: timestamp("publish_at", { withTimezone: true }),
+    // ---
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     lastError: text("last_error"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -286,7 +306,78 @@ export const listings = pgTable(
   (t) => [
     uniqueIndex("listings_store_source_uq").on(t.storeId, t.sourceItemId),
     index("listings_ws_status_idx").on(t.workspaceId, t.status),
+    index("listings_ws_source_changed_idx").on(t.workspaceId, t.sourceChangedAt),
   ],
+);
+
+// --- 货源监控（fl-monitor） ---------------------------------------------------
+
+/** 货源每次重扫产生的字段级变更。applied_at 为空 = 未消费（关注页待处理）。 */
+export const sourceChanges = pgTable(
+  "source_changes",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourceItemId: uuid("source_item_id")
+      .notNull()
+      .references(() => sourceItems.id, { onDelete: "cascade" }),
+    changeType: text("change_type", {
+      enum: ["price", "stock", "title", "images", "attributes", "delisted"],
+    }).notNull(),
+    /** sku 粒度：skuId；无 skuId 时退化 spec 文案。 */
+    skuId: text("sku_id"),
+    oldValue: jsonb("old_value"),
+    newValue: jsonb("new_value"),
+    /** sha256(type|sku|old|new)：同指纹的未消费变更不重复落库。 */
+    fingerprint: text("fingerprint").notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    /** [{listingId?, action}] — 自动应用或人工 应用/忽略 的落账。 */
+    appliedAction: jsonb("applied_action").$type<
+      Array<{ listingId?: string; action: string }>
+    >(),
+  },
+  (t) => [
+    index("source_changes_ws_item_detected_idx").on(
+      t.workspaceId,
+      t.sourceItemId,
+      t.detectedAt,
+    ),
+    index("source_changes_pending_idx")
+      .on(t.workspaceId, t.sourceItemId)
+      .where(sql`${t.appliedAt} is null`),
+  ],
+);
+
+// --- 仓储 L2：货代地址簿（fl-monitor） -------------------------------------------
+
+export const freightForwarders = pgTable(
+  "freight_forwarders",
+  {
+    id: id(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** 收件人写法（货代仓收货人），含客户代码注释。 */
+    receiver: text("receiver"),
+    phone: text("phone"),
+    country: text("country"),
+    province: text("province"),
+    city: text("city"),
+    address: text("address"),
+    zipcode: text("zipcode"),
+    /** 货代系统类型：huoxiaoyi（可直连）|manual 等。 */
+    systemType: text("system_type"),
+    note: text("note"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("freight_forwarders_ws_idx").on(t.workspaceId)],
 );
 
 // --- AI suggestions ------------------------------------------------------------

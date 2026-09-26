@@ -131,6 +131,23 @@ export const rulesSchema = z.object({
   defaultTags: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   defaultProductType: z.string().trim().max(255).optional(),
   defaultWeightKg: z.number().min(0).max(100_000).optional(),
+  monitor: z
+    .object({
+      enabled: z.boolean().optional(),
+      minStock: z.number().int().min(0).max(1_000_000).nullable().optional(),
+      priceAuto: z.boolean().optional(),
+    })
+    .optional(),
+  inventory: z
+    .object({
+      strategy: z.enum(["mirror", "fixed", "percent", "cap"]).optional(),
+      fixedQty: z.number().int().min(0).max(1_000_000).optional(),
+      percent: z.number().min(0).max(1).optional(),
+      cap: z.number().int().min(0).max(1_000_000).optional(),
+      buffer: z.number().int().min(0).max(1_000_000).optional(),
+      oosAction: z.enum(["zero", "unpublish", "notify"]).optional(),
+    })
+    .optional(),
 }) satisfies z.ZodType<StoreRules>;
 
 const patchSchema = z.object({

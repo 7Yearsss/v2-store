@@ -88,6 +88,16 @@ export interface ChannelAdapter {
     remoteId: string,
     variants: ListingVariant[],
   ): Promise<string | null>;
+  /**
+   * 只更新远端变体价格（货源改价重算后的轻量同步，不动标题/描述/库存）。
+   * 返回警告文案或 null；可选能力：缺省时同步链路只标 drift。
+   */
+  pushPrices?(
+    deps: Deps,
+    store: StoreRow,
+    remoteId: string,
+    variants: ListingVariant[],
+  ): Promise<string | null>;
   /** Unpublish a remote product without deleting it (Shopify status → DRAFT).
    *  Absent = delisting unsupported on this channel. */
   delistProduct?(deps: Deps, store: StoreRow, remoteId: string): Promise<void>;

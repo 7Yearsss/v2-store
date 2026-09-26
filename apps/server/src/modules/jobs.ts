@@ -15,6 +15,10 @@ const JOB_LABELS: Record<string, string> = {
   "listing.categorySuggest": "类目推荐",
   "listing.aiImage": "AI 图片",
   "store.syncCategories": "类目树同步",
+  "listing.pushStock": "库存推送",
+  "listing.pushPrice": "价格推送",
+  "listing.delist": "刊登下架",
+  "inventory.reconcile": "库存兜底重算",
 };
 
 function toDto(j: typeof jobs.$inferSelect) {

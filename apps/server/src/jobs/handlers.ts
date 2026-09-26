@@ -15,6 +15,7 @@ import {
 } from "../db/schema.js";
 import { audit } from "../lib/audit.js";
 import { resolveCategoryMapping } from "../lib/category.js";
+import { isSourceOos, pushQuantity } from "../lib/sourceMonitor.js";
 import {
   computeDrift,
   filterDriftByPolicy,
@@ -43,6 +44,10 @@ export const DELIST_LISTING = "listing.delist";
 export const AI_IMAGE = "listing.aiImage";
 /** 只更新远端库存（货源库存变化的轻量同步，不触碰远端标题/描述/价格）。 */
 export const PUSH_STOCK = "listing.pushStock";
+/** 只更新远端价格（货源改价按店铺定价规则重算后推送）。 */
+export const PUSH_PRICE = "listing.pushPrice";
+/** 每日兜底：按店铺 inventory 策略重算所有已发布刊登的推送库存。 */
+export const RECONCILE_INVENTORY = "inventory.reconcile";
 
 /** Queue a category-suggestion pass unless one is already waiting/running. */
 export async function enqueueCategorySuggest(
@@ -599,8 +604,10 @@ const pushStockJob: JobHandler = {
     const { listing, store } = row;
     if (store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
     if (!listing.remoteId || listing.remoteStatus === "DELETED") return;
-    // 已入队的也尊重当前策略：店铺未追踪库存或刊登 stock 策略非 auto 时跳过
-    if (!store.rules?.trackStock || listing.syncPolicy.stock !== "auto") return;
+    // 已入队的也尊重当前策略：店铺未追踪库存或刊登 stock 策略非 auto 时跳过；
+    // force=售罄清零（oosAction=zero）是店铺级明确配置，不受刊登策略拦截
+    const force = job.payload.force === true;
+    if (!force && (!store.rules?.trackStock || listing.syncPolicy.stock !== "auto")) return;
     const adapter = adapterFor(store.platform);
     const at = new Date().toISOString();
     if (!adapter.pushStock) {
@@ -769,6 +776,155 @@ const aiImage: JobHandler = {
   },
 };
 
+/**
+ * 货源改价 → 只推远端价格（adapter.pushPrices）。可选能力缺省时只记 lastAutoAction
+ * +审计（不整品覆盖，避免动标题/描述）。自动动作必须有痕。
+ */
+const pushPriceJob: JobHandler = {
+  async run(deps: Deps, job) {
+    const listingId = String(job.payload.listingId);
+    const [row] = await deps.db
+      .select({ listing: listings, store: stores })
+      .from(listings)
+      .innerJoin(stores, eq(stores.id, listings.storeId))
+      .where(eq(listings.id, listingId));
+    if (!row) return;
+    const { listing, store } = row;
+    if (store.status === "disconnected") throw new PermanentJobError("店铺已断开授权");
+    if (!listing.remoteId || listing.remoteStatus === "DELETED") return;
+    // 入队时复核策略：监控总开关 + priceAuto + 刊登 price=auto 缺一即跳
+    if (
+      !store.rules?.monitor?.enabled ||
+      !store.rules.monitor.priceAuto ||
+      listing.syncPolicy.price !== "auto"
+    ) {
+      return;
+    }
+    const adapter = adapterFor(store.platform);
+    const at = new Date().toISOString();
+    if (!adapter.pushPrices) {
+      await deps.db
+        .update(listings)
+        .set({
+          lastAutoAction: {
+            action: "price_push_unsupported",
+            at,
+            detail: { reason: "adapter 无 pushPrices 能力，仅标记" },
+          },
+        })
+        .where(eq(listings.id, listingId));
+      await audit(deps.db, listing.workspaceId, {
+        actor: "system",
+        action: "listing.auto_price_push_unsupported",
+        entityType: "listing",
+        entityId: listingId,
+        payload: { remoteId: listing.remoteId },
+      });
+      return;
+    }
+    const warn = await adapter.pushPrices(deps, store, listing.remoteId, listing.variants);
+    await deps.db
+      .update(listings)
+      .set({
+        lastAutoAction: {
+          action: "price_push",
+          at,
+          detail: warn
+            ? { ok: false, error: warn }
+            : { ok: true, variants: listing.variants.length },
+        },
+      })
+      .where(eq(listings.id, listingId));
+    await audit(deps.db, listing.workspaceId, {
+      actor: "system",
+      action: "listing.auto_price_push",
+      entityType: "listing",
+      entityId: listingId,
+      payload: { remoteId: listing.remoteId, ok: !warn, error: warn ?? undefined },
+    });
+    if (warn) throw new Error(warn);
+  },
+};
+
+/**
+ * 仓储 L1 兜底：重扫可能漏报（插件未装/被风控），每日按 rules.inventory 策略
+ * 把该店铺所有监控中刊登的推送库存重算一遍——与货源本地值不一致就刷新并推远端。
+ */
+const reconcileInventory: JobHandler = {
+  async run(deps: Deps, job) {
+    const storeId = String(job.payload.storeId);
+    const [store] = await deps.db
+      .select()
+      .from(stores)
+      .where(eq(stores.id, storeId));
+    if (!store || store.status === "disconnected" || !store.rules?.monitor?.enabled) {
+      return;
+    }
+    const rows = await deps.db
+      .select({ listing: listings, item: sourceItems })
+      .from(listings)
+      .innerJoin(sourceItems, eq(sourceItems.id, listings.sourceItemId))
+      .where(
+        and(
+          eq(listings.storeId, store.id),
+          eq(listings.workspaceId, store.workspaceId),
+          isNotNull(listings.remoteId),
+          ne(listings.remoteStatus, "DELETED"),
+        ),
+      );
+    const inv = store.rules.inventory;
+    const monitor = store.rules.monitor;
+    let pushed = 0;
+    for (const { listing, item } of rows) {
+      const oos = isSourceOos(item.availability, item.skus, monitor);
+      let dirty = false;
+      const variants = listing.variants.map((v, i) => {
+        const sku =
+          (v.sourceSkuId
+            ? item.skus.find((s) => (s.skuId || s.spec) === v.sourceSkuId)
+            : undefined) ?? item.skus[i];
+        let qty = sku ? pushQuantity(sku.stock, inv) : v.stock ?? 0;
+        if (oos && inv?.oosAction === "zero") qty = 0;
+        if (qty !== v.stock) {
+          dirty = true;
+          return { ...v, stock: qty };
+        }
+        return v;
+      });
+      if (!dirty) continue;
+      await deps.db
+        .update(listings)
+        .set({ variants, updatedAt: new Date() })
+        .where(eq(listings.id, listing.id));
+      if (
+        listing.status === "published" &&
+        store.rules.trackStock &&
+        listing.syncPolicy.stock === "auto"
+      ) {
+        await enqueue(
+          deps.db,
+          PUSH_STOCK,
+          { listingId: listing.id, force: oos && inv?.oosAction === "zero" },
+          { workspaceId: store.workspaceId },
+        );
+        pushed++;
+      }
+      if (oos && inv?.oosAction === "unpublish" && listing.status === "published") {
+        await enqueue(deps.db, DELIST_LISTING, { listingId: listing.id }, { workspaceId: store.workspaceId });
+      }
+    }
+    if (pushed) {
+      await audit(deps.db, store.workspaceId, {
+        actor: "system:monitor",
+        action: "inventory.reconcile",
+        entityType: "store",
+        entityId: store.id,
+        payload: { listings: rows.length, pushed },
+      });
+    }
+  },
+};
+
 export const jobHandlers: Record<string, JobHandler> = {
   [PUBLISH_LISTING]: publishListing,
   [PUSH_STOCK]: pushStockJob,
@@ -779,4 +935,6 @@ export const jobHandlers: Record<string, JobHandler> = {
   [AI_IMAGE]: aiImage,
   [SYNC_CATEGORIES]: syncCategories,
   [DELIST_LISTING]: delistListing,
+  [PUSH_PRICE]: pushPriceJob,
+  [RECONCILE_INVENTORY]: reconcileInventory,
 };

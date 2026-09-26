@@ -98,6 +98,15 @@ export interface SourceItem {
   updatedAt: string;
   /** store ids this item has been claimed to. */
   claimedStoreIds: string[];
+  // --- fl-monitor ---
+  /** 货源在架上状态：ok | delisted（插件/回扫上报）。 */
+  availability: "ok" | "delisted";
+  /** 转入断货的时间（断货天数由此算）。 */
+  delistedAt: string | null;
+  /** 最近一次成功回扫/采集时间。 */
+  lastScannedAt: string | null;
+  /** 采集通道（manual|plan|inquiry…）。 */
+  collectedVia: string | null;
 }
 
 export type ChannelPlatform = "shopify";
@@ -149,6 +158,28 @@ export interface StoreRules {
   defaultProductType?: string;
   /** 货源没有重量字段时的默认重量（kg），发布写入变体 measurement。 */
   defaultWeightKg?: number;
+  /** 货源监控总开关（fl-monitor）。默认关：重扫只落 source_changes，不自动改刊登。
+   *  enabled 后再叠加刊登级 syncPolicy / 下面的 priceAuto 判定。 */
+  monitor?: {
+    enabled?: boolean;
+    /** 货源库存 ≤ 该值时按售罄处理（走 oosAction）；不填不启用。 */
+    minStock?: number | null;
+    /** 货源改价时自动按定价规则重算并推送渠道价（另需刊登 syncPolicy.price='auto'）。 */
+    priceAuto?: boolean;
+  };
+  /** 库存推送规则（仓储 L1）：货源库存 → 写入渠道的数量变换。 */
+  inventory?: {
+    /** mirror=原样 | fixed=固定值 | percent=按比例 | cap=封顶。缺省 mirror。 */
+    strategy?: "mirror" | "fixed" | "percent" | "cap";
+    fixedQty?: number;
+    /** percent 策略系数（0-1）。 */
+    percent?: number;
+    cap?: number;
+    /** 安全余量：推送量再减 buffer。 */
+    buffer?: number;
+    /** 货源售罄动作：zero=推 0 | unpublish=下架 | notify=只提醒。缺省 notify。 */
+    oosAction?: "zero" | "unpublish" | "notify";
+  };
 }
 
 /** 术语翻译映射：变体选项名/值、属性名/值的源词 → 目标语译文，按刊登语言分桶。 */
@@ -226,13 +257,15 @@ export type LinkStatus = "linked" | "unlinked" | "remote_deleted";
 
 /** 库存同步策略：auto = 回扫发现差异时自动推送本地库存；notify = 只标记漂移；off = 不管。 */
 export type StockSyncPolicy = "auto" | "notify" | "off";
-/** 内容/价格漂移策略：只标记（notify）或忽略（off）；不会自动覆盖远端。 */
+/** 内容漂移策略：只标记（notify）或忽略（off）；不会自动覆盖远端。 */
 export type FlagSyncPolicy = "notify" | "off";
+/** 价格策略：auto = 货源改价自动重算并推渠道价（另需店铺 monitor.priceAuto）；notify/off 同上。 */
+export type PriceSyncPolicy = "auto" | "notify" | "off";
 
 export interface ListingSyncPolicy {
   stock: StockSyncPolicy;
   content: FlagSyncPolicy;
-  price: FlagSyncPolicy;
+  price: PriceSyncPolicy;
 }
 
 export const DEFAULT_SYNC_POLICY: ListingSyncPolicy = {
@@ -313,6 +346,16 @@ export interface Listing {
   remoteDrift: RemoteDriftEntry[];
   lastPulledAt: string | null;
   lastAutoAction: LastAutoAction | null;
+  // --- fl-monitor ---
+  /** 最近一次货源变化的检测时间；非空即「货源有变化」。 */
+  sourceChangedAt: string | null;
+  /** 内部标记（不上渠道）。 */
+  internalTags: string[];
+  /** 定时发布时间（排程器消费）。 */
+  publishAt: string | null;
+  /** 未消费货源变更概览（列表页带出）：pending 条数 + 涉及的变更类型。 */
+  sourceMonitor?: { pending: number; types: SourceChangeType[] };
+  // ---
   syncedAt: string | null;
   lastError: string | null;
   publishedAt: string | null;
@@ -535,3 +578,60 @@ export interface AuditLog {
   payload: Record<string, unknown>;
   createdAt: string;
 }
+
+// --- 货源监控（fl-monitor） ---------------------------------------------------
+
+/** 货源变更类型：价/库存/标题/图片/属性 按 sku 或整品粒度，delisted 为整品。 */
+export type SourceChangeType =
+  | "price"
+  | "stock"
+  | "title"
+  | "images"
+  | "attributes"
+  | "delisted";
+
+/** 变更落账：每条 listing 一个动作；superseded/ignored 等无 listingId。 */
+export interface SourceChangeAppliedAction {
+  listingId?: string;
+  action: string;
+}
+
+export interface SourceChange {
+  id: string;
+  sourceItemId: string;
+  changeType: SourceChangeType;
+  skuId: string | null;
+  oldValue: unknown;
+  newValue: unknown;
+  detectedAt: string;
+  appliedAt: string | null;
+  appliedAction: SourceChangeAppliedAction[] | null;
+}
+
+/** 货代收货地址簿（仓储 L2）。 */
+export interface FreightForwarder {
+  id: string;
+  name: string;
+  receiver: string | null;
+  phone: string | null;
+  country: string | null;
+  province: string | null;
+  city: string | null;
+  address: string | null;
+  zipcode: string | null;
+  /** 货代系统类型（huoxiaoyi|manual…）。 */
+  systemType: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /listings/batch 的单个批量操作。 */
+export type ListingBatchOp =
+  | { op: "price_set"; value: number }
+  | { op: "price_mul"; value: number }
+  | { op: "price_add"; value: number }
+  | { op: "internal_tag"; add?: string[]; remove?: string[] }
+  | { op: "sync_policy"; value: Partial<ListingSyncPolicy> }
+  | { op: "publish_at"; value: string | null }
+  | { op: "monitor_enable"; value?: boolean };

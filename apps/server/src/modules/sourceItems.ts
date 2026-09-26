@@ -45,6 +45,10 @@ export function toSourceItemDto(
     collectedAt: r.collectedAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     claimedStoreIds,
+    availability: r.availability,
+    delistedAt: r.delistedAt?.toISOString() ?? null,
+    lastScannedAt: r.lastScannedAt?.toISOString() ?? null,
+    collectedVia: r.collectedVia,
   };
 }
 

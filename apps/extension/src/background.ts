@@ -118,6 +118,11 @@ async function collectByOfferId(offerId: string) {
   if (!data && /punish|verifycode|滑块验证/.test(html)) {
     throw new Error("1688 触发了安全验证，请在浏览器里打开任一 1688 商品页完成滑块后重试");
   }
+  // 详情页无商品数据且出现下架标记 → 上报服务端（source_changes: delisted）
+  if (!data && /已下架|商品不存在|该商品已删除|已被删除|已售完|商品已被移除/.test(html)) {
+    await api("/collect/report", { offerId, availability: "delisted" }).catch(() => {});
+    throw new Error("货源已下架（已上报服务端）");
+  }
   // 详情图只活在 DOM/ descUrl 接口里——后台再拉一次 descUrl HTML 解析。
   const descUrl = data ? descUrlFromData(data) : undefined;
   const descImages = descUrl ? await fetchDescImages(descUrl).catch(() => []) : [];

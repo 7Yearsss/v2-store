@@ -5,6 +5,7 @@ import {
   Card,
   Form,
   Input,
+  Modal,
   Popconfirm,
   Space,
   Table,
@@ -13,6 +14,7 @@ import {
   Typography,
 } from "antd";
 import { useState } from "react";
+import type { FreightForwarder } from "@caiji/shared";
 import { Link } from "react-router";
 import { api } from "../api";
 import { ExtensionBadge, useExtension } from "../components/ExtensionBadge";
@@ -273,6 +275,147 @@ function AttributeMappingCard() {
   );
 }
 
+/** 货代收货地址簿：采购下单时把货代仓地址贴进 1688 订单（仓储 L2 基础数据）。 */
+function FreightForwarderCard() {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<Partial<FreightForwarder>>();
+  const [editing, setEditing] = useState<FreightForwarder | null>(null);
+  const [open, setOpen] = useState(false);
+  const query = useQuery({ queryKey: ["freight-forwarders"], queryFn: api.freightForwarders });
+  const save = useMutation({
+    mutationFn: async (v: Partial<FreightForwarder> & { name: string }) =>
+      editing ? api.updateFreightForwarder(editing.id, v) : api.createFreightForwarder(v),
+    onSuccess: () => {
+      message.success("已保存");
+      setOpen(false);
+      setEditing(null);
+      form.resetFields();
+      qc.invalidateQueries({ queryKey: ["freight-forwarders"] });
+    },
+    onError: (e) => message.error(e.message),
+  });
+  const del = useMutation({
+    mutationFn: api.deleteFreightForwarder,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["freight-forwarders"] }),
+    onError: (e) => message.error(e.message),
+  });
+
+  return (
+    <Card
+      title="货代地址簿"
+      extra={
+        <Button
+          type="primary"
+          size="small"
+          onClick={() => {
+            setEditing(null);
+            form.resetFields();
+            setOpen(true);
+          }}
+        >
+          新增地址
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+        货代仓收货信息；采购下单时从这里选收货地址。
+      </Typography.Paragraph>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={query.isLoading}
+        dataSource={query.data?.items ?? []}
+        pagination={{ pageSize: 20, hideOnSinglePage: true }}
+        columns={[
+          { title: "名称", dataIndex: "name" },
+          { title: "收件人", dataIndex: "receiver" },
+          { title: "电话", dataIndex: "phone" },
+          {
+            title: "地址",
+            render: (_, f) =>
+              [f.country, f.province, f.city, f.address, f.zipcode].filter(Boolean).join(" "),
+          },
+          { title: "货代系统", dataIndex: "systemType", width: 110 },
+          {
+            title: "操作",
+            width: 140,
+            render: (_, f) => (
+              <Space>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setEditing(f);
+                    form.setFieldsValue(f);
+                    setOpen(true);
+                  }}
+                >
+                  编辑
+                </Button>
+                <Popconfirm title="删除该地址？" onConfirm={() => del.mutate(f.id)}>
+                  <Button size="small" danger loading={del.isPending}>
+                    删除
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ),
+          },
+        ]}
+      />
+      <Modal
+        title={editing ? "编辑货代地址" : "新增货代地址"}
+        open={open}
+        onCancel={() => setOpen(false)}
+        confirmLoading={save.isPending}
+        onOk={async () => {
+          const v = (await form.validateFields()) as Partial<FreightForwarder> & { name: string };
+          save.mutate(v);
+        }}
+        destroyOnHidden
+      >
+        <Form form={form} layout="vertical" preserve={false}>
+          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+            <Input placeholder="如：深圳仓 / 广州仓" maxLength={100} />
+          </Form.Item>
+          <Space size={12} style={{ display: "flex" }}>
+            <Form.Item name="receiver" label="收件人">
+              <Input style={{ width: 180 }} maxLength={100} />
+            </Form.Item>
+            <Form.Item name="phone" label="电话">
+              <Input style={{ width: 180 }} maxLength={50} />
+            </Form.Item>
+          </Space>
+          <Space size={12} style={{ display: "flex" }}>
+            <Form.Item name="country" label="国家" initialValue="中国">
+              <Input style={{ width: 100 }} maxLength={100} />
+            </Form.Item>
+            <Form.Item name="province" label="省">
+              <Input style={{ width: 120 }} maxLength={100} />
+            </Form.Item>
+            <Form.Item name="city" label="市">
+              <Input style={{ width: 120 }} maxLength={100} />
+            </Form.Item>
+            <Form.Item name="zipcode" label="邮编">
+              <Input style={{ width: 100 }} maxLength={20} />
+            </Form.Item>
+          </Space>
+          <Form.Item name="address" label="详细地址">
+            <Input maxLength={500} />
+          </Form.Item>
+          <Space size={12} style={{ display: "flex" }}>
+            <Form.Item name="systemType" label="货代系统">
+              <Input style={{ width: 180 }} placeholder="如 huoxiaoyi / manual" maxLength={50} />
+            </Form.Item>
+            <Form.Item name="note" label="备注" style={{ flex: 1 }}>
+              <Input style={{ width: 280 }} maxLength={1000} />
+            </Form.Item>
+          </Space>
+        </Form>
+      </Modal>
+    </Card>
+  );
+}
+
 function AccountCard() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const ext = useExtension();
@@ -311,6 +454,7 @@ export function SettingsPage() {
           { key: "category", label: "类目映射", children: <CategoryMappingCard /> },
           { key: "term", label: "术语翻译映射", children: <TermMappingCard /> },
           { key: "attribute", label: "属性映射", children: <AttributeMappingCard /> },
+          { key: "freight", label: "货代地址簿", children: <FreightForwarderCard /> },
           { key: "account", label: "账号与插件", children: <AccountCard /> },
         ]}
       />
