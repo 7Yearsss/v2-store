@@ -1,0 +1,418 @@
+/* ============ 方案 B 壳层「状态优先向」 ============
+   与 Linear 严格派的差异：68px 窄 icon 栏让位内容区；顶栏是一条
+   状态条（页上下文 + 店铺范围 + 任务 pill）；状态徽标直接压导航。
+   全部取色自 tokens.css，不引入第二种彩色。 */
+
+.sh {
+  display: flex;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* ---------- 左侧窄状态栏 ---------- */
+.sh-rail {
+  width: 68px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: calc(var(--sp) * 2) calc(var(--sp) * 1.5);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.sh-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  margin-bottom: calc(var(--sp) * 2);
+}
+.sh-logo-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+}
+
+.sh-navitem {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--sp) * 1.25);
+  padding: calc(var(--sp) * 2) 0 calc(var(--sp) * 1.5);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.sh-navitem:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sh-navitem.active {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sh-navitem.active::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--sp) * -1.5);
+  top: calc(var(--sp) * 2);
+  bottom: calc(var(--sp) * 2);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.sh-navitem-icon {
+  position: relative;
+  display: flex;
+}
+.sh-navlabel {
+  font-size: var(--fs-dense);
+  line-height: 1;
+}
+
+/* 导航项图标上的状态徽标（上红=失败/过期，下紫=在跑），纵向堆叠 */
+.sh-badges {
+  position: absolute;
+  top: -4px;
+  left: calc(100% + 2px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sh-badge {
+  min-width: 15px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.sh-badge[data-kind="alert"] {
+  background: var(--st-failed);
+}
+
+/* ---------- 顶栏状态条 ---------- */
+.sh-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sh-topbar {
+  height: var(--topbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 3);
+  padding: 0 calc(var(--sp) * 4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.sh-title {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: 1;
+}
+.sh-context {
+  color: var(--text-tertiary);
+  font-size: var(--fs-dense);
+  white-space: nowrap;
+}
+.sh-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  flex: none;
+}
+.sh-spacer {
+  flex: 1;
+}
+
+/* 店铺范围切换 */
+.sh-scope {
+  position: relative;
+}
+.sh-scope-btn {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  height: 32px;
+  padding: 0 calc(var(--sp) * 2.5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs);
+  cursor: pointer;
+}
+.sh-scope-btn:hover {
+  border-color: var(--border-strong);
+}
+.sh-scope-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-scope-meta {
+  color: var(--text-tertiary);
+  font-size: var(--fs-dense);
+  white-space: nowrap;
+}
+.sh-scope-caret {
+  color: var(--text-tertiary);
+  transition: transform 0.15s;
+}
+.sh-scope-caret[data-open="true"] {
+  transform: rotate(180deg);
+}
+.sh-scope-menu {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  min-width: 260px;
+  padding: var(--sp);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  z-index: 50;
+}
+.sh-scope-item {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  width: 100%;
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs);
+  text-align: left;
+  cursor: pointer;
+}
+.sh-scope-item:hover {
+  background: var(--surface-2);
+}
+.sh-scope-item.active {
+  background: var(--accent-muted);
+}
+.sh-scope-item .sh-scope-meta {
+  margin-left: auto;
+}
+.sh-scope-foot {
+  margin-top: var(--sp);
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border-top: 1px solid var(--border);
+  color: var(--st-failed);
+  font-size: var(--fs-dense);
+}
+
+/* 任务状态 pill：在跑=accent 脉冲，失败=红段，空闲=灰 */
+.sh-jobs {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 3);
+  height: 32px;
+  padding: 0 calc(var(--sp) * 3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs);
+  text-decoration: none;
+}
+.sh-jobs:hover {
+  border-color: var(--border-strong);
+}
+.sh-jobs[data-busy="true"] {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+.sh-jobs[data-busy="true"]:hover {
+  border-color: var(--accent-hover);
+}
+.sh-jobs-seg {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  white-space: nowrap;
+}
+.sh-jobs-seg b {
+  font-weight: 600;
+}
+.sh-jobs-fail {
+  color: var(--st-failed);
+}
+.sh-jobs-idle {
+  color: var(--text-tertiary);
+}
+.sh-jobs-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-strong);
+}
+
+/* ---------- 内容区 ---------- */
+.sh-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---------- /__demo 假三栏 ---------- */
+.sh-demo {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr) 292px;
+  gap: calc(var(--sp) * 2);
+  height: 100%;
+  padding: calc(var(--sp) * 2);
+  box-sizing: border-box;
+}
+.demo-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.demo-col-head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 2.5) calc(var(--sp) * 3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-dense);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.demo-col-head .demo-count {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+.demo-col-body {
+  flex: 1;
+  overflow: auto;
+  padding: calc(var(--sp) * 2);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--sp) * 2);
+}
+.demo-row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 2);
+  padding: calc(var(--sp) * 2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.demo-row.sel {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+.demo-thumb {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--surface-3);
+}
+.demo-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.demo-row-sub {
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+.demo-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp);
+}
+.demo-label {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+}
+.demo-label .demo-ai {
+  margin-left: auto;
+  color: var(--accent);
+}
+.demo-input {
+  padding: calc(var(--sp) * 1.5) calc(var(--sp) * 2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  min-height: 30px;
+}
+.demo-input.multi {
+  min-height: 72px;
+  color: var(--text-secondary);
+  font-size: var(--fs-dense);
+}
+.demo-check {
+  padding: calc(var(--sp) * 2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp);
+}
+.demo-check-head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+}
+.demo-check-head b {
+  font-weight: 600;
+}
+.demo-check-meta {
+  margin-left: auto;
+  font-size: var(--fs-dense);
+  color: var(--text-tertiary);
+}
+.demo-issue {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--sp) * 1.5);
+  font-size: var(--fs-dense);
+  color: var(--text-secondary);
+}
+.demo-cta {
+  margin: calc(var(--sp) * 2);
+  height: 34px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.demo-cta:hover {
+  background: var(--accent-hover);
+}

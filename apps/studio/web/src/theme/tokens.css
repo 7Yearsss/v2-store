@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* ============ 冻结设计 token — 铺货工作台 ============
+   气质：Linear 的壳（近黑、灰阶层级、一种强调色）
+   + Shopify 的编辑节奏 + Sellbrite 的渠道状态机。
+   所有组件从这里取色，不允许另起彩色块。 */
+
+:root {
+  /* 背景层级：靠灰阶不靠彩色 */
+  --bg: #0b0c0e;            /* 近黑底 */
+  --surface: #131417;       /* 面板/侧栏 */
+  --surface-2: #1a1c20;     /* 浮起：卡片、hover、输入框 */
+  --surface-3: #22252b;     /* 最浮：弹层、激活项 */
+  --border: #26282e;
+  --border-strong: #35383f;
+
+  /* 文字 */
+  --text: #e7e8ea;
+  --text-secondary: #9ca0a8;
+  --text-tertiary: #5f636b;
+
+  /* 唯一强调色：主按钮 + 进行中状态，其他一律灰阶 */
+  --accent: #5e6ad2;        /* Linear 紫 */
+  --accent-hover: #6e79e0;
+  --accent-muted: rgba(94, 106, 210, 0.14);
+  --on-accent: #ffffff;
+
+  /* 状态点（只用于点 + 短文案，不用作大面积色块） */
+  --st-draft: #5f636b;
+  --st-ready: #5e6ad2;
+  --st-running: #5e6ad2;
+  --st-review: #d9a543;
+  --st-success: #3fb68b;
+  --st-failed: #e5484d;
+  --st-partial: #d9a543;
+
+  /* 尺寸节奏：8px 外间距、4px 组件内间距 */
+  --sp: 4px;
+  --radius: 6px;
+  --radius-card: 10px;
+  --nav-w: 208px;
+  --topbar-h: 48px;
+
+  /* 字号：13 基础，12 密集表格 */
+  --fs: 13px;
+  --fs-dense: 12px;
+  --fs-title: 15px;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--fs)/1.5 -apple-system, BlinkMacSystemFont, "Inter",
+    "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 状态点：点 + 短文案，通用在所有状态呈现处 */
+.st-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--st-draft);
+  flex: none;
+}
+.st-dot[data-st="ready"]   { background: var(--st-ready); }
+.st-dot[data-st="queued"],
+.st-dot[data-st="running"]{ background: var(--st-running); animation: st-pulse 1.2s ease-in-out infinite; }
+.st-dot[data-st="review"],
+.st-dot[data-st="partial_success"] { background: var(--st-partial); }
+.st-dot[data-st="succeeded"],
+.st-dot[data-st="success"]{ background: var(--st-success); }
+.st-dot[data-st="failed"],
+.st-dot[data-st="error"]  { background: var(--st-failed); }
+
+@keyframes st-pulse {
+  50% { opacity: 0.35; }
+}
+
+::selection { background: var(--accent-muted); }
+
+/* 深色下细滚动条 */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }

@@ -4,14 +4,17 @@
   "version": "0.0.0",
   "workspaces": [
     "apps/*",
+    "apps/studio/*",
     "packages/*"
   ],
   "scripts": {
     "dev:server": "npm run dev -w @caiji/server",
     "dev:web": "npm run dev -w @caiji/web",
+    "dev:studio:server": "npm run dev -w @studio/server",
+    "dev:studio:web": "npm run dev -w @studio/web",
     "build:ext": "npm run build -w @caiji/extension",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm test -w @caiji/server"
+    "test": "npm test -w @caiji/server && npm test -w @studio/server"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
