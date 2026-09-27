@@ -1,0 +1,659 @@
+import { openFwAddress } from "./freightForwarders.js";
+import { zValidator } from "@hono/zod-validator";
+import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { Hono } from "hono";
+import { z } from "zod";
+import type { OrderStatus, ProcurePayload } from "@caiji/shared";
+import type { AppEnv, Deps } from "../context.js";
+import {
+  freightForwarders,
+  listings,
+  orderItems,
+  orders,
+  purchaseOrderItems,
+  purchaseOrders,
+  shipments,
+  sourceItems,
+  stores,
+} from "../db/schema.js";
+import { audit, listAudits } from "../lib/audit.js";
+import { HttpError, notFound } from "../lib/errors.js";
+import type { ShippingAddress } from "@caiji/shared";
+import {
+  hydrateOrders,
+  openAddress,
+  openCustomer,
+  refreshOrderStatus,
+  type OrderRow,
+} from "../lib/orders.js";
+import {
+  enqueueFulfillPush,
+  enqueueOrderSync,
+} from "../jobs/handlers.js";
+import { requireAuth } from "./auth.js";
+
+const listQuery = z.object({
+  status: z
+    .enum([
+      "new",
+      "to_procure",
+      "procuring",
+      "to_ship",
+      "shipped",
+      "done",
+      "cancelled",
+      "exception",
+    ])
+    .optional(),
+  storeId: z.string().uuid().optional(),
+  q: z.string().trim().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+async function getOrder(deps: Deps, workspaceId: string, id: string): Promise<OrderRow> {
+  const [row] = await deps.db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.id, id), eq(orders.workspaceId, workspaceId)));
+  if (!row) throw notFound("订单");
+  return row;
+}
+
+export function orderRoutes() {
+  const r = new Hono<AppEnv>();
+  r.use(requireAuth);
+
+  r.get("/", zValidator("query", listQuery), async (c) => {
+    const deps = c.var.deps;
+    const { status, storeId, q, page, pageSize } = c.req.valid("query");
+    const where = and(
+      eq(orders.workspaceId, c.var.auth.workspaceId),
+      status ? eq(orders.status, status) : undefined,
+      storeId ? eq(orders.storeId, storeId) : undefined,
+      q
+        ? or(ilike(orders.name, `%${q}%`), ilike(orders.remoteId, `%${q}%`))
+        : undefined,
+    );
+    const [rows, [total]] = await Promise.all([
+      deps.db
+        .select()
+        .from(orders)
+        .where(where)
+        .orderBy(desc(orders.placedAt), desc(orders.createdAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize),
+      deps.db.select({ n: count() }).from(orders).where(where),
+    ]);
+    return c.json({ items: await hydrateOrders(deps, rows), total: total?.n ?? 0 });
+  });
+
+  r.get("/counts", async (c) => {
+    const rows = await c.var.deps.db
+      .select({ status: orders.status, n: count() })
+      .from(orders)
+      .where(eq(orders.workspaceId, c.var.auth.workspaceId))
+      .groupBy(orders.status);
+    return c.json(Object.fromEntries(rows.map((x) => [x.status, x.n])) as Record<OrderStatus, number>);
+  });
+
+  r.get("/:id", async (c) => {
+    const deps = c.var.deps;
+    const row = await getOrder(deps, c.var.auth.workspaceId, c.req.param("id"));
+    const [dto] = await hydrateOrders(deps, [row]);
+    const audits = await listAudits(deps.db, c.var.auth.workspaceId, "order", row.id);
+    return c.json({ order: dto, audits });
+  });
+
+  /**
+   * 收货地址明文单独端点：列表/详情只给脱敏摘要，复制动作走这里并留痕。
+   */
+  r.get("/:id/address", async (c) => {
+    const deps = c.var.deps;
+    const row = await getOrder(deps, c.var.auth.workspaceId, c.req.param("id"));
+    const address = openAddress(deps, row);
+    if (!address) throw new HttpError(404, "订单没有收货地址", "no_address");
+    await audit(deps.db, c.var.auth.workspaceId, {
+      actor: `user:${c.var.auth.userId}`,
+      action: "order.address_reveal",
+      entityType: "order",
+      entityId: row.id,
+      payload: { name: row.name },
+    });
+    return c.json({ address, customer: openCustomer(deps, row) });
+  });
+
+  /** 人工审核闸：new → to_procure。 */
+  r.post("/:id/review", async (c) => {
+    const deps = c.var.deps;
+    const row = await getOrder(deps, c.var.auth.workspaceId, c.req.param("id"));
+    if (!row.reviewedAt) {
+      await deps.db
+        .update(orders)
+        .set({ reviewedAt: new Date() })
+        .where(eq(orders.id, row.id));
+      await audit(deps.db, c.var.auth.workspaceId, {
+        actor: `user:${c.var.auth.userId}`,
+        action: "order.reviewed",
+        entityType: "order",
+        entityId: row.id,
+        payload: { name: row.name },
+      });
+      await refreshOrderStatus(deps, row.id, `user:${c.var.auth.userId}`);
+    }
+    const [dto] = await hydrateOrders(deps, [
+      (await getOrder(deps, c.var.auth.workspaceId, row.id)),
+    ]);
+    return c.json(dto);
+  });
+
+  /** 人工绑定货源：行项 → 采集箱条目 + specId。 */
+  r.post(
+    "/:id/items/:itemId/bind",
+    zValidator(
+      "json",
+      z.object({
+        sourceItemId: z.string().uuid(),
+        sourceSkuId: z.string().max(255).optional(),
+      }),
+    ),
+    async (c) => {
+      const deps = c.var.deps;
+      const { workspaceId, userId } = c.var.auth;
+      const order = await getOrder(deps, workspaceId, c.req.param("id"));
+      const body = c.req.valid("json");
+      const [item] = await deps.db
+        .select()
+        .from(orderItems)
+        .where(
+          and(eq(orderItems.id, c.req.param("itemId")), eq(orderItems.orderId, order.id)),
+        );
+      if (!item) throw notFound("订单行项");
+      const [src] = await deps.db
+        .select()
+        .from(sourceItems)
+        .where(
+          and(
+            eq(sourceItems.id, body.sourceItemId),
+            eq(sourceItems.workspaceId, workspaceId),
+          ),
+        );
+      if (!src) throw notFound("货源");
+      if (body.sourceSkuId && !src.skus.some((s) => s.skuId === body.sourceSkuId)) {
+        throw new HttpError(400, "规格不存在于该货源");
+      }
+      const [listing] = await deps.db
+        .select({ id: listings.id })
+        .from(listings)
+        .where(
+          and(
+            eq(listings.storeId, order.storeId),
+            eq(listings.sourceItemId, src.id),
+          ),
+        )
+        .limit(1);
+      await deps.db
+        .update(orderItems)
+        .set({
+          listingId: listing?.id ?? null,
+          sourceItemId: src.id,
+          sourceSkuId: body.sourceSkuId ?? null,
+          mapping: body.sourceSkuId ? "matched" : "partial",
+        })
+        .where(eq(orderItems.id, item.id));
+      await audit(deps.db, workspaceId, {
+        actor: `user:${userId}`,
+        action: "order.item_bound",
+        entityType: "order",
+        entityId: order.id,
+        payload: { orderItemId: item.id, sourceItemId: src.id, sourceSkuId: body.sourceSkuId },
+      });
+      await refreshOrderStatus(deps, order.id, `user:${userId}`);
+      const [dto] = await hydrateOrders(deps, [
+        await getOrder(deps, workspaceId, order.id),
+      ]);
+      return c.json(dto);
+    },
+  );
+
+  /**
+   * 去采购：返回插件采购卡的负载（offerId/规格/数量/收货地址）。
+   * 不创建采购单、不改状态——采购单在用户「标记已下单」或手工勾选生成时落地。
+   */
+  r.post("/:id/procure", async (c) => {
+    const deps = c.var.deps;
+    const order = await getOrder(deps, c.var.auth.workspaceId, c.req.param("id"));
+    const items = await deps.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, order.id));
+    const srcIds = [...new Set(items.map((i) => i.sourceItemId).filter(Boolean))] as string[];
+    const srcs = srcIds.length
+      ? await deps.db.select().from(sourceItems).where(inArray(sourceItems.id, srcIds))
+      : [];
+    const srcMap = new Map(srcs.map((s) => [s.id, s]));
+    const offers: ProcurePayload["offers"] = [];
+    for (const it of items) {
+      const src = it.sourceItemId ? srcMap.get(it.sourceItemId) : undefined;
+      if (!src?.sourceItemId) continue;
+      const sku = src.skus.find((s) => s.skuId === it.sourceSkuId);
+      offers.push({
+        offerId: src.sourceItemId,
+        sourceItemId: src.id,
+        title: src.title,
+        image: src.images[0] ?? null,
+        specText: sku?.spec ?? null,
+        qty: it.qty,
+        unitPriceCny: sku?.priceCny ?? null,
+      });
+    }
+    if (!offers.length) {
+      throw new HttpError(422, "没有已匹配货源的行项，先绑定货源", "no_matched_items");
+    }
+    // 采购收货地址只发采购单关联的货代仓地址：终端买家地址（PII）不出服务端，
+    // 更不落进 1688 页面上下文。无货代 → null，卡片提示到采购单绑定货代。
+    const [po] = await deps.db
+      .select({ forwarderId: purchaseOrders.forwarderId })
+      .from(purchaseOrderItems)
+      .innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId))
+      .where(inArray(purchaseOrderItems.orderItemId, items.map((i) => i.id)))
+      .limit(1);
+    let address: ShippingAddress | null = null;
+    if (po?.forwarderId) {
+      const [fw] = await deps.db
+        .select()
+        .from(freightForwarders)
+        .where(eq(freightForwarders.id, po.forwarderId));
+      if (fw) address = openFwAddress(deps, fw.addressEnc);
+    }
+    return c.json({
+      orderId: order.id,
+      orderName: order.name,
+      offers,
+      address,
+    } satisfies ProcurePayload);
+  });
+
+  /**
+   * 插件「标记已下单」回填：找到（或按该 offer 的行项创建）草稿/已下单采购单，
+   * 写 sourceOrderId 并推进到 placed。行项 procure_status → placed。
+   */
+  r.post(
+    "/:id/procure-confirm",
+    zValidator(
+      "json",
+      z.object({
+        offerId: z.string().max(64).optional(),
+        sourceOrderId: z.string().trim().min(1).max(64),
+      }),
+    ),
+    async (c) => {
+      const deps = c.var.deps;
+      const { workspaceId, userId } = c.var.auth;
+      const order = await getOrder(deps, workspaceId, c.req.param("id"));
+      const { offerId, sourceOrderId } = c.req.valid("json");
+      const items = await deps.db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, order.id));
+      const srcIds = [...new Set(items.map((i) => i.sourceItemId).filter(Boolean))] as string[];
+      const srcs = srcIds.length
+        ? await deps.db.select().from(sourceItems).where(inArray(sourceItems.id, srcIds))
+        : [];
+      // 本次下单覆盖的行项：给了 offerId 就只算那个货源的；没给算全部已匹配行
+      const covered = items.filter((i) => {
+        const src = srcs.find((s) => s.id === i.sourceItemId);
+        return src && (!offerId || src.sourceItemId === offerId);
+      });
+      if (!covered.length) throw new HttpError(422, "该订单没有对应货源的行项", "no_items");
+      // 一张 1688 单号只属于一个供应商：覆盖集跨供应商时必须按 offerId 分开确认
+      const coveredSellers = new Set(
+        covered.map(
+          (i) =>
+            srcs.find((s) => s.id === i.sourceItemId)?.sellerName ??
+            i.sourceItemId ??
+            i.id,
+        ),
+      );
+      if (!offerId && coveredSellers.size > 1) {
+        throw new HttpError(
+          422,
+          "行项跨多个供应商，请按货源分别确认下单",
+          "multi_seller",
+        );
+      }
+      const src = srcs.find((s) => s.id === covered[0]!.sourceItemId)!;
+
+      // 找已含这些行项的活跃采购单（含已发货——已下单过的行不重复建单）。
+      // 完结/异常态（done/exception）不再算活跃。
+      const PO_ACTIVE = ["draft", "placed", "paid", "domestic_shipped", "intl_shipped"] as const;
+      const PO_SHIPPED = new Set(["domestic_shipped", "intl_shipped"]);
+      const existingLinks = await deps.db
+        .select()
+        .from(purchaseOrderItems)
+        .innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseOrderItems.purchaseOrderId))
+        .where(
+          and(
+            inArray(purchaseOrderItems.orderItemId, covered.map((i) => i.id)),
+            inArray(purchaseOrders.status, PO_ACTIVE),
+          ),
+        );
+      // 只复用「所有行项都在本次覆盖集内」的采购单：PO 按货源聚合可能混了
+      // 别的订单/别的货源行，整单置 placed 会把无关行项一并标记。
+      // 已发货（domestic_shipped/intl_shipped）的 PO 不参与复用也不追加行项。
+      const coveredIds = new Set(covered.map((i) => i.id));
+      const shippedItemIds = new Set(
+        existingLinks
+          .filter((l) => PO_SHIPPED.has(l.purchase_orders.status))
+          .map((l) => l.purchase_order_items.orderItemId),
+      );
+      const freeItems = covered.filter((i) => !shippedItemIds.has(i.id));
+      let poId: string | undefined;
+      let poShipped = false;
+
+      if (!freeItems.length) {
+        // 覆盖集全部在已发货 PO：只确认唯一一张发货单（补单号），跨多张无法归属 → 409
+        const shippedPoIds = [
+          ...new Set(existingLinks.map((l) => l.purchase_orders.id)),
+        ];
+        if (shippedPoIds.length > 1) {
+          throw new HttpError(
+            409,
+            "行项分散在多张已发货采购单，请到采购单分别确认",
+            "ambiguous_shipped_po",
+          );
+        }
+        poId = shippedPoIds[0];
+        poShipped = true;
+      } else {
+        for (const candId of new Set(
+          existingLinks
+            .filter((l) => !PO_SHIPPED.has(l.purchase_orders.status))
+            .map((l) => l.purchase_orders.id),
+        )) {
+          const rows = await deps.db
+            .select({ orderItemId: purchaseOrderItems.orderItemId })
+            .from(purchaseOrderItems)
+            .where(eq(purchaseOrderItems.purchaseOrderId, candId));
+          if (rows.length && rows.every((r) => coveredIds.has(r.orderItemId))) {
+            poId = candId;
+            break;
+          }
+        }
+        // freeItems 挂在别的未发货 PO 上的链接先搬走（不含选中的 poId）
+        const stalePoIds = [
+          ...new Set(
+            existingLinks
+              .filter(
+                (l) =>
+                  !PO_SHIPPED.has(l.purchase_orders.status) &&
+                  l.purchase_orders.id !== poId,
+              )
+              .map((l) => l.purchase_orders.id),
+          ),
+        ];
+        if (stalePoIds.length) {
+          await deps.db
+            .delete(purchaseOrderItems)
+            .where(
+              and(
+                inArray(purchaseOrderItems.purchaseOrderId, stalePoIds),
+                inArray(purchaseOrderItems.orderItemId, freeItems.map((i) => i.id)),
+              ),
+            );
+        }
+        if (!poId) {
+          const [created] = await deps.db
+            .insert(purchaseOrders)
+            .values({
+              workspaceId,
+              kind: "source_order",
+              sourcePlatform: src.sourcePlatform,
+              sourceSeller: src.sellerName,
+              status: "draft",
+              createdBy: userId,
+            })
+            .returning({ id: purchaseOrders.id });
+          poId = created!.id;
+        }
+        const linked = new Set(
+          existingLinks
+            .filter((l) => l.purchase_orders.id === poId)
+            .map((l) => l.purchase_order_items.orderItemId),
+        );
+        for (const it of freeItems.filter((i) => !linked.has(i.id))) {
+          const sku = srcs
+            .find((s) => s.id === it.sourceItemId)
+            ?.skus.find((s) => s.skuId === it.sourceSkuId);
+          await deps.db.insert(purchaseOrderItems).values({
+            purchaseOrderId: poId,
+            orderItemId: it.id,
+            qty: it.qty,
+            unitPriceCny: sku?.priceCny ?? null,
+          });
+        }
+      }
+      // 状态只前进不后退：已发货 PO 只补空的 sourceOrderId，不一致直接冲突；
+      // 非发货态覆盖写 sourceOrderId，仅 draft 前进到 placed
+      const [poRow] = await deps.db
+        .select({
+          status: purchaseOrders.status,
+          sourceOrderId: purchaseOrders.sourceOrderId,
+        })
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, poId));
+      if (poRow && (poShipped || PO_SHIPPED.has(poRow.status))) {
+        if (poRow.sourceOrderId && poRow.sourceOrderId !== sourceOrderId) {
+          throw new HttpError(
+            409,
+            `行项已在发货采购单（原单号 ${poRow.sourceOrderId}）`,
+            "already_shipped",
+          );
+        }
+        if (!poRow.sourceOrderId) {
+          await deps.db
+            .update(purchaseOrders)
+            .set({ sourceOrderId })
+            .where(eq(purchaseOrders.id, poId));
+        }
+      } else {
+        // 已下单/付款/完成的采购单不允许改单号——那是另一条真实采购，不是重填
+        if (
+          poRow &&
+          poRow.status !== "draft" &&
+          poRow.sourceOrderId &&
+          poRow.sourceOrderId !== sourceOrderId
+        ) {
+          throw new HttpError(
+            409,
+            `行项已在采购单 ${poRow.sourceOrderId}（状态 ${poRow.status}）`,
+            "po_conflict",
+          );
+        }
+        await deps.db
+          .update(purchaseOrders)
+          .set({
+            sourceOrderId,
+            ...(poRow?.status === "draft" ? { status: "placed" as const } : {}),
+          })
+          .where(eq(purchaseOrders.id, poId));
+      }
+      if (freeItems.length) {
+        await deps.db
+          .update(orderItems)
+          .set({ procureStatus: "placed" })
+          .where(
+            and(
+              inArray(orderItems.id, freeItems.map((i) => i.id)),
+              inArray(orderItems.procureStatus, ["none", "queued", "failed"]),
+            ),
+          );
+      }
+      await audit(deps.db, workspaceId, {
+        actor: `user:${userId}`,
+        action: "purchase_order.placed",
+        entityType: "purchase_order",
+        entityId: poId,
+        payload: { orderId: order.id, sourceOrderId, via: "extension" },
+      });
+      await refreshOrderStatus(deps, order.id, `user:${userId}`);
+      const [po] = await deps.db
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, poId));
+      return c.json({ purchaseOrderId: poId, status: po!.status });
+    },
+  );
+
+  /** 录运单 → 建 shipment 并入队 fulfill.push。 */
+  r.post(
+    "/:id/fulfill",
+    zValidator(
+      "json",
+      z.object({
+        trackingNo: z.string().trim().min(1).max(128),
+        carrier: z.string().trim().max(64).optional(),
+        trackingUrl: z.string().trim().max(500).optional(),
+        /** 重推一条失败/待推的 shipment；缺省新建。 */
+        shipmentId: z.string().uuid().optional(),
+        /** 部分发货：行项 + 数量（qty 缺省 = 该行剩余全发）；缺省 = 全部剩余行。 */
+        lineItems: z
+          .array(
+            z.object({
+              remoteLineItemId: z.string().max(128),
+              qty: z.number().int().min(1).max(100_000).optional(),
+            }),
+          )
+          .max(100)
+          .optional(),
+      }),
+    ),
+    async (c) => {
+      const deps = c.var.deps;
+      const { workspaceId, userId } = c.var.auth;
+      const order = await getOrder(deps, workspaceId, c.req.param("id"));
+      const body = c.req.valid("json");
+      // 行项校验：必须属于该订单、不重复、qty 不超过剩余可发量（剩余 = 下单量 - 已在 pending/pushed 运单里的量）
+      if (body.lineItems?.length) {
+        const items = await deps.db
+          .select()
+          .from(orderItems)
+          .where(eq(orderItems.orderId, order.id));
+        const byRemote = new Map(
+          items.filter((i) => i.remoteLineItemId).map((i) => [i.remoteLineItemId!, i]),
+        );
+        const orderShipments = await deps.db
+          .select({ lineItems: shipments.lineItems })
+          .from(shipments)
+          .where(
+            and(
+              eq(shipments.orderId, order.id),
+              inArray(shipments.status, ["pending", "pushed"]),
+            ),
+          );
+        const inflight = new Map<string, number>();
+        for (const sh of orderShipments) {
+          for (const li of sh.lineItems ?? []) {
+            inflight.set(
+              li.remoteLineItemId,
+              (inflight.get(li.remoteLineItemId) ?? 0) + (li.qty ?? 0),
+            );
+          }
+        }
+        const seenLines = new Set<string>();
+        for (const li of body.lineItems) {
+          if (seenLines.has(li.remoteLineItemId)) {
+            throw new HttpError(400, `行项 ${li.remoteLineItemId} 重复`, "duplicate_line");
+          }
+          seenLines.add(li.remoteLineItemId);
+          const it = byRemote.get(li.remoteLineItemId);
+          if (!it) {
+            throw new HttpError(400, `行项 ${li.remoteLineItemId} 不属于该订单`, "invalid_line");
+          }
+          const remaining = it.qty - (inflight.get(li.remoteLineItemId) ?? 0);
+          if (li.qty !== undefined && li.qty > remaining) {
+            throw new HttpError(
+              409,
+              `行项 ${li.remoteLineItemId} 剩余可发 ${remaining}，请求 ${li.qty}`,
+              "qty_exceeds_remaining",
+            );
+          }
+        }
+      }
+      let shipmentId = body.shipmentId;
+      if (shipmentId) {
+        const [s] = await deps.db
+          .select()
+          .from(shipments)
+          .where(
+            and(eq(shipments.id, shipmentId), eq(shipments.orderId, order.id)),
+          );
+        if (!s) throw notFound("运单");
+        // 只允许失败重推：已回传/推送中的运单重新提交会给剩余行项再发一次履约
+        if (s.status === "pushed") {
+          throw new HttpError(409, "该运单已回传成功，请为剩余行项新建运单", "already_pushed");
+        }
+        if (s.status === "pending") {
+          throw new HttpError(409, "该运单正在推送中", "push_in_flight");
+        }
+        await deps.db
+          .update(shipments)
+          .set({
+            carrier: body.carrier ?? s.carrier,
+            trackingNo: body.trackingNo,
+            trackingUrl: body.trackingUrl ?? s.trackingUrl,
+            lineItems: body.lineItems ?? s.lineItems,
+            status: "pending",
+            lastError: null,
+          })
+          .where(eq(shipments.id, shipmentId));
+      } else {
+        const [ins] = await deps.db
+          .insert(shipments)
+          .values({
+            workspaceId,
+            orderId: order.id,
+            carrier: body.carrier ?? null,
+            trackingNo: body.trackingNo,
+            trackingUrl: body.trackingUrl ?? null,
+            lineItems: body.lineItems ?? null,
+          })
+          .returning({ id: shipments.id });
+        shipmentId = ins!.id;
+      }
+      await enqueueFulfillPush(deps.db, shipmentId, workspaceId);
+      await audit(deps.db, workspaceId, {
+        actor: `user:${userId}`,
+        action: "order.fulfill_queued",
+        entityType: "order",
+        entityId: order.id,
+        payload: { shipmentId, trackingNo: body.trackingNo },
+      });
+      const [dto] = await hydrateOrders(deps, [await getOrder(deps, workspaceId, order.id)]);
+      return c.json(dto);
+    },
+  );
+
+  /** 手动补拉这一单（webhook 没店外部署时，或排查用）。 */
+  r.post("/:id/sync-now", async (c) => {
+    const deps = c.var.deps;
+    const order = await getOrder(deps, c.var.auth.workspaceId, c.req.param("id"));
+    await enqueueOrderSync(deps.db, order.storeId, c.var.auth.workspaceId, order.remoteId);
+    return c.json({ queued: true });
+  });
+
+  /** 店级手动全量同步（轮询兜底入口）。 */
+  r.post("/sync", zValidator("json", z.object({ storeId: z.string().uuid() })), async (c) => {
+    const deps = c.var.deps;
+    const { storeId } = c.req.valid("json");
+    const [store] = await deps.db
+      .select({ id: stores.id })
+      .from(stores)
+      .where(and(eq(stores.id, storeId), eq(stores.workspaceId, c.var.auth.workspaceId)));
+    if (!store) throw notFound("店铺");
+    await enqueueOrderSync(deps.db, store.id, c.var.auth.workspaceId);
+    return c.json({ queued: true });
+  });
+
+  return r;
+}

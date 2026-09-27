@@ -689,3 +689,89 @@ select.inp { cursor: pointer; }
 .job-sub { font-size: var(--fs-dense); color: var(--text-tertiary); }
 .job-err { font-size: var(--fs-dense); color: var(--st-failed); }
 .job-right { margin-left: auto; display: flex; align-items: center; gap: calc(var(--sp) * 3); flex: none; }
+
+/* ---------- 选品页 ---------- */
+.sel { height: 100%; overflow: hidden; }
+.sel-body {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: calc(var(--sp) * 3);
+  flex: 1;
+  min-height: 0;
+}
+@media (max-width: 1023px) {
+  .sel { overflow: auto; }
+  .sel-body { grid-template-columns: 1fr; }
+}
+.sel-plans { display: flex; flex-direction: column; min-height: 0; }
+.sel-plan-list { flex: 1; overflow: auto; }
+.sel-plan {
+  display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--sp) * 1.5);
+  width: 100%; box-sizing: border-box;
+  padding: calc(var(--sp) * 2) calc(var(--sp) * 3);
+  border: 0; border-bottom: 1px solid var(--border);
+  border-left: 2px solid transparent;
+  background: transparent; color: var(--text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.sel-plan:hover { background: var(--surface-2); }
+.sel-plan.active { border-left-color: var(--accent); background: var(--surface-2); }
+.sel-plan.off { opacity: 0.55; }
+.sel-plan-name { font-size: var(--fs); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-plan-meta { display: flex; gap: var(--sp); flex: none; }
+.sel-plan-acts { display: flex; gap: var(--sp); }
+.sel-plan-acts .btn { visibility: hidden; }
+.sel-plan:hover .sel-plan-acts .btn, .sel-plan.active .sel-plan-acts .btn { visibility: visible; }
+.sel-plan-last { width: 100%; font-size: var(--fs-dense); color: var(--text-tertiary); }
+.sel-plan-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp);
+  padding: calc(var(--sp) * 2) calc(var(--sp) * 3);
+  border-top: 1px solid var(--border);
+}
+.sel-pool { display: flex; flex-direction: column; min-height: 0; }
+.sel-pool .col-head { flex-wrap: wrap; }
+.sel-wall {
+  flex: 1; overflow: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: calc(var(--sp) * 2); padding: calc(var(--sp) * 3);
+  align-content: start;
+}
+.sel-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: var(--sp);
+  padding: calc(var(--sp) * 2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+.sel-card.on { border-color: var(--accent); }
+.sel-card-top { position: absolute; top: calc(var(--sp) * 1.5); left: calc(var(--sp) * 1.5); right: calc(var(--sp) * 1.5); display: flex; justify-content: space-between; z-index: 1; }
+.sel-card-chk { margin: 0; }
+.sel-card-img { display: block; }
+.sel-card-img .thumb { width: 100%; height: 120px; }
+.sel-score {
+  margin-left: auto; min-width: 34px; text-align: center;
+  font-size: var(--fs-dense); font-weight: 700;
+  padding: 0 calc(var(--sp) * 1.5); line-height: 20px;
+  border-radius: 10px; background: var(--surface-3); color: var(--text-secondary);
+}
+.sel-score.hi { background: var(--accent-muted); color: var(--accent-hover); }
+.sel-score.lo { color: var(--st-failed); }
+.sel-card-title {
+  font-size: var(--fs-dense); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sel-card-meta { display: flex; align-items: center; gap: var(--sp); }
+.sel-price { color: var(--accent); font-weight: 600; font-size: var(--fs); }
+.sel-badges { display: flex; flex-wrap: wrap; gap: var(--sp); }
+.sel-badges .tag { font-size: 11px; }
+.sel-note { font-size: var(--fs-dense); color: var(--text-tertiary); line-height: 1.4; }
+.sel-card-acts { display: flex; gap: var(--sp); align-items: center; margin-top: auto; }
+
+/* ---------- 弹层表单 ---------- */
+.mo-form { display: flex; flex-direction: column; gap: calc(var(--sp) * 3); }
+.mo-form label { display: flex; flex-direction: column; gap: var(--sp); font-size: var(--fs-dense); color: var(--text-secondary); }
+.mo-row { display: flex; gap: calc(var(--sp) * 3); align-items: flex-end; }
+.mo-row > label { flex: 1; }
+.mo-check { flex-direction: row !important; align-items: center; gap: calc(var(--sp) * 1.5) !important; }
+.mo-check input { accent-color: var(--accent); }

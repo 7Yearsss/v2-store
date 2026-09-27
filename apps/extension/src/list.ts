@@ -6,8 +6,10 @@
  */
 
 import { sendToBackground } from "./lib/messages";
-import type { PendingChanged } from "./lib/messages";
+import type { DiscoveryPlanMeta, PendingChanged } from "./lib/messages";
+import { signalsFromText } from "./lib/cardSignals";
 import { el, mountPanel, type Panel, sleep } from "./ui/panel";
+import type { DiscoveryFeedItem } from "@caiji/shared";
 
 type CardState = "idle" | "busy" | "staged" | "done" | "err";
 
@@ -215,9 +217,70 @@ function scan() {
   const added = [...cards.keys()].filter((id) => !before.has(id));
   if (added.length) {
     queueCheck(added);
+    queueDiscoveryFeed();
     renderStats();
   }
   queueLayout();
+}
+
+// --- 被动选品回流 -------------------------------------------------------------
+// 用户自己浏览 1688 搜索页时，如果本页关键词命中某个计划的 filters.keywords，
+// 顺手把卡片（图/价/服务标签/名次）POST /discovery/feed 回流进候选池。
+
+const fedOnce = new Set<string>();
+let feedTimer: number | undefined;
+
+/** 本页搜索关键词（s.1688.com 搜索页 ?keywords=；其他页型没有 → 不回流）。 */
+function pageKeyword(): string | null {
+  const kw = new URL(location.href).searchParams.get("keywords");
+  return kw?.trim() || null;
+}
+
+function queueDiscoveryFeed() {
+  clearTimeout(feedTimer);
+  feedTimer = window.setTimeout(() => void feedMatchedPlans(), 800);
+}
+
+async function feedMatchedPlans() {
+  if (!panel.status.authorized) return;
+  const kw = pageKeyword();
+  if (!kw) return;
+  let plans: DiscoveryPlanMeta[];
+  try {
+    plans = (
+      await sendToBackground<{ plans: DiscoveryPlanMeta[] }>({ type: "GET_DISCOVERY_PLANS" })
+    ).plans;
+  } catch {
+    return;
+  }
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+  const pageKw = norm(kw);
+  const matched = plans.filter((p) =>
+    (p.filters.keywords ?? []).some((k) => {
+      const pk = norm(k);
+      return pk.length >= 2 && (pageKw.includes(pk) || pk.includes(pageKw));
+    }),
+  );
+  if (!matched.length) return;
+  let rank = 0;
+  const cardsNow = [...cards.values()];
+  const items = cardsNow.map((c): DiscoveryFeedItem => {
+    rank++;
+    const info = cardInfo(c);
+    return {
+      sourceItemId: c.offerId,
+      title: info.title,
+      priceText: cardPrice(c),
+      thumb: info.image,
+      signals: { ...signalsFromText(c.root.innerText ?? ""), rank },
+    };
+  });
+  for (const plan of matched) {
+    const fresh = items.filter((i) => !fedOnce.has(`${plan.id}:${i.sourceItemId}`));
+    if (!fresh.length) continue;
+    for (const i of fresh) fedOnce.add(`${plan.id}:${i.sourceItemId}`);
+    sendToBackground({ type: "DISCOVERY_FEED", planId: plan.id, items: fresh }).catch(() => {});
+  }
 }
 
 // --- panel -------------------------------------------------------------------

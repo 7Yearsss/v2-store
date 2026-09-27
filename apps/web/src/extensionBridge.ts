@@ -3,6 +3,8 @@
  * site-bridge content script relays to the background worker and replies.
  */
 
+import type { ProcurePayload } from "@caiji/shared";
+
 const SITE_SOURCE = "v2-web";
 const EXT_SOURCE = "v2-ext";
 
@@ -56,4 +58,19 @@ export function collectOfferById(offerId: string) {
     { offerId },
     30000,
   );
+}
+
+/** 订单「去采购」→ 插件存采购任务 + 打开首个货源详情页（采购卡浮层在详情页内渲染）。 */
+export function procureViaExtension(payload: ProcurePayload) {
+  return extensionCall<{ count: number }>(
+    "PROCURE_1688",
+    payload as unknown as Record<string, unknown>,
+    15000,
+  );
+}
+/** 选品页批量挂入插件待确认队列（via=plan，入库时服务端归因 + 回填候选池）。 */
+export function stageCollectMany(
+  items: Array<{ offerId: string; title: string; image?: string; price?: string; via?: string }>,
+) {
+  return extensionCall<{ count: number }>("STAGE_COLLECT_MANY", { items }, 15000);
 }

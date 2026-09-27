@@ -14,7 +14,17 @@ const JOB_LABELS: Record<string, string> = {
   "listing.aiEnhance": "AI 产线",
   "listing.categorySuggest": "类目推荐",
   "listing.aiImage": "AI 图片",
+  "listing.claim": "链路认领",
+  "pipeline.advance": "链路推进",
   "store.syncCategories": "类目树同步",
+  "listing.pushStock": "库存推送",
+  "listing.pushPrice": "价格推送",
+  "listing.delist": "刊登下架",
+  "inventory.reconcile": "库存兜底重算",
+  "order.sync": "订单同步",
+  "order.map": "订单映射",
+  "fulfill.push": "履约回传",
+  "selection.score": "选品打分",
 };
 
 function toDto(j: typeof jobs.$inferSelect) {

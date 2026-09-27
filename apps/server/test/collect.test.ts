@@ -66,8 +66,10 @@ describe("collect", () => {
         t,
       )
     ).body;
-    // 开启「同步货源库存」：认领出的刊登默认 syncPolicy.stock=auto，回扫才推库存
-    await ctx.api("PATCH", `/api/stores/${store.id}`, { rules: { trackStock: true } }, t);
+    // 开启「同步货源库存」+货源监控：认领出的刊登默认 syncPolicy.stock=auto，回扫才推库存
+    await ctx.api("PATCH", `/api/stores/${store.id}`, {
+      rules: { trackStock: true, monitor: { enabled: true } },
+    }, t);
     const item = await ctx.api("POST", "/api/collect", harvest("77", "库存杯"), t);
     await ctx.api(
       "POST",

@@ -5,8 +5,15 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createMiddleware } from "hono/factory";
 import { z } from "zod";
 import type { Me } from "@caiji/shared";
+import { SELECTION_PRESET_PLANS } from "@caiji/shared";
 import type { AppEnv, Deps } from "../context.js";
-import { memberships, sessions, users, workspaces } from "../db/schema.js";
+import {
+  memberships,
+  selectionPlans,
+  sessions,
+  users,
+  workspaces,
+} from "../db/schema.js";
 import { hashPassword, newToken, sha256, verifyPassword } from "../lib/crypto.js";
 import { HttpError } from "../lib/errors.js";
 
@@ -128,6 +135,16 @@ export function authRoutes() {
       await tx
         .insert(memberships)
         .values({ userId: user!.id, workspaceId: ws!.id, role: "owner" });
+      // 预置 3 个低风险类目的每日计划，新 workspace 的选品页不空。
+      await tx.insert(selectionPlans).values(
+        SELECTION_PRESET_PLANS.map((p) => ({
+          workspaceId: ws!.id,
+          name: p.name,
+          source: p.source,
+          filters: p.filters,
+          schedule: p.schedule,
+        })),
+      );
       return { user: user!, ws: ws! };
     });
     const { token, expiresAt } = await createSession(

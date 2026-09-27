@@ -15,11 +15,17 @@ embedded = false
 
 [webhooks]
 api_version = "2026-07"
-# TODO once public: app/uninstalled + compliance topics → <domain>/api/shopify/webhooks
+# app/uninstalled + 订单 topics → <domain>/api/shopify/webhooks
+# 订单订阅在 OAuth 连接成功后由服务端按店注册（webhookSubscriptionCreate），
+# 部署有了公网域名后也可以在这里加 [[webhooks.subscriptions]] 静态兜底。
+
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/api/shopify/webhooks"
 
 [access_scopes]
 # Keep in sync with SHOPIFY_SCOPES in apps/server/src/env.ts
-scopes = "write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files,read_metaobjects,write_metaobjects"
+scopes = "write_products,read_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,write_files,read_metaobjects,write_metaobjects,read_orders,write_merchant_managed_fulfillment_orders"
 
 [auth]
 redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]

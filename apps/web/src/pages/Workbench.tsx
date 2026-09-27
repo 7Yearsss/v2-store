@@ -4,6 +4,7 @@ import type {
   Listing,
   ListingSuggestion,
   OptionsSuggestionValue,
+  PipelineStage,
   SourceItem,
   Store,
   SuggestionField,
@@ -58,6 +59,19 @@ const AUTO_ACTION_TEXT: Record<string, string> = {
   stock_push_fallback_publish: "库存变化触发全量重发",
 };
 
+/** 链路阶段徽标（店稿卡上展示；null 不出徽标）。 */
+const PIPELINE_TEXT: Record<PipelineStage, { st: string; label: string }> = {
+  claimed: { st: "draft", label: "链路·已认领" },
+  ai_running: { st: "running", label: "链路·AI 处理中" },
+  hold_ai: { st: "review", label: "链路·待人工审核" },
+  precheck: { st: "review", label: "链路·待发布" },
+  hold_precheck: { st: "review", label: "链路·发布前待确认" },
+  queued: { st: "running", label: "链路·发布排队中" },
+  publishing: { st: "running", label: "链路·发布中" },
+  published: { st: "success", label: "链路·已发布" },
+  failed: { st: "failed", label: "链路·失败" },
+};
+
 function extractOfferId(input: string): string | null {
   const t = input.trim();
   return (
@@ -74,7 +88,14 @@ function useSourceListings(sourceItemId: string | null, storeScope?: string | nu
       api
         .listings({ sourceItemId: sourceItemId!, storeId: storeScope ?? undefined, pageSize: 100 })
         .then((r) => r.items as ListingExt[]),
-    refetchInterval: (q) => (q.state.data?.some((l) => l.status === "publishing") ? 2000 : false),
+    refetchInterval: (q) =>
+      q.state.data?.some(
+        (l) =>
+          l.status === "publishing" ||
+          ["ai_running", "queued", "publishing"].includes(l.pipelineStage ?? ""),
+      )
+        ? 2000
+        : false,
   });
 }
 
@@ -794,6 +815,29 @@ function StoreCheckCard({
   checked: boolean;
   onCheck: (v: boolean) => void;
 }) {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [pipeBusy, setPipeBusy] = useState(false);
+  const pipe = async (act: "advance" | "pause" | "cancel") => {
+    if (!listing) return;
+    setPipeBusy(true);
+    try {
+      const call = {
+        advance: api.pipelineAdvance,
+        pause: api.pipelinePause,
+        cancel: api.pipelineCancel,
+      }[act];
+      await call(listing.id);
+      qc.invalidateQueries({ queryKey: ["listings"] });
+      if (act === "advance") message.success("已推进");
+      else if (act === "pause") message.success("已暂停");
+      else message.success("已退出链路");
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setPipeBusy(false);
+    }
+  };
   const dead = store.status !== "active";
   const busy = listing?.status === "publishing";
   const issues = listing ? listingIssues(listing) : [];
@@ -841,6 +885,54 @@ function StoreCheckCard({
           </a>
         )}
       </div>
+      {listing?.pipelineStage && (
+        <div className="chk-issues">
+          <span className="chk-issue">
+            <St st={PIPELINE_TEXT[listing.pipelineStage].st}>
+              {PIPELINE_TEXT[listing.pipelineStage].label}
+            </St>
+            {listing.publishAt &&
+              ` · 定时 ${dayjs(listing.publishAt).format("MM-DD HH:mm")}`}
+            {listing.pipelineHoldReason && (
+              <span style={{ color: "var(--text-tertiary)" }}>（{listing.pipelineHoldReason}）</span>
+            )}
+          </span>
+          <span className="rowline" style={{ marginLeft: "auto" }}>
+            {listing.pipelineStage !== "published" && listing.pipelineStage !== "publishing" && (
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={pipeBusy}
+                onClick={() => pipe("advance")}
+              >
+                推进
+              </button>
+            )}
+            {listing.pipelineStage !== "published" &&
+              listing.pipelineStage !== "publishing" &&
+              listing.pipelineHoldReason !== "manual" && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={pipeBusy}
+                  onClick={() => pipe("pause")}
+                >
+                  暂停
+                </button>
+              )}
+            {listing.pipelineStage !== "published" && listing.pipelineStage !== "publishing" && (
+              <button
+                type="button"
+                className="btn sm ghost"
+                disabled={pipeBusy}
+                onClick={() => pipe("cancel")}
+              >
+                取消链路
+              </button>
+            )}
+          </span>
+        </div>
+      )}
       {listing && issues.length > 0 && listing.status !== "published" && (
         <div className="chk-issues">
           {issues.map((i) => (
@@ -863,12 +955,14 @@ function ClaimModal({ item, open, onClose }: { item: SourceItem | null; open: bo
   const [busy, setBusy] = useState(false);
   const active = stores.filter((s) => s.status === "active");
   const claimable = active.filter((s) => !item?.claimedStoreIds.includes(s.id));
-  const run = async () => {
+  const run = async (advance: boolean) => {
     if (!item) return;
     setBusy(true);
     try {
-      const r = await api.claim([item.id], storeIds);
-      message.success(`已认领 ${r.created} 条${r.skipped ? `，跳过已认领 ${r.skipped} 条` : ""}`);
+      const r = await api.claim([item.id], storeIds, advance);
+      message.success(
+        `已认领 ${r.created} 条${r.skipped ? `，跳过已认领 ${r.skipped} 条` : ""}${advance ? "，链路已启动" : ""}`,
+      );
       qc.invalidateQueries({ queryKey: ["source-items"] });
       qc.invalidateQueries({ queryKey: ["listings"] });
       setStoreIds([]);
@@ -889,7 +983,20 @@ function ClaimModal({ item, open, onClose }: { item: SourceItem | null; open: bo
           <button type="button" className="btn" onClick={onClose}>
             取消
           </button>
-          <button type="button" className="btn primary" disabled={!storeIds.length || busy} onClick={run}>
+          <button
+            type="button"
+            className="btn"
+            disabled={!storeIds.length || busy}
+            onClick={() => run(true)}
+          >
+            认领并发布
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!storeIds.length || busy}
+            onClick={() => run(false)}
+          >
             {busy ? "认领中…" : `认领${storeIds.length ? `（${storeIds.length}）` : ""}`}
           </button>
         </>
@@ -913,7 +1020,10 @@ function ClaimModal({ item, open, onClose }: { item: SourceItem | null; open: bo
           </label>
         ))
       )}
-      <div className="mo-note">认领后按店铺定价规则生成刊登草稿，AI 建议随后在店稿中待审。</div>
+      <div className="mo-note">
+        认领后按店铺定价规则生成刊登草稿，AI 建议随后在店稿中待审；「认领并发布」进入自动链路
+        （AI → 卡点 → 发布前检查 → 按店铺节奏发布）。
+      </div>
     </Modal>
   );
 }

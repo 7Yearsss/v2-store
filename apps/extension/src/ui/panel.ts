@@ -5,7 +5,7 @@
  */
 
 import { sendToBackground } from "../lib/messages";
-import type { PendingItem, SubmitPendingResult } from "../lib/messages";
+import type { PendingItem, ProcureOfferTask, SubmitPendingResult } from "../lib/messages";
 
 export interface ExtStatus {
   authorized: boolean;
@@ -56,6 +56,11 @@ const CSS = `
 .pend .item .price { color: #f97316; font-size: 11px; flex: none; }
 .pend .x { border: none; background: transparent; color: #9ca3af; cursor: pointer; font-size: 13px; padding: 0 2px; flex: none; }
 .pend .x:hover { color: #dc2626; }
+.pcard { border: 1px solid #fed7aa; background: #fffbf5; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pcard-t { font-size: 12px; color: #9a3412; font-weight: 600; }
+.pcard .btn { width: auto; padding: 6px 8px; font-size: 12px; }
+.pc { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #f3f4f6; padding-top: 8px; }
+.pc-title { color: #9ca3af; font-size: 12px; }
 .log-title { color: #9ca3af; font-size: 12px; }
 .item { display: flex; gap: 8px; align-items: center; }
 .item img { width: 32px; height: 32px; border-radius: 4px; object-fit: cover; background: #f3f4f6; flex: none; }
@@ -124,7 +129,8 @@ export async function mountPanel(): Promise<Panel> {
   const logList = el("div", { class: "log", style: "display:none" }, el("div", { class: "log-title" }, "本次采集"));
   const appLink = el("a", { class: "link", target: "_blank", rel: "noreferrer" }, "打开 V2Store 工作台 →");
   const pendList = el("div", { class: "pend", style: "display:none" });
-  const body = el("div", { class: "body" }, authArea, actions, pendList, progressWrap, logList, appLink);
+  const procureList = el("div", { class: "pc", style: "display:none" });
+  const body = el("div", { class: "body" }, authArea, actions, procureList, pendList, progressWrap, logList, appLink);
   root.append(head, body);
   shadow.append(root);
   document.documentElement.append(host);
@@ -221,6 +227,43 @@ export async function mountPanel(): Promise<Panel> {
     if (msg?.type === "V2_PENDING_CHANGED") void renderPending();
   });
   void renderPending();
+
+  // 待采购提示卡：web 侧「去采购」下发的任务；点击跳货源详情页（详情页内有采购卡）
+  const renderProcure = async () => {
+    let items: ProcureOfferTask[] = [];
+    try {
+      const res = await sendToBackground<{ items: ProcureOfferTask[] }>({ type: "GET_PROCURE_LIST" });
+      items = res.items;
+    } catch {
+      /* 离线时保持现状 */
+    }
+    if (!items.length) {
+      procureList.style.display = "none";
+      procureList.replaceChildren();
+      return;
+    }
+    procureList.style.display = "";
+    procureList.replaceChildren(
+      el("div", { class: "pc-title" }, `待采购（${items.length}）— 点开详情页有采购卡`),
+      ...items.map((t) => {
+        const row = el(
+          "div",
+          { class: "item", title: t.title },
+          el("img", { src: t.image ?? "", alt: "" }),
+          el("span", { class: "t" }, t.title),
+          el("span", { class: "tag dup" }, `×${t.qty}`),
+        );
+        row.style.cursor = "pointer";
+        row.onclick = () =>
+          window.open(`https://detail.1688.com/offer/${t.offerId}.html`, "_blank");
+        return row;
+      }),
+    );
+  };
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === "V2_PROCURE_CHANGED") void renderProcure();
+  });
+  void renderProcure();
 
   toggle.onclick = () => setMin(!root.classList.contains("min"));
   try {

@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "contextMenus",
-    "alarms"
+    "alarms",
+    "offscreen"
   ],
   "host_permissions": [
     "*://*.1688.com/*",
